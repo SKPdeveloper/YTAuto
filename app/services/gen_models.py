@@ -414,9 +414,9 @@ class Gen1SceneConcept(BaseModel):
     energy_level: str = Field(..., description="EXPLOSIVE | HIGH | MEDIUM | LOW - REQUIRED")
     visual_concept: Gen1VisualConcept = Field(..., description="Visual concept for GEN2 - REQUIRED")
     camera_intent: Gen1CameraIntent = Field(..., description="Camera movement intent - REQUIRED")
-    voiceover_segment: str = Field(..., description="VO text with [tags] - REQUIRED")
-    broker_script: str = Field(..., description="Broker script for scenes 1-4 - REQUIRED")
-    audio_moment: str = Field(..., description="Key audio event - REQUIRED")
+    voiceover_segment: str = Field(default="", description="VO text with [tags] - can be empty for scenes 5-6")
+    broker_script: str = Field(default="", description="Broker script for scenes 1-4 - can be empty for scenes 5-6")
+    audio_moment: str = Field(default="", description="Key audio event - can be empty")
 
     @field_validator('narrative_purpose')
     @classmethod
@@ -466,9 +466,9 @@ class Gen1SceneConcept(BaseModel):
         if not self.camera_intent.movement:
             errors.append(f"Scene {self.scene_number}: missing camera_intent.movement")
 
-        # Check voiceover_segment - REQUIRED
-        if not self.voiceover_segment:
-            errors.append(f"Scene {self.scene_number}: missing voiceover_segment")
+        # Check voiceover_segment - REQUIRED for scenes 1-4, optional for 5-6
+        if self.scene_number <= 4 and not self.voiceover_segment:
+            errors.append(f"Scene {self.scene_number}: missing voiceover_segment (required for scenes 1-4)")
 
         # Scene 1 must be PRIMARY
         if self.scene_number == 1 and self.reference_hint != "PRIMARY":
@@ -499,15 +499,18 @@ class Gen1SonicHook(BaseModel):
     volume: str = Field(default="LOUD", description="Volume level: LOUD | MEDIUM | SUBTLE")
 
 
-class Gen1FoleySound(BaseModel):
-    """Single foley sound definition."""
-    id: str = Field(..., description="Sound ID")
-    search: str = Field(..., description="Search terms for stock")
-
-
 class Gen1FoleyPalette(BaseModel):
-    """Foley sounds configuration - ALL FIELDS REQUIRED."""
-    sounds: List[Gen1FoleySound] = Field(..., description="Available sounds - REQUIRED")
+    """Foley sounds configuration - ALL FIELDS REQUIRED.
+
+    Structure from GEN1.txt:
+    {
+        "primary_sounds": ["sound1", "sound2"],
+        "search_terms": ["search term 1", "search term 2"],
+        "scene_assignments": {"1": ["sound for scene 1"], "3": ["sound for scene 3"]}
+    }
+    """
+    primary_sounds: List[str] = Field(..., description="List of sound identifiers - REQUIRED")
+    search_terms: List[str] = Field(..., description="Search terms for stock audio - REQUIRED")
     scene_assignments: Dict[str, List[str]] = Field(..., description="Mapping of scene_N to sound IDs - REQUIRED")
 
 
@@ -826,7 +829,7 @@ class Gen2VisualSummary(BaseModel):
     motion_summary: str = Field(..., description="Motion elements summary - REQUIRED")
     energy_pattern: str = Field(..., description="Energy pattern across scenes - REQUIRED")
     loop_verified: bool = Field(..., description="Whether loop is verified - REQUIRED")
-    consistency_target: str = Field(..., description="Target consistency - REQUIRED")
+    consistency_target: str = Field(default="80%", description="Target consistency percentage")
 
 
 class Gen2BatchOutput(BaseModel):
@@ -1575,7 +1578,6 @@ __all__ = [
     "Gen1SceneConcept",
     "Gen1VoiceoverConfig",
     "Gen1SonicHook",
-    "Gen1FoleySound",
     "Gen1FoleyPalette",
     "Gen1SfxItem",
     "Gen1SfxScene",

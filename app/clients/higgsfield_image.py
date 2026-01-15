@@ -156,26 +156,74 @@ class HiggsFieldImageGenerator:
         await asyncio.to_thread(self._sync_set_aspect_ratio, ratio)
 
     def _sync_set_aspect_ratio(self, ratio: str) -> None:
-        """Sync РІСЃС‚Р°РЅРѕРІР»РµРЅРЅСЏ aspect ratio"""
+        """
+        Sync setting aspect ratio using proper selectors.
+
+        Workflow:
+        1. Find aspect ratio button (aria-label or text with :)
+        2. Click to open dropdown
+        3. Find and click the target option (9:16)
+        """
         try:
             driver = self.browser.driver
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
             time.sleep(0.5)
 
-            btn = self.browser.find_button_by_text(":")
+            # Method 1: Find button by aria-label
+            btn = None
+            try:
+                btn = driver.find_element(By.CSS_SELECTOR, 'button[aria-label="Aspect Ratio"]')
+                logger.debug("Found aspect ratio button by aria-label")
+            except:
+                pass
+
+            # Method 2: Find button by data-key with ratio
             if not btn:
-                btn = self.browser.find_button_by_text(ratio)
+                try:
+                    btns = driver.find_elements(By.CSS_SELECTOR, 'button[data-key]')
+                    for b in btns:
+                        key = b.get_attribute('data-key')
+                        if key and ':' in key:
+                            btn = b
+                            logger.debug(f"Found aspect ratio button by data-key: {key}")
+                            break
+                except:
+                    pass
 
-            if btn:
-                driver.execute_script("arguments[0].click();", btn)
-                time.sleep(0.5)
+            # Method 3: Find button with text containing ":"
+            if not btn:
+                btn = self.browser.find_button_by_text(":")
+                if btn:
+                    logger.debug("Found aspect ratio button by text ':'")
 
-                options = driver.find_elements(By.CSS_SELECTOR, '[role="option"]')
-                for opt in options:
-                    if ratio in opt.text:
-                        driver.execute_script("arguments[0].click();", opt)
-                        logger.debug(f"Aspect ratio set to: {ratio}")
-                        return
+            if not btn:
+                logger.warning("Aspect ratio button not found!")
+                return
+
+            # Click button to open dropdown
+            driver.execute_script("arguments[0].click();", btn)
+            time.sleep(0.5)
+
+            # Method 1: Find option by data-key
+            option_selector = f'[role="option"][data-key="{ratio}"]'
+            try:
+                option = driver.find_element(By.CSS_SELECTOR, option_selector)
+                driver.execute_script("arguments[0].click();", option)
+                logger.success(f"Aspect ratio set to {ratio} (by data-key)")
+                return
+            except:
+                pass
+
+            # Method 2: Find option by text
+            options = driver.find_elements(By.CSS_SELECTOR, '[role="option"]')
+            for opt in options:
+                opt_text = opt.text.strip()
+                if ratio in opt_text:
+                    driver.execute_script("arguments[0].click();", opt)
+                    logger.success(f"Aspect ratio set to {ratio} (by text: '{opt_text}')")
+                    return
+
+            logger.warning(f"Aspect ratio option {ratio} not found in dropdown!")
 
         except Exception as e:
             logger.warning(f"Failed to set aspect ratio: {e}")

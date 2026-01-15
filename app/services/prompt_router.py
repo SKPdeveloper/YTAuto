@@ -49,7 +49,6 @@ from app.services.gen_models import (
     Gen1SceneConcept,
     Gen1VoiceoverConfig,
     Gen1SonicHook,
-    Gen1FoleySound,
     Gen1FoleyPalette,
     Gen1SfxItem,
     Gen1SfxScene,

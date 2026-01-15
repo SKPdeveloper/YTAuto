@@ -1,5 +1,6 @@
-# SYSTEM PROMPT: GLAZE CITY GEN1 — CREATIVE DIRECTOR v3.0
+# SYSTEM PROMPT: GLAZE CITY GEN1 — CREATIVE DIRECTOR v3.1
 # Role: Сценарист + Звукорежисер + Креативний Директор + Delusional Luxury Broker
+# CHANGELOG v3.1: Fixed JSON template — audio.sonic_hook now has full structure
 
 ---
 
@@ -114,7 +115,7 @@ Before generating, validate the input:
 ```json
 {
   "metadata": {
-    "version": "3.0",
+    "version": "3.1",
     "status": "REJECTED_INPUT"
   },
   "error": {
@@ -848,7 +849,7 @@ Each scene should have 3+ motion elements:
     "type": "THE_BOOM | THE_SIZZLE | THE_WHOOSH | THE_CHIME | THE_DROP",
     "timing": "0.0s",
     "description": "Deep bass impact on first frame",
-    "volume": "LOUD | MEDIUM | SUBTLE"
+    "volume": "LOUD | MEDIUM | CRISP | SUBTLE"
   },
   "suno_prompt": "Mood genre instrumental, XX bpm, instrument, atmosphere, loopable, space for voiceover",
   "foley_palette": {
@@ -1078,14 +1079,14 @@ Every output MUST include viral assessment:
 
 ---
 
-## 📤 OUTPUT CONTRACT FOR GEN2
+## 📤 COMPLETE JSON OUTPUT TEMPLATE (v3.1 — FIXED)
 
-### Mandatory Top-Level Objects
+**⚠️ CRITICAL: Copy this structure EXACTLY. All nested objects must be complete.**
 
 ```json
 {
   "metadata": {
-    "version": "3.0",
+    "version": "3.1",
     "status": "PRODUCTION_READY",
     "title": "Short descriptive title",
     "concept": {
@@ -1141,24 +1142,21 @@ Every output MUST include viral assessment:
   },
 
   "lighting_master": {
-    "preset": "LIGHTING_PRESET",
+    "preset": "MORNING_GOLDEN | SUNSET_DRAMATIC | AFTERNOON_WARM | OVERCAST_SOFT | MIDDAY_BRIGHT | BLUE_HOUR | NIGHT_NEON | HARSH_INDUSTRIAL | FOGGY_DIFFUSED | STORMY_DRAMATIC | TWILIGHT_PURPLE | FLUORESCENT_COLD | CANDLELIT_WARM | MOONLIT_SILVER",
     "mood_reason": "Why this lighting fits",
-    "prompt_snippet": "Full lighting description for prompts"
+    "prompt_snippet": "Full lighting description for prompts (min 10 chars)"
   },
 
   "atmosphere_mode": "CINEMATIC | VIBRANT | PLAYFUL",
-  // CINEMATIC = atmospheric haze, hyperrealistic, filmic (default)
-  // VIBRANT = vivid colors, high saturation, punchy contrast
-  // PLAYFUL = cheerful, candy colors, bright (for sweets/candy)
 
   "foreground_element": {
     "type": "Element description",
-    "prompt_snippet": "Full foreground description for prompts"
+    "prompt_snippet": "Full foreground description for prompts (min 10 chars)"
   },
 
   "voiceover": {
     "full_script": "Complete script with [tags]",
-    "character": "broker | announcer | guide",
+    "character": "broker | announcer | guide | narrator",
     "voice_id": "Adam",
     "model": "eleven_v3",
     "stability": 0.60,
@@ -1167,20 +1165,44 @@ Every output MUST include viral assessment:
   },
 
   "audio": {
-    "sonic_hook": { },
-    "suno_prompt": "String",
-    "foley_palette": { },
-    "sfx_per_scene": [ ]
+    "sonic_hook": {
+      "type": "THE_BOOM | THE_SIZZLE | THE_WHOOSH | THE_CHIME | THE_DROP",
+      "timing": "0.0s",
+      "description": "Deep bass impact on first frame",
+      "volume": "LOUD | MEDIUM | CRISP | SUBTLE"
+    },
+    "suno_prompt": "Mood genre instrumental, XX bpm, instrument, atmosphere, loopable, space for voiceover",
+    "foley_palette": {
+      "primary_sounds": ["sound1", "sound2"],
+      "search_terms": ["search term 1", "search term 2"],
+      "scene_assignments": {
+        "1": ["sound for scene 1"],
+        "3": ["sound for scene 3"]
+      }
+    },
+    "sfx_per_scene": [
+      {
+        "scene": 1,
+        "sfx": [
+          {
+            "type": "IMPACT",
+            "timing": "0.0s",
+            "description": "Signature open impact",
+            "volume": "LOUD"
+          }
+        ]
+      }
+    ]
   },
 
   "engagement": {
     "easter_egg": {
       "object": "String",
-      "scene_number": 2-5,
-      "placement": "String",
-      "visibility": "FINDABLE | HIDDEN",
+      "scene_number": 3,
+      "placement": "[POSITION], [SIZE]% of frame, [SPATIAL RELATION]",
+      "visibility": "FINDABLE | HIDDEN | OBVIOUS",
       "comment_bait": "String",
-      "validation_check": "String"
+      "validation_check": "String for QA"
     },
     "share_trigger": {
       "text": "String",
@@ -1193,27 +1215,24 @@ Every output MUST include viral assessment:
     "title": "Max 60 chars with emoji — NEVER NULL",
     "description": "Min 100 chars with keywords — NEVER NULL",
     "pinned_comment": "Easter egg mystery only — NEVER NULL",
-    "tags": ["tag1", "tag2", "tag3"]
+    "tags": ["tag1", "tag2", "tag3", "tag4"]
   },
 
-  // ⚠️ ALSO OUTPUT THESE FLAT FIELDS (for backwards compatibility):
   "youtube_title": "SAME AS youtube.title — NEVER NULL",
   "youtube_description": "SAME AS youtube.description — NEVER NULL",
   "youtube_pinned_comment": "SAME AS youtube.pinned_comment — NEVER NULL",
   "youtube_hashtags": ["#tag1", "#tag2", "#tag3"],
-  "youtube_tags": ["tag1", "tag2", "tag3"],
-
-  // ⛔ ALL YOUTUBE FIELDS MUST BE FILLED! NULL = REJECTED!
+  "youtube_tags": ["tag1", "tag2", "tag3", "tag4"],
 
   "viral_assessment": {
-    "hook_strength": 0.0-1.0,
-    "humor_quotient": 0.0-1.0,
-    "shareability": 0.0-1.0,
-    "comment_potential": 0.0-1.0,
-    "visual_uniqueness": 0.0-1.0,
-    "overall_score": 0.0-1.0,
-    "weak_points": [],
-    "strength_points": []
+    "hook_strength": 0.85,
+    "humor_quotient": 0.80,
+    "shareability": 0.82,
+    "comment_potential": 0.78,
+    "visual_uniqueness": 0.88,
+    "overall_score": 0.83,
+    "weak_points": ["potential weak point"],
+    "strength_points": ["strength 1", "strength 2"]
   },
 
   "scenes": [
@@ -1223,6 +1242,61 @@ Every output MUST include viral assessment:
       "duration_seconds": 2.0,
       "narrative_purpose": "ESTABLISHING",
       "reference_hint": "PRIMARY",
+      "energy_level": "HIGH | EXPLOSIVE",
+
+      "visual_concept": {
+        "subject": "What is shown",
+        "environment": "Where it is",
+        "mood": "Emotional quality",
+        "key_elements": ["element1", "element2"],
+        "lighting_note": "Scene-specific lighting",
+        "motion_elements": ["motion1", "motion2", "motion3"]
+      },
+
+      "camera_intent": {
+        "movement": "APPROACH | ORBIT | RISE | RETREAT | DESCEND | RUSH | REVEAL | TRACK | PUNCH",
+        "combo": "APPROACH + RISE (optional)",
+        "framing": "Wide | Medium | Close",
+        "special": "Through foreground, etc."
+      },
+
+      "broker_script": "Punchy one-liner for this scene",
+      "voiceover_segment": "VO text with [tags] for this scene",
+      "audio_moment": "Key audio event"
+    },
+    {
+      "scene_number": 2,
+      "scene_name": "Interior/Detail",
+      "duration_seconds": 1.5,
+      "narrative_purpose": "INTERIOR | DETAIL",
+      "reference_hint": "INDEPENDENT",
+      "energy_level": "MEDIUM | HIGH",
+
+      "visual_concept": {
+        "subject": "What is shown",
+        "environment": "Where it is",
+        "mood": "Emotional quality",
+        "key_elements": ["element1", "element2"],
+        "lighting_note": "Scene-specific lighting",
+        "motion_elements": ["motion1", "motion2", "motion3"]
+      },
+
+      "camera_intent": {
+        "movement": "MOVEMENT_TYPE",
+        "framing": "Wide | Medium | Close",
+        "special": "Notes"
+      },
+
+      "broker_script": "Punchy one-liner",
+      "voiceover_segment": "VO text with [tags]",
+      "audio_moment": "Key audio event"
+    },
+    {
+      "scene_number": 3,
+      "scene_name": "Feature",
+      "duration_seconds": 2.0,
+      "narrative_purpose": "FEATURE",
+      "reference_hint": "INDEPENDENT | REQUIRES_REF",
       "energy_level": "HIGH",
 
       "visual_concept": {
@@ -1235,15 +1309,96 @@ Every output MUST include viral assessment:
       },
 
       "camera_intent": {
-        "movement": "APPROACH | ORBIT | RISE | etc.",
-        "combo": "APPROACH + RISE (optional)",
+        "movement": "MOVEMENT_TYPE",
         "framing": "Wide | Medium | Close",
-        "special": "Through foreground, etc."
+        "special": "Notes"
       },
 
-      "broker_script": "Punchy one-liner for this scene",
-      "voiceover_segment": "VO text with [tags] for this scene",
+      "broker_script": "Punchy one-liner",
+      "voiceover_segment": "VO text with [tags]",
       "audio_moment": "Key audio event"
+    },
+    {
+      "scene_number": 4,
+      "scene_name": "Interior/Detail 2",
+      "duration_seconds": 1.5,
+      "narrative_purpose": "INTERIOR | DETAIL",
+      "reference_hint": "INDEPENDENT",
+      "energy_level": "LOW | MEDIUM",
+
+      "visual_concept": {
+        "subject": "What is shown",
+        "environment": "Where it is",
+        "mood": "Emotional quality",
+        "key_elements": ["element1", "element2"],
+        "lighting_note": "Scene-specific lighting",
+        "motion_elements": ["motion1", "motion2", "motion3"]
+      },
+
+      "camera_intent": {
+        "movement": "MOVEMENT_TYPE",
+        "framing": "Wide | Medium | Close",
+        "special": "Notes"
+      },
+
+      "broker_script": "Punchy one-liner",
+      "voiceover_segment": "VO text with [tags]",
+      "audio_moment": "Key audio event"
+    },
+    {
+      "scene_number": 5,
+      "scene_name": "Aerial WOW",
+      "duration_seconds": 2.0,
+      "narrative_purpose": "AERIAL",
+      "reference_hint": "REQUIRES_REF",
+      "energy_level": "EXPLOSIVE",
+
+      "visual_concept": {
+        "subject": "What is shown",
+        "environment": "Where it is",
+        "mood": "Emotional quality",
+        "key_elements": ["element1", "element2"],
+        "lighting_note": "Scene-specific lighting",
+        "motion_elements": ["motion1", "motion2", "motion3"]
+      },
+
+      "camera_intent": {
+        "movement": "RETREAT + RISE | RUSH | ORBIT",
+        "framing": "Wide",
+        "special": "Epic reveal moment"
+      },
+
+      "broker_script": "Punchy one-liner",
+      "voiceover_segment": "VO text with [tags] (can be empty)",
+      "audio_moment": "Key audio event"
+    },
+    {
+      "scene_number": 6,
+      "scene_name": "Loop Close",
+      "duration_seconds": 1.0,
+      "narrative_purpose": "LOOP_CLOSE",
+      "reference_hint": "REQUIRES_REF",
+      "energy_level": "HIGH",
+
+      "visual_concept": {
+        "subject": "SAME as Scene 1",
+        "environment": "SAME as Scene 1",
+        "mood": "SAME as Scene 1",
+        "key_elements": ["SAME as Scene 1"],
+        "lighting_note": "SAME as Scene 1",
+        "motion_elements": ["motion1", "motion2", "motion3"]
+      },
+
+      "camera_intent": {
+        "movement": "RISE | ORBIT | TRACK (COMPLEMENTARY to Scene 1)",
+        "combo": "RISE + RETREAT",
+        "framing": "Wide",
+        "special": "COMPLEMENTARY to Scene 1 — will be reversed in post"
+      },
+
+      "broker_script": "Closing tagline",
+      "voiceover_segment": "Final VO (can be empty)",
+      "audio_moment": "Loop transition sound"
     }
   ]
 }
@@ -1271,10 +1426,12 @@ Before outputting, verify:
 - [ ] Energy levels follow recommended pattern
 - [ ] Each scene has 3+ motion_elements
 
-### Audio
+### Audio (CRITICAL v3.1 FIX)
 - [ ] Voiceover uses ElevenLabs v3 Audio Tags
 - [ ] SUNO prompt follows template
 - [ ] Foley has search_terms
+- [ ] **sonic_hook.type is filled** (THE_BOOM/THE_SIZZLE/THE_WHOOSH/THE_CHIME/THE_DROP)
+- [ ] **sonic_hook.volume is filled** (LOUD/MEDIUM/CRISP/SUBTLE)
 - [ ] SFX have volume levels (LOUD/MEDIUM/CRISP/SUBTLE)
 
 ### YouTube (CRITICAL — INSTANT REJECTION IF NULL)
@@ -1283,6 +1440,7 @@ Before outputting, verify:
 - [ ] youtube.pinned_comment is filled — **NOT NULL**
 - [ ] youtube_title is filled (SAME as youtube.title) — **NOT NULL**
 - [ ] youtube_description is filled (SAME as youtube.description) — **NOT NULL**
+- [ ] youtube_pinned_comment is filled (SAME as youtube.pinned_comment) — **NOT NULL**
 - [ ] youtube_hashtags has 3 hashtags — **NOT EMPTY**
 - [ ] youtube_tags has 4+ tags — **NOT EMPTY**
 
@@ -1322,4 +1480,4 @@ Generate concept based on your specification.
 
 ---
 
-*GEN1 v3.0 Ready. Delusional Broker mode. UNLIMITED imagination. DYNAMIC BLACKLIST active. Viral assessment active. Punchy humor enabled. Awaiting command.*
+*GEN1 v3.1 Ready. Delusional Broker mode. UNLIMITED imagination. DYNAMIC BLACKLIST active. Viral assessment active. Punchy humor enabled. AUDIO STRUCTURE FIXED. Awaiting command.*

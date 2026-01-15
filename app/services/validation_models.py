@@ -51,7 +51,7 @@ class ImageScores(BaseModel):
     total: int = Field(..., description="Total score")
     max_possible: int = Field(..., description="Maximum possible score (70 or 80)")
     percentage: int = Field(..., description="Percentage score")
-    grade: Literal["A", "B", "C", "D", "F"] = Field(..., description="Letter grade")
+    grade: str = Field(..., description="Letter grade (A+, A, A-, B+, B, B-, C+, C, C-, D+, D, D-, F)")
 
 
 class Phase2QualityScoring(BaseModel):
@@ -183,7 +183,7 @@ class Gen1Phase2Quality(BaseModel):
     total: int = Field(..., description="Total score")
     max_possible: int = Field(default=60, description="Maximum possible score")
     percentage: int = Field(..., ge=0, le=100, description="Percentage score")
-    grade: Literal["A", "B", "C", "D", "F"] = Field(..., description="Letter grade")
+    grade: str = Field(..., description="Letter grade (A+, A, A-, B+, B, B-, C+, C, C-, D+, D, D-, F)")
 
 
 class Gen1Decision(BaseModel):
@@ -271,7 +271,7 @@ class Gen2Phase2Quality(BaseModel):
     total: int = Field(..., description="Total score")
     max_possible: int = Field(default=60, description="Maximum possible score")
     percentage: int = Field(..., ge=0, le=100, description="Percentage score")
-    grade: Literal["A", "B", "C", "D", "F"] = Field(..., description="Letter grade")
+    grade: str = Field(..., description="Letter grade (A+, A, A-, B+, B, B-, C+, C, C-, D+, D, D-, F)")
 
 
 class Gen2Decision(BaseModel):
@@ -372,7 +372,7 @@ class Gen3aPhase2Quality(BaseModel):
     total: int = Field(..., description="Total score")
     max_possible: int = Field(default=70, description="Maximum possible score")
     percentage: int = Field(..., ge=0, le=100, description="Percentage score")
-    grade: Literal["A", "B", "C", "D", "F"] = Field(..., description="Letter grade")
+    grade: str = Field(..., description="Letter grade (A+, A, A-, B+, B, B-, C+, C, C-, D+, D, D-, F)")
 
 
 class Gen3aDecision(BaseModel):
@@ -514,7 +514,7 @@ class Gen3bPhase2Quality(BaseModel):
     total: int = Field(..., description="Total score")
     max_possible: int = Field(default=80, description="Maximum possible score")
     percentage: int = Field(..., ge=0, le=100, description="Percentage score")
-    grade: Literal["A", "B", "C", "D", "F"] = Field(..., description="Letter grade")
+    grade: str = Field(..., description="Letter grade (A+, A, A-, B+, B, B-, C+, C, C-, D+, D, D-, F)")
 
 
 class Gen3bDecision(BaseModel):

@@ -1198,8 +1198,18 @@ class ProjectOrchestrator:
         # Prepare scenes data for parallel video generation
         scenes_for_video = []
         for scene in project.scenes:
-            if scene.status == SceneStatus.VIDEO_READY:
-                logger.info(f"[Scene {scene.scene_number}] Video already exists, skipping...")
+            # Skip if status indicates video ready
+            if scene.status in [SceneStatus.VIDEO_READY, SceneStatus.APPROVED]:
+                logger.info(f"[Scene {scene.scene_number}] Video already exists (status: {scene.status}), skipping...")
+                continue
+
+            # Also check if video file exists on disk (resume case)
+            scene_dir = get_scene_path(project.project_id, scene.scene_number)
+            video_path = scene_dir / "video.mp4"
+            if video_path.exists():
+                logger.info(f"[Scene {scene.scene_number}] Video file found on disk, skipping...")
+                scene.video_path = str(video_path)
+                scene.status = SceneStatus.VIDEO_READY
                 continue
 
             if not scene.image_path or not Path(scene.image_path).exists():
