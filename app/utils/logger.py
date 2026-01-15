@@ -5,6 +5,7 @@ Logging setup для Edible House Automator
 
 import sys
 from pathlib import Path
+from typing import Dict, Optional
 from loguru import logger
 from app.core.config import settings
 
@@ -208,6 +209,95 @@ def log_scene_progress(
 
 
 # ============================================================================
+# PROJECT-SPECIFIC LOGGER
+# ============================================================================
+
+# Хранилище handler_id для каждого проекта
+_project_handlers: Dict[str, int] = {}
+
+
+def setup_project_logger(project_id: str, logs_dir: Path) -> None:
+    """
+    Настроить логирование в папку конкретного проекта.
+
+    Создаёт отдельный лог-файл для проекта в projects/{project_id}/logs/
+
+    Args:
+        project_id: ID проекта
+        logs_dir: Путь к директории логов проекта
+
+    Usage:
+        from app.core.paths import get_project_logs_path
+
+        logs_dir = get_project_logs_path(project_id)
+        setup_project_logger(project_id, logs_dir)
+    """
+    # Если логгер для этого проекта уже существует, пропускаем
+    if project_id in _project_handlers:
+        logger.debug(f"Project logger already exists for {project_id}")
+        return
+
+    # Создаём директорию если не существует
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
+    log_file = logs_dir / "pipeline.log"
+
+    # Добавляем handler для этого проекта
+    handler_id = logger.add(
+        log_file,
+        format=(
+            "{time:YYYY-MM-DD HH:mm:ss} | "
+            "{level: <8} | "
+            "{name}:{function}:{line} | "
+            "{message}"
+        ),
+        level="DEBUG",
+        rotation="10 MB",
+        retention="7 days",
+        compression="zip",
+        encoding="utf-8",
+        backtrace=True,
+        diagnose=True,
+        # Фильтруем только сообщения, содержащие project_id
+        filter=lambda record: project_id in record["message"] or
+                             record["extra"].get("project_id") == project_id,
+    )
+
+    _project_handlers[project_id] = handler_id
+    logger.info(f"Project logger initialized: {log_file}")
+
+
+def get_project_logger(project_id: str):
+    """
+    Получить logger с привязкой к конкретному проекту.
+
+    Args:
+        project_id: ID проекта
+
+    Returns:
+        Logger instance с контекстом project_id
+
+    Usage:
+        plog = get_project_logger("proj_abc123")
+        plog.info("Processing started")  # Автоматически попадёт в лог проекта
+    """
+    return logger.bind(project_id=project_id)
+
+
+def remove_project_logger(project_id: str) -> None:
+    """
+    Удалить logger для проекта (после завершения обработки).
+
+    Args:
+        project_id: ID проекта
+    """
+    if project_id in _project_handlers:
+        handler_id = _project_handlers.pop(project_id)
+        logger.remove(handler_id)
+        logger.debug(f"Project logger removed for {project_id}")
+
+
+# ============================================================================
 # AUTO-INITIALIZATION
 # ============================================================================
 
@@ -225,4 +315,7 @@ __all__ = [
     "get_module_logger",
     "log_api_call",
     "log_scene_progress",
+    "setup_project_logger",
+    "get_project_logger",
+    "remove_project_logger",
 ]

@@ -19,8 +19,10 @@ from app.core.paths import (
     get_project_path,
     get_scene_path,
     get_project_brief_path,
+    get_project_logs_path,
     ensure_project_structure,
 )
+from app.utils.logger import setup_project_logger
 from app.api.schemas import (
     ProjectData,
     SceneData,
@@ -87,6 +89,9 @@ class ProjectManager:
 
         # Create project directory structure
         ensure_project_structure(project_id, num_scenes)
+
+        # Setup project-specific logging
+        setup_project_logger(project_id, get_project_logs_path(project_id))
 
         # Create project data
         project = ProjectData(
@@ -163,6 +168,9 @@ class ProjectManager:
             return None
 
         logger.info(f"Loading project from disk: {project_id}")
+
+        # Setup project-specific logging
+        setup_project_logger(project_id, get_project_logs_path(project_id))
 
         # Read project_brief.json
         with open(brief_path, "r", encoding="utf-8") as f:

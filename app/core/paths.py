@@ -131,6 +131,23 @@ def get_final_video_path(project_id: str, upscaled: bool = False) -> Path:
     return get_project_path(project_id) / filename
 
 
+def get_project_logs_path(project_id: str) -> Path:
+    """
+    Получить путь к директории логов проекта.
+
+    Args:
+        project_id: ID проекта
+
+    Returns:
+        Path к директории logs внутри проекта
+
+    Example:
+        >>> get_project_logs_path("proj_123")
+        Path("projects/proj_123/logs")
+    """
+    return get_project_path(project_id) / "logs"
+
+
 # ============================================================================
 # CONFIG FILES
 # ============================================================================
@@ -193,6 +210,10 @@ def ensure_project_structure(project_id: str, num_scenes: int = 6) -> None:
     project_dir = get_project_path(project_id)
     project_dir.mkdir(parents=True, exist_ok=True)
 
+    # Создать директорию для логов проекта
+    logs_dir = get_project_logs_path(project_id)
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
     for scene_num in range(1, num_scenes + 1):
         scene_dir = get_scene_path(project_id, scene_num)
         scene_dir.mkdir(parents=True, exist_ok=True)
@@ -220,6 +241,7 @@ __all__ = [
     "get_candidate_path",
     "get_project_brief_path",
     "get_final_video_path",
+    "get_project_logs_path",
 
     # Config paths
     "get_prompt_path",
