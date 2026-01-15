@@ -1,0 +1,168 @@
+<!-- Global Settings Modal -->
+<div class="modal-backdrop fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl shadow-xl max-w-2xl w-full max-h-[90vh] overflow-hidden" @click.stop>
+        <!-- Header -->
+        <div class="border-b border-gray-200 px-6 py-4 flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+                <div class="p-2 bg-gray-100 rounded-lg">
+                    <i data-lucide="settings" class="w-5 h-5 text-gray-600"></i>
+                </div>
+                <h2 class="text-xl font-semibold text-gray-800">Глобальні налаштування</h2>
+            </div>
+            <button onclick="this.closest('.modal-backdrop').remove()" class="text-gray-400 hover:text-gray-600 transition-smooth">
+                <i data-lucide="x" class="w-6 h-6"></i>
+            </button>
+        </div>
+
+        <!-- Content -->
+        <div class="p-6 overflow-y-auto max-h-[calc(90vh-140px)]">
+            <form id="settings-form" hx-post="/api/settings/save" hx-swap="none">
+
+                <!-- Video Processing Section -->
+                <div class="mb-8">
+                    <h3 class="text-lg font-medium text-gray-800 mb-4 flex items-center space-x-2">
+                        <i data-lucide="cpu" class="w-5 h-5 text-blue-500"></i>
+                        <span>Topaz Video AI (Upscaling + FPS)</span>
+                    </h3>
+
+                    <!-- Topaz Settings -->
+                    <div class="bg-blue-50 rounded-xl p-4 border border-blue-200">
+                        <h4 class="text-sm font-medium text-blue-800 mb-3 flex items-center space-x-2">
+                            <i data-lucide="sliders" class="w-4 h-4"></i>
+                            <span>Налаштування обробки</span>
+                        </h4>
+
+                        <div class="grid grid-cols-2 gap-3">
+                            <!-- FPS Model -->
+                            <div>
+                                <label class="block text-xs font-medium text-gray-700 mb-1">Модель FPS</label>
+                                <select name="topaz_fps_model" class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                                    <option value="apf-1" {% if settings.TOPAZ_FPS_MODEL == "apf-1" %}selected{% endif %}>Apollo Fast</option>
+                                    <option value="apo-8" {% if settings.TOPAZ_FPS_MODEL == "apo-8" %}selected{% endif %}>Apollo</option>
+                                    <option value="chf-3" {% if settings.TOPAZ_FPS_MODEL == "chf-3" %}selected{% endif %}>Chronos Fast</option>
+                                    <option value="chr-2" {% if settings.TOPAZ_FPS_MODEL == "chr-2" %}selected{% endif %}>Chronos</option>
+                                </select>
+                            </div>
+
+                            <!-- Upscale Model -->
+                            <div>
+                                <label class="block text-xs font-medium text-gray-700 mb-1">Модель Upscale</label>
+                                <select name="topaz_upscale_model" class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                                    <option value="prob-3" {% if settings.TOPAZ_UPSCALE_MODEL == "prob-3" %}selected{% endif %}>Proteus v3</option>
+                                    <option value="alq-13" {% if settings.TOPAZ_UPSCALE_MODEL == "alq-13" %}selected{% endif %}>Artemis LQ</option>
+                                    <option value="iris-3" {% if settings.TOPAZ_UPSCALE_MODEL == "iris-3" %}selected{% endif %}>Iris</option>
+                                    <option value="nyx-3" {% if settings.TOPAZ_UPSCALE_MODEL == "nyx-3" %}selected{% endif %}>Nyx</option>
+                                </select>
+                            </div>
+
+                            <!-- Target FPS -->
+                            <div>
+                                <label class="block text-xs font-medium text-gray-700 mb-1">Цільовий FPS</label>
+                                <select name="topaz_target_fps" class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                                    <option value="30" {% if settings.TOPAZ_TARGET_FPS == 30 %}selected{% endif %}>30 FPS</option>
+                                    <option value="60" {% if settings.TOPAZ_TARGET_FPS == 60 %}selected{% endif %}>60 FPS</option>
+                                    <option value="120" {% if settings.TOPAZ_TARGET_FPS == 120 %}selected{% endif %}>120 FPS</option>
+                                </select>
+                            </div>
+
+                            <!-- Scale Factor -->
+                            <div>
+                                <label class="block text-xs font-medium text-gray-700 mb-1">Масштаб</label>
+                                <select name="topaz_scale" class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                                    <option value="1" {% if settings.TOPAZ_SCALE == 1 %}selected{% endif %}>1x (без upscale)</option>
+                                    <option value="2" {% if settings.TOPAZ_SCALE == 2 %}selected{% endif %}>2x</option>
+                                    <option value="4" {% if settings.TOPAZ_SCALE == 4 %}selected{% endif %}>4x</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- API Keys Section -->
+                <div class="mb-8">
+                    <h3 class="text-lg font-medium text-gray-800 mb-4 flex items-center space-x-2">
+                        <i data-lucide="key" class="w-5 h-5 text-amber-500"></i>
+                        <span>API Ключі</span>
+                    </h3>
+
+                    <div class="bg-amber-50 rounded-xl p-4 border border-amber-200">
+                        <p class="text-xs text-amber-700 mb-3">
+                            API ключі зберігаються в файлі <code class="bg-amber-100 px-1 rounded">.env</code>.
+                            Для безпеки їх не можна редагувати через UI.
+                        </p>
+
+                        <div class="space-y-2">
+                            <div class="flex items-center justify-between text-sm">
+                                <span class="text-gray-700">Google Gemini API</span>
+                                {% if settings.GOOGLE_GEMINI_API_KEY %}
+                                <span class="text-green-600 flex items-center space-x-1">
+                                    <i data-lucide="check-circle" class="w-4 h-4"></i>
+                                    <span>Налаштовано</span>
+                                </span>
+                                {% else %}
+                                <span class="text-red-600 flex items-center space-x-1">
+                                    <i data-lucide="x-circle" class="w-4 h-4"></i>
+                                    <span>Не налаштовано</span>
+                                </span>
+                                {% endif %}
+                            </div>
+                            <div class="flex items-center justify-between text-sm">
+                                <span class="text-gray-700">AdsPower Profile</span>
+                                {% if settings.ADSPOWER_PROFILE_ID %}
+                                <span class="text-green-600 flex items-center space-x-1">
+                                    <i data-lucide="check-circle" class="w-4 h-4"></i>
+                                    <span>Налаштовано</span>
+                                </span>
+                                {% else %}
+                                <span class="text-red-600 flex items-center space-x-1">
+                                    <i data-lucide="x-circle" class="w-4 h-4"></i>
+                                    <span>Не налаштовано</span>
+                                </span>
+                                {% endif %}
+                            </div>
+                            <div class="flex items-center justify-between text-sm">
+                                <span class="text-gray-700">ElevenLabs API</span>
+                                {% if settings.ELEVENLABS_API_KEY %}
+                                <span class="text-green-600 flex items-center space-x-1">
+                                    <i data-lucide="check-circle" class="w-4 h-4"></i>
+                                    <span>Налаштовано</span>
+                                </span>
+                                {% else %}
+                                <span class="text-red-600 flex items-center space-x-1">
+                                    <i data-lucide="x-circle" class="w-4 h-4"></i>
+                                    <span>Не налаштовано</span>
+                                </span>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </form>
+        </div>
+
+        <!-- Footer -->
+        <div class="border-t border-gray-200 px-6 py-4 flex items-center justify-between bg-gray-50">
+            <button
+                type="button"
+                onclick="this.closest('.modal-backdrop').remove()"
+                class="px-4 py-2 text-gray-600 hover:text-gray-800 transition-smooth"
+            >
+                Скасувати
+            </button>
+            <button
+                type="submit"
+                form="settings-form"
+                class="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-smooth flex items-center space-x-2"
+            >
+                <i data-lucide="save" class="w-4 h-4"></i>
+                <span>Зберегти</span>
+            </button>
+        </div>
+    </div>
+</div>
+
+<script>
+    // Initialize Lucide icons
+    lucide.createIcons();
+</script>

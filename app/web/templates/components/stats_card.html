@@ -1,0 +1,84 @@
+<!-- Stats Cards Component -->
+<div class="bg-dark-card rounded-lg border border-dark-border p-4">
+    <div class="flex items-center space-x-3">
+        <div class="p-2 bg-blue-900/50 rounded-lg">
+            <i data-lucide="film" class="w-5 h-5 text-blue-400"></i>
+        </div>
+        <div>
+            <div class="text-2xl font-bold text-white">{{ stats.total_projects }}</div>
+            <div class="text-xs text-gray-400">Всього проєктів</div>
+        </div>
+    </div>
+</div>
+
+<div class="bg-dark-card rounded-lg border border-dark-border p-4">
+    <div class="flex items-center space-x-3">
+        <div class="p-2 bg-cyan-900/50 rounded-lg">
+            <i data-lucide="calendar" class="w-5 h-5 text-cyan-400"></i>
+        </div>
+        <div>
+            <div class="text-2xl font-bold text-white">{{ stats.weekly_projects }}</div>
+            <div class="text-xs text-gray-400">За тиждень</div>
+        </div>
+    </div>
+</div>
+
+<div class="bg-dark-card rounded-lg border border-dark-border p-4">
+    <div class="flex items-center space-x-3">
+        <div class="p-2 bg-orange-900/50 rounded-lg">
+            <i data-lucide="loader" class="w-5 h-5 text-orange-400"></i>
+        </div>
+        <div>
+            <div class="text-2xl font-bold text-orange-400">{{ stats.active_projects }}</div>
+            <div class="text-xs text-gray-400">Активних</div>
+        </div>
+    </div>
+</div>
+
+<div class="bg-dark-card rounded-lg border border-dark-border p-4">
+    <div class="flex items-center space-x-3">
+        <div class="p-2 bg-green-900/50 rounded-lg">
+            <i data-lucide="check-circle" class="w-5 h-5 text-green-400"></i>
+        </div>
+        <div>
+            <div class="text-2xl font-bold text-green-400">{{ stats.ready_projects }}</div>
+            <div class="text-xs text-gray-400">Готових</div>
+        </div>
+    </div>
+</div>
+
+<div class="bg-dark-card rounded-lg border border-dark-border p-4">
+    <div class="flex items-center space-x-3">
+        <div class="p-2 bg-purple-900/50 rounded-lg">
+            <i data-lucide="percent" class="w-5 h-5 text-purple-400"></i>
+        </div>
+        <div>
+            <div class="text-2xl font-bold text-white">{{ stats.success_rate }}%</div>
+            <div class="text-xs text-gray-400">Успішність</div>
+        </div>
+    </div>
+</div>
+
+<div class="bg-dark-card rounded-lg border border-dark-border p-4">
+    <div class="flex items-center space-x-3">
+        <div class="p-2 bg-yellow-900/50 rounded-lg">
+            <i data-lucide="clock" class="w-5 h-5 text-yellow-400"></i>
+        </div>
+        <div>
+            <div class="text-2xl font-bold text-white">{{ stats.avg_time_minutes }} хв</div>
+            <div class="text-xs text-gray-400">Сер. час</div>
+        </div>
+    </div>
+</div>
+
+<div class="bg-dark-card rounded-lg border border-dark-border p-4">
+    <div class="flex items-center space-x-3">
+        <div class="p-2 bg-red-900/50 rounded-lg">
+            <i data-lucide="dollar-sign" class="w-5 h-5 text-red-400"></i>
+        </div>
+        <div>
+            <div class="text-2xl font-bold text-white">${{ stats.api_cost }}</div>
+            <div class="text-xs text-gray-400">API витрати</div>
+        </div>
+    </div>
+</div>

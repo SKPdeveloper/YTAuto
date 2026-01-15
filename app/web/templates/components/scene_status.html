@@ -1,0 +1,79 @@
+<!-- Scene Status Component (HTMX partial) -->
+<div class="bg-dark-card rounded-lg border border-dark-border p-4 flex items-center justify-between">
+    <div class="flex items-center space-x-4">
+        <!-- Status Icon -->
+        <div class="w-10 h-10 rounded-lg flex items-center justify-center
+            {% if scene.status == 'pending' %}bg-gray-800 text-gray-400
+            {% elif scene.status == 'generating_images' %}bg-blue-900/50 text-blue-400
+            {% elif scene.status == 'validating' %}bg-blue-900/50 text-blue-400
+            {% elif scene.status == 'generating_video' %}bg-blue-900/50 text-blue-400
+            {% elif scene.status == 'awaiting_approval' %}bg-orange-900/50 text-orange-400
+            {% elif scene.status == 'approved' %}bg-green-900/30 text-green-400
+            {% elif scene.status == 'upscaling' %}bg-purple-900/50 text-purple-400
+            {% elif scene.status == 'completed' %}bg-green-900/50 text-green-400
+            {% elif scene.status == 'failed' %}bg-red-900/50 text-red-400
+            {% endif %}">
+            {% if scene.status == 'pending' %}
+            <i data-lucide="clock" class="w-5 h-5"></i>
+            {% elif scene.status == 'generating_images' %}
+            <i data-lucide="image" class="w-5 h-5 animate-pulse"></i>
+            {% elif scene.status == 'validating' %}
+            <i data-lucide="search" class="w-5 h-5 animate-pulse"></i>
+            {% elif scene.status == 'generating_video' %}
+            <i data-lucide="film" class="w-5 h-5 animate-pulse"></i>
+            {% elif scene.status == 'awaiting_approval' %}
+            <i data-lucide="clock" class="w-5 h-5"></i>
+            {% elif scene.status == 'approved' %}
+            <i data-lucide="check" class="w-5 h-5"></i>
+            {% elif scene.status == 'upscaling' %}
+            <i data-lucide="arrow-up" class="w-5 h-5 animate-pulse"></i>
+            {% elif scene.status == 'completed' %}
+            <i data-lucide="check-circle" class="w-5 h-5"></i>
+            {% elif scene.status == 'failed' %}
+            <i data-lucide="x-circle" class="w-5 h-5"></i>
+            {% endif %}
+        </div>
+
+        <!-- Scene Info -->
+        <div>
+            <div class="font-medium text-white">Сцена {{ scene.scene_number }}</div>
+            <div class="text-sm text-gray-500 truncate max-w-[300px]">
+                {% if scene.prompt %}
+                {{ scene.prompt[:50] }}{% if scene.prompt|length > 50 %}...{% endif %}
+                {% else %}
+                Очікує генерації
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Status Badge -->
+    <div class="flex items-center space-x-3">
+        <span class="text-sm
+            {% if scene.status == 'pending' %}text-gray-400
+            {% elif scene.status in ['generating_images', 'validating', 'generating_video'] %}text-blue-400
+            {% elif scene.status == 'awaiting_approval' %}text-orange-400
+            {% elif scene.status == 'approved' %}text-green-300
+            {% elif scene.status == 'upscaling' %}text-purple-400
+            {% elif scene.status == 'completed' %}text-green-400
+            {% elif scene.status == 'failed' %}text-red-400
+            {% endif %}">
+            {% if scene.status == 'pending' %}Очікує
+            {% elif scene.status == 'generating_images' %}Генерація зображень...
+            {% elif scene.status == 'validating' %}Валідація...
+            {% elif scene.status == 'generating_video' %}Генерація відео...
+            {% elif scene.status == 'awaiting_approval' %}Очікує затвердження
+            {% elif scene.status == 'approved' %}Затверджено
+            {% elif scene.status == 'upscaling' %}Upscaling...
+            {% elif scene.status == 'completed' %}Завершено
+            {% elif scene.status == 'failed' %}Помилка
+            {% endif %}
+        </span>
+
+        {% if scene.status in ['generating_images', 'validating', 'generating_video', 'upscaling'] %}
+        <div class="w-4 h-4">
+            <i data-lucide="loader" class="w-4 h-4 animate-spin text-gray-400"></i>
+        </div>
+        {% endif %}
+    </div>
+</div>

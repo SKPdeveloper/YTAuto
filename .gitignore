@@ -1,0 +1,165 @@
+# ============================================================================
+# Edible House Automator - Git Ignore
+# ============================================================================
+
+# ============================================================================
+# SENSITIVE FILES (API KEYS)
+# ============================================================================
+config/.env
+.env
+
+# ============================================================================
+# PYTHON
+# ============================================================================
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Distribution / packaging
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# ============================================================================
+# PROJECT SPECIFIC
+# ============================================================================
+
+# Generated projects (відео, зображення)
+projects/
+!projects/.gitkeep
+
+# Logs
+logs/
+!logs/.gitkeep
+
+# Debug responses
+debug/
+
+# Database
+data/
+!data/.gitkeep
+
+# Topaz (якщо портативна версія)
+topaz/*
+!topaz/.gitkeep
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+
+# ============================================================================
+# IDE / EDITORS
+# ============================================================================
+
+# VSCode
+.vscode/
+*.code-workspace
+
+# PyCharm
+.idea/
+*.iml
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+
+# ============================================================================
+# OS
+# ============================================================================
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# MacOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Linux
+*~
+
+# ============================================================================
+# PORTABLE TOOLS
+# ============================================================================
+
+# Portable Python
+python/
+
+# Ngrok
+ngrok.exe
+ngrok.zip
+
+# Screenshots
+*.png
+
+# Temp files
+nul
+
+# ============================================================================
+# OTHER
+# ============================================================================
+
+# Node modules (якщо будуть використовуватись для frontend)
+node_modules/
+
+# Environment variables
+.env.local
+.env.development
+.env.test
+.env.production
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+
+# SQLite journal files
+*.db-journal
+*.db-wal
+*.db-shm

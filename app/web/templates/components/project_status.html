@@ -1,0 +1,64 @@
+<!-- Project Status Component (HTMX partial) -->
+<div class="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
+    <div class="flex items-center justify-between mb-4">
+        <div class="flex items-center space-x-3">
+            <div class="text-2xl font-bold text-gray-800">{{ project.progress }}%</div>
+            <div class="text-gray-500">завершено</div>
+        </div>
+        <div class="text-sm text-gray-500">
+            {% if project.status == 'generating' %}
+            Генерація контенту...
+            {% elif project.status == 'reviewing' %}
+            Очікує вашого затвердження в Telegram
+            {% elif project.status == 'upscaling' %}
+            Обробка в Topaz Video AI...
+            {% elif project.status == 'ready' %}
+            Проєкт завершено!
+            {% elif project.status == 'failed' %}
+            Помилка обробки
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Progress Bar -->
+    <div class="w-full h-4 bg-gray-100 rounded-full overflow-hidden">
+        <div class="h-full progress-bar rounded-full transition-all duration-500
+            {% if project.status == 'generating' %}bg-gradient-to-r from-blue-500 to-blue-400
+            {% elif project.status == 'reviewing' %}bg-gradient-to-r from-orange-500 to-orange-400
+            {% elif project.status == 'upscaling' %}bg-gradient-to-r from-purple-500 to-purple-400
+            {% elif project.status == 'ready' %}bg-gradient-to-r from-green-500 to-green-400
+            {% elif project.status == 'failed' %}bg-gradient-to-r from-red-500 to-red-400
+            {% else %}bg-gray-400
+            {% endif %}"
+            style="width: {{ project.progress }}%"
+        ></div>
+    </div>
+
+    <!-- Stage Indicators -->
+    <div class="flex items-center justify-between mt-4">
+        <div class="flex items-center space-x-2 {% if project.progress >= 0 %}text-blue-600{% else %}text-gray-400{% endif %}">
+            <i data-lucide="{% if project.progress >= 20 %}check-circle{% else %}circle{% endif %}" class="w-4 h-4"></i>
+            <span class="text-xs">Сценарій</span>
+        </div>
+        <div class="flex items-center space-x-2 {% if project.progress >= 20 %}text-blue-600{% else %}text-gray-400{% endif %}">
+            <i data-lucide="{% if project.progress >= 40 %}check-circle{% else %}circle{% endif %}" class="w-4 h-4"></i>
+            <span class="text-xs">Зображення</span>
+        </div>
+        <div class="flex items-center space-x-2 {% if project.progress >= 40 %}text-blue-600{% else %}text-gray-400{% endif %}">
+            <i data-lucide="{% if project.progress >= 60 %}check-circle{% else %}circle{% endif %}" class="w-4 h-4"></i>
+            <span class="text-xs">Відео</span>
+        </div>
+        <div class="flex items-center space-x-2 {% if project.progress >= 60 %}text-orange-500{% else %}text-gray-400{% endif %}">
+            <i data-lucide="{% if project.progress >= 80 %}check-circle{% else %}circle{% endif %}" class="w-4 h-4"></i>
+            <span class="text-xs">Перегляд</span>
+        </div>
+        <div class="flex items-center space-x-2 {% if project.progress >= 80 %}text-purple-600{% else %}text-gray-400{% endif %}">
+            <i data-lucide="{% if project.progress >= 100 %}check-circle{% else %}circle{% endif %}" class="w-4 h-4"></i>
+            <span class="text-xs">Upscale</span>
+        </div>
+        <div class="flex items-center space-x-2 {% if project.progress >= 100 %}text-green-600{% else %}text-gray-400{% endif %}">
+            <i data-lucide="{% if project.status == 'ready' %}check-circle{% else %}circle{% endif %}" class="w-4 h-4"></i>
+            <span class="text-xs">Готово</span>
+        </div>
+    </div>
+</div>

@@ -1,0 +1,199 @@
+{% extends "base.html" %}
+
+{% block title %}{{ channel.name }} - Edible House Automator{% endblock %}
+
+{% block content %}
+<div class="space-y-8">
+    <!-- Header -->
+    <div class="flex items-center justify-between">
+        <div class="flex items-center space-x-4">
+            <a href="/" class="text-gray-400 hover:text-gray-600 transition-smooth">
+                <i data-lucide="arrow-left" class="w-6 h-6"></i>
+            </a>
+            <div>
+                <h1 class="text-3xl font-bold text-gray-800 flex items-center space-x-3">
+                    <span>{{ channel.name }}</span>
+                    {% if stats.active_projects > 0 %}
+                    <span class="w-3 h-3 bg-green-500 rounded-full pulse-soft"></span>
+                    {% endif %}
+                </h1>
+                <p class="text-gray-500 mt-1 font-mono text-sm">{{ channel.folder_path }}</p>
+            </div>
+        </div>
+        <!-- New Video Dropdown -->
+        <div class="relative" x-data="{ open: false }">
+            <button
+                @click="open = !open"
+                class="flex items-center space-x-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-smooth"
+            >
+                <i data-lucide="video" class="w-5 h-5"></i>
+                <span>Нове відео</span>
+                <i data-lucide="chevron-down" class="w-4 h-4"></i>
+            </button>
+            <div
+                x-show="open"
+                @click.away="open = false"
+                x-transition
+                class="absolute right-0 mt-2 w-64 bg-white rounded-lg shadow-lg border border-gray-200 py-2 z-50"
+            >
+                <a
+                    href="/channel/{{ channel.id }}/new?mode=auto"
+                    class="flex items-center space-x-3 px-4 py-3 hover:bg-gray-50 transition-smooth"
+                >
+                    <div class="p-2 bg-purple-100 rounded-lg">
+                        <i data-lucide="sparkles" class="w-5 h-5 text-purple-600"></i>
+                    </div>
+                    <div>
+                        <div class="font-medium text-gray-800">Автоматично</div>
+                        <div class="text-xs text-gray-500">AI вигадає тему сам</div>
+                    </div>
+                </a>
+                <a
+                    href="/channel/{{ channel.id }}/new?mode=idea"
+                    class="flex items-center space-x-3 px-4 py-3 hover:bg-gray-50 transition-smooth"
+                >
+                    <div class="p-2 bg-blue-100 rounded-lg">
+                        <i data-lucide="lightbulb" class="w-5 h-5 text-blue-600"></i>
+                    </div>
+                    <div>
+                        <div class="font-medium text-gray-800">З ідеєю</div>
+                        <div class="text-xs text-gray-500">Надати підказку для AI</div>
+                    </div>
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <!-- Stats Grid -->
+    <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4">
+        <div class="bg-white rounded-lg border border-gray-200 p-4 shadow-sm">
+            <div class="flex items-center space-x-3">
+                <div class="p-2 bg-blue-100 rounded-lg">
+                    <i data-lucide="film" class="w-5 h-5 text-blue-600"></i>
+                </div>
+                <div>
+                    <div class="text-2xl font-bold text-gray-800">{{ stats.total_projects }}</div>
+                    <div class="text-xs text-gray-500">Всього</div>
+                </div>
+            </div>
+        </div>
+        <div class="bg-white rounded-lg border border-gray-200 p-4 shadow-sm">
+            <div class="flex items-center space-x-3">
+                <div class="p-2 bg-cyan-100 rounded-lg">
+                    <i data-lucide="calendar" class="w-5 h-5 text-cyan-600"></i>
+                </div>
+                <div>
+                    <div class="text-2xl font-bold text-gray-800">{{ stats.weekly_projects }}</div>
+                    <div class="text-xs text-gray-500">За тиждень</div>
+                </div>
+            </div>
+        </div>
+        <div class="bg-white rounded-lg border border-gray-200 p-4 shadow-sm">
+            <div class="flex items-center space-x-3">
+                <div class="p-2 bg-orange-100 rounded-lg">
+                    <i data-lucide="loader" class="w-5 h-5 text-orange-600"></i>
+                </div>
+                <div>
+                    <div class="text-2xl font-bold text-orange-500">{{ stats.active_projects }}</div>
+                    <div class="text-xs text-gray-500">Активних</div>
+                </div>
+            </div>
+        </div>
+        <div class="bg-white rounded-lg border border-gray-200 p-4 shadow-sm">
+            <div class="flex items-center space-x-3">
+                <div class="p-2 bg-green-100 rounded-lg">
+                    <i data-lucide="check-circle" class="w-5 h-5 text-green-600"></i>
+                </div>
+                <div>
+                    <div class="text-2xl font-bold text-green-500">{{ stats.ready_projects }}</div>
+                    <div class="text-xs text-gray-500">Готових</div>
+                </div>
+            </div>
+        </div>
+        <div class="bg-white rounded-lg border border-gray-200 p-4 shadow-sm">
+            <div class="flex items-center space-x-3">
+                <div class="p-2 bg-purple-100 rounded-lg">
+                    <i data-lucide="percent" class="w-5 h-5 text-purple-600"></i>
+                </div>
+                <div>
+                    <div class="text-2xl font-bold text-gray-800">{{ stats.success_rate }}%</div>
+                    <div class="text-xs text-gray-500">Успішність</div>
+                </div>
+            </div>
+        </div>
+        <div class="bg-white rounded-lg border border-gray-200 p-4 shadow-sm">
+            <div class="flex items-center space-x-3">
+                <div class="p-2 bg-yellow-100 rounded-lg">
+                    <i data-lucide="clock" class="w-5 h-5 text-yellow-600"></i>
+                </div>
+                <div>
+                    <div class="text-2xl font-bold text-gray-800">{{ stats.avg_time_minutes }} хв</div>
+                    <div class="text-xs text-gray-500">Сер. час</div>
+                </div>
+            </div>
+        </div>
+        <div class="bg-white rounded-lg border border-gray-200 p-4 shadow-sm">
+            <div class="flex items-center space-x-3">
+                <div class="p-2 bg-red-100 rounded-lg">
+                    <i data-lucide="dollar-sign" class="w-5 h-5 text-red-600"></i>
+                </div>
+                <div>
+                    <div class="text-2xl font-bold text-gray-800">${{ stats.api_cost }}</div>
+                    <div class="text-xs text-gray-500">API витрати</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Projects Sections -->
+    <div class="space-y-8">
+        <!-- Active Projects -->
+        {% set active_projects = projects | selectattr('status', 'in', ['generating', 'reviewing', 'upscaling']) | list %}
+        {% if active_projects %}
+        <div>
+            <h2 class="text-xl font-semibold text-gray-800 mb-4 flex items-center space-x-2">
+                <i data-lucide="loader" class="w-5 h-5 text-orange-500 animate-spin"></i>
+                <span>В процесі ({{ active_projects|length }})</span>
+            </h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {% for project in active_projects %}
+                {% include "components/project_card.html" %}
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Ready Projects -->
+        {% set ready_projects = projects | selectattr('status', 'equalto', 'ready') | list %}
+        {% if ready_projects %}
+        <div>
+            <h2 class="text-xl font-semibold text-gray-800 mb-4 flex items-center space-x-2">
+                <i data-lucide="check-circle" class="w-5 h-5 text-green-500"></i>
+                <span>Готові ({{ ready_projects|length }})</span>
+            </h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {% for project in ready_projects %}
+                {% include "components/project_card.html" %}
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Empty State -->
+        {% if not active_projects and not ready_projects %}
+        <div class="text-center py-16 bg-white rounded-xl border border-gray-200 shadow-sm">
+            <div class="text-6xl mb-4">🎬</div>
+            <h3 class="text-xl font-semibold text-gray-800 mb-2">Немає проєктів</h3>
+            <p class="text-gray-500 mb-6">Створіть перший проєкт для цього каналу</p>
+            <a
+                href="/channel/{{ channel.id }}/new"
+                class="inline-flex items-center space-x-2 bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg transition-smooth"
+            >
+                <i data-lucide="plus" class="w-5 h-5"></i>
+                <span>Створити проєкт</span>
+            </a>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

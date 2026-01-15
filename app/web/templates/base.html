@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Edible House Automator{% endblock %}</title>
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        light: {
+                            bg: '#f8fafc',
+                            card: '#ffffff',
+                            border: '#e2e8f0',
+                            hover: '#f1f5f9'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- HTMX -->
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+
+    <!-- Alpine.js -->
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <!-- Custom Styles -->
+    <style>
+        body {
+            background-color: #f8fafc;
+            color: #1e293b;
+        }
+
+        /* Scrollbar styling */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #f1f5f9;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8;
+        }
+
+        /* Loading indicator */
+        .htmx-request .htmx-indicator {
+            display: inline-block;
+        }
+        .htmx-indicator {
+            display: none;
+        }
+
+        /* Progress bar animation */
+        .progress-bar {
+            transition: width 0.5s ease-in-out;
+        }
+
+        /* Card hover effect */
+        .card-hover:hover {
+            background-color: #f1f5f9;
+            border-color: #cbd5e1;
+        }
+
+        /* Pulse animation for active items */
+        @keyframes pulse-soft {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        .pulse-soft {
+            animation: pulse-soft 2s ease-in-out infinite;
+        }
+
+        /* Modal backdrop */
+        .modal-backdrop {
+            background-color: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(4px);
+        }
+
+        /* Smooth transitions */
+        .transition-smooth {
+            transition: all 0.2s ease-in-out;
+        }
+    </style>
+
+    {% block head %}{% endblock %}
+</head>
+<body class="min-h-screen" hx-boost="true">
+    <!-- Navigation -->
+    <nav class="border-b border-light-border bg-white sticky top-0 z-50 shadow-sm">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex items-center justify-between h-16">
+                <!-- Logo -->
+                <a href="/" class="flex items-center space-x-3">
+                    <span class="text-2xl">🎬</span>
+                    <span class="font-bold text-xl text-gray-800">Edible House</span>
+                </a>
+
+                <!-- Nav Links -->
+                <div class="flex items-center space-x-6">
+                    <a href="/" class="text-gray-600 hover:text-gray-900 transition-smooth flex items-center space-x-2">
+                        <i data-lucide="home" class="w-4 h-4"></i>
+                        <span>Канали</span>
+                    </a>
+
+                    <!-- WebSocket Status -->
+                    <div class="flex items-center space-x-2 text-gray-500 border-l border-gray-200 pl-6">
+                        <span class="text-xs text-gray-400">Live:</span>
+                        <span id="ws-status" class="w-2 h-2 rounded-full bg-red-500" title="WebSocket Disconnected"></span>
+                    </div>
+
+                    <!-- Processing Engine Status -->
+                    <div class="flex items-center space-x-2 text-gray-500">
+                        <span class="text-xs text-gray-400">Engine:</span>
+                        <span id="processing-status" hx-get="/api/processing/status" hx-trigger="load, every 30s" hx-swap="innerHTML">
+                            <i data-lucide="loader" class="w-4 h-4 animate-spin"></i>
+                        </span>
+                    </div>
+
+                    <!-- Topaz/Queue Status -->
+                    <div class="flex items-center space-x-2 text-gray-500">
+                        <i data-lucide="layers" class="w-4 h-4"></i>
+                        <span id="topaz-status" hx-get="/api/topaz/status" hx-trigger="every 10s" hx-swap="innerHTML">
+                            Queue: --
+                        </span>
+                    </div>
+
+                    <!-- Settings Button -->
+                    <button
+                        hx-get="/api/modal/settings"
+                        hx-target="#modal-container"
+                        hx-swap="innerHTML"
+                        class="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-smooth"
+                        title="Налаштування"
+                    >
+                        <i data-lucide="settings" class="w-5 h-5"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Flash Messages -->
+    {% if flash_messages %}
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-4">
+        {% for message in flash_messages %}
+        <div class="bg-{{ message.type }}-900/50 border border-{{ message.type }}-700 text-{{ message.type }}-200 px-4 py-3 rounded-lg mb-2 flex items-center justify-between">
+            <span>{{ message.text }}</span>
+            <button onclick="this.parentElement.remove()" class="text-{{ message.type }}-400 hover:text-{{ message.type }}-200">
+                <i data-lucide="x" class="w-4 h-4"></i>
+            </button>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    <!-- Main Content -->
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {% block content %}{% endblock %}
+    </main>
+
+    <!-- Modal Container -->
+    <div id="modal-container"></div>
+
+    <!-- Toast Container -->
+    <div id="toast-container" class="fixed bottom-4 right-4 z-50 space-y-2"></div>
+
+    <!-- WebSocket & Dashboard Scripts -->
+    <script src="/static/js/websocket.js"></script>
+    <script src="/static/js/dashboard.js"></script>
+    <script src="/static/js/push-notifications.js"></script>
+
+    <!-- Initialize Lucide Icons -->
+    <script>
+        // Initialize icons on page load
+        lucide.createIcons();
+
+        // Re-initialize icons after HTMX swaps
+        document.body.addEventListener('htmx:afterSwap', function(event) {
+            lucide.createIcons();
+        });
+
+        // Close modal when clicking backdrop
+        document.addEventListener('click', function(e) {
+            if (e.target.classList.contains('modal-backdrop')) {
+                e.target.remove();
+            }
+        });
+
+        // Close modal on Escape key
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                const modal = document.querySelector('.modal-backdrop');
+                if (modal) modal.remove();
+            }
+        });
+
+        // Toast notification helper
+        function showToast(message, type = 'info') {
+            const toast = document.createElement('div');
+            const colors = {
+                'info': 'bg-blue-100 border-blue-300 text-blue-800',
+                'success': 'bg-green-100 border-green-300 text-green-800',
+                'warning': 'bg-yellow-100 border-yellow-300 text-yellow-800',
+                'error': 'bg-red-100 border-red-300 text-red-800'
+            };
+            toast.className = `${colors[type]} border px-4 py-3 rounded-lg shadow-lg transition-all duration-300 transform translate-x-0`;
+            toast.innerHTML = message;
+            document.getElementById('toast-container').appendChild(toast);
+
+            setTimeout(() => {
+                toast.classList.add('translate-x-full', 'opacity-0');
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+    </script>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>

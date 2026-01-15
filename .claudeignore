@@ -1,0 +1,94 @@
+# ============================================================================
+# CLAUDEIGNORE - Files and folders excluded from Claude Code analysis
+# ============================================================================
+
+# =========================
+# SYSTEM PROMPTS (PROTECTED)
+# =========================
+# These files contain carefully crafted prompts - DO NOT ANALYZE OR MODIFY
+config/GEN1.txt
+config/GEN2.txt
+config/VAL_GEN1.txt
+config/VAL_GEN2.txt
+config/VAL_IMG.txt
+config/GLAZE_CITY_GEN*.txt
+
+# =========================
+# GENERATED DATA
+# =========================
+# Project outputs - large files, not source code
+projects/
+data/
+logs/
+
+# =========================
+# PYTHON CACHE
+# =========================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.py[cod]
+
+# =========================
+# PORTABLE PYTHON
+# =========================
+# Embedded Python distribution - not project code
+python/
+
+# =========================
+# EXTERNAL TOOLS
+# =========================
+ngrok.exe
+ngrok.zip
+*.exe
+*.dll
+
+# =========================
+# ENVIRONMENT & SECRETS
+# =========================
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# =========================
+# IDE & EDITORS
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# =========================
+# DEBUG & TEMP
+# =========================
+debug/
+*.log
+*.tmp
+*.temp
+screenshot*.png
+nul
+
+# =========================
+# DOCUMENTATION (OPTIONAL)
+# =========================
+# Can be included if needed for context
+docs/
+
+# =========================
+# WEB STATIC ASSETS
+# =========================
+# Large static files
+app/web/static/icons/
+*.ico
+*.svg
+
+# =========================
+# DIST-INFO (pip packages)
+# =========================
+*.dist-info/
+*.egg-info/

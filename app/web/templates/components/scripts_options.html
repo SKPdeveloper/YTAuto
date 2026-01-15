@@ -1,0 +1,51 @@
+<!-- Scripts Options Component (HTMX partial for script generation) -->
+{% if error %}
+<div class="bg-red-900/30 border border-red-700 rounded-lg p-4 text-red-300">
+    <div class="flex items-center space-x-2 mb-2">
+        <i data-lucide="alert-circle" class="w-5 h-5"></i>
+        <span class="font-medium">Помилка генерації</span>
+    </div>
+    <p class="text-sm">{{ error }}</p>
+</div>
+{% else %}
+<div class="space-y-4">
+    <p class="text-gray-400 text-sm">Виберіть один із згенерованих сценаріїв:</p>
+
+    {% for i, script in enumerate(scripts) %}
+    <label class="block bg-dark-bg rounded-lg border border-dark-border p-4 cursor-pointer hover:border-blue-500 transition-smooth script-option">
+        <div class="flex items-start space-x-3">
+            <input
+                type="radio"
+                name="script_option"
+                value="{{ i }}"
+                class="mt-1"
+                onchange="document.getElementById('manual-script').value = this.closest('.script-option').querySelector('.script-content').textContent.trim();"
+            >
+            <div class="flex-1">
+                <div class="font-medium text-white mb-2">Варіант {{ i + 1 }}</div>
+                <div class="text-gray-300 text-sm whitespace-pre-wrap script-content">{{ script }}</div>
+            </div>
+        </div>
+    </label>
+    {% endfor %}
+
+    <div class="flex items-center justify-between pt-4">
+        <button
+            type="button"
+            hx-post="/api/channel/{{ channel_id }}/generate-scripts"
+            hx-target="#scripts-container"
+            hx-swap="innerHTML"
+            hx-include="[name='format'], [name='duration_seconds'], [name='engine'], [name='topic']"
+            class="flex items-center space-x-2 text-blue-400 hover:text-blue-300 transition-smooth"
+        >
+            <i data-lucide="refresh-cw" class="w-4 h-4"></i>
+            <span>Перегенерувати</span>
+        </button>
+        <span class="text-sm text-gray-500">Або введіть свій сценарій нижче</span>
+    </div>
+</div>
+{% endif %}
+
+<script>
+    lucide.createIcons();
+</script>

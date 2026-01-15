@@ -1,0 +1,400 @@
+{% extends "base.html" %}
+
+{% block title %}Нове відео - {{ channel.name }} - Edible House Automator{% endblock %}
+
+{% block content %}
+<div class="max-w-3xl mx-auto space-y-8">
+    <!-- Header -->
+    <div class="flex items-center space-x-4">
+        <a href="/channel/{{ channel.id }}" class="text-gray-400 hover:text-gray-600 transition-smooth">
+            <i data-lucide="arrow-left" class="w-6 h-6"></i>
+        </a>
+        <div>
+            <h1 class="text-3xl font-bold text-gray-800">
+                {% if mode == 'auto' %}
+                    <i data-lucide="sparkles" class="w-8 h-8 inline text-purple-500"></i>
+                    Автоматичне відео
+                {% else %}
+                    <i data-lucide="lightbulb" class="w-8 h-8 inline text-blue-500"></i>
+                    Відео з ідеєю
+                {% endif %}
+            </h1>
+            <p class="text-gray-500 mt-1">Канал: {{ channel.name }}</p>
+        </div>
+    </div>
+
+    <!-- Mode indicator -->
+    <input type="hidden" name="generation_mode" value="{{ mode or 'auto' }}">
+
+    <!-- Wizard Form -->
+    <form
+        id="project-form"
+        hx-post="/api/channel/{{ channel.id }}/project/create"
+        hx-target="body"
+        class="space-y-8"
+    >
+        <!-- Hidden mode field -->
+        <input type="hidden" name="generation_mode" value="{{ mode or 'auto' }}">
+
+        <!-- Step 1: Generation Settings -->
+        <div class="bg-white rounded-xl border border-gray-200 p-6 space-y-6 shadow-sm" x-data="generationSettings()">
+            <div class="flex items-center space-x-3 mb-4">
+                <div class="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center text-white font-bold">1</div>
+                <h2 class="text-xl font-semibold text-gray-800">Налаштування генерації</h2>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <!-- Format / Ratio -->
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">
+                        <i data-lucide="ratio" class="w-4 h-4 inline mr-1"></i>
+                        Формат (Ratio)
+                    </label>
+                    <div class="flex gap-3">
+                        <label class="flex-1 cursor-pointer">
+                            <input type="radio" name="format" value="9:16" class="peer hidden" checked>
+                            <div class="peer-checked:bg-blue-600 peer-checked:text-white peer-checked:border-blue-600 bg-gray-50 border border-gray-300 rounded-lg px-4 py-3 text-center text-gray-800 hover:bg-gray-100 transition-smooth">
+                                <div class="font-semibold">9:16</div>
+                                <div class="text-xs opacity-75">Shorts/Reels</div>
+                            </div>
+                        </label>
+                        <label class="flex-1 cursor-pointer">
+                            <input type="radio" name="format" value="16:9" class="peer hidden">
+                            <div class="peer-checked:bg-blue-600 peer-checked:text-white peer-checked:border-blue-600 bg-gray-50 border border-gray-300 rounded-lg px-4 py-3 text-center text-gray-800 hover:bg-gray-100 transition-smooth">
+                                <div class="font-semibold">16:9</div>
+                                <div class="text-xs opacity-75">YouTube</div>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Image Model -->
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">
+                        <i data-lucide="image" class="w-4 h-4 inline mr-1"></i>
+                        Модель зображення
+                    </label>
+                    <div class="relative">
+                        <select
+                            name="image_model"
+                            class="w-full bg-gray-50 border border-gray-300 rounded-lg px-4 py-3 text-gray-800 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-smooth appearance-none"
+                        >
+                            <option value="nano_banana_pro" selected>Nano Banana Pro</option>
+                        </select>
+                        <i data-lucide="chevron-down" class="w-4 h-4 absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"></i>
+                    </div>
+                    <p class="text-xs text-gray-500 mt-1">2K, Unlimited mode</p>
+                </div>
+            </div>
+
+            <!-- Animation Model & Duration -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 pt-4 border-t border-gray-100">
+                <!-- Animation Model -->
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">
+                        <i data-lucide="video" class="w-4 h-4 inline mr-1"></i>
+                        Модель анімації
+                    </label>
+                    <div class="space-y-2">
+                        <!-- Kling 2.6 -->
+                        <label class="flex items-center justify-between p-3 bg-gray-50 border border-gray-300 rounded-lg cursor-pointer hover:bg-gray-100 transition-smooth" :class="{'bg-blue-50 border-blue-500': animationModel === 'kling_2.6'}">
+                            <div class="flex items-center space-x-3">
+                                <input type="radio" name="animation_model" value="kling_2.6" x-model="animationModel" class="w-4 h-4 text-blue-600">
+                                <div>
+                                    <div class="font-medium text-gray-800">Kling 2.6</div>
+                                    <div class="text-xs text-gray-500">General mode, 1080p</div>
+                                </div>
+                            </div>
+                            <button type="button" @click.prevent="setDefaultModel('kling_2.6')" class="p-1 rounded hover:bg-gray-200 transition-smooth" title="Встановити за замовчуванням">
+                                <i data-lucide="star" class="w-4 h-4" :class="defaultModel === 'kling_2.6' ? 'fill-yellow-400 text-yellow-400' : 'text-gray-400'"></i>
+                            </button>
+                        </label>
+                        <!-- Seedance 1.5 Pro -->
+                        <label class="flex items-center justify-between p-3 bg-gray-50 border border-gray-300 rounded-lg cursor-pointer hover:bg-gray-100 transition-smooth" :class="{'bg-blue-50 border-blue-500': animationModel === 'seedance_1.5_pro'}">
+                            <div class="flex items-center space-x-3">
+                                <input type="radio" name="animation_model" value="seedance_1.5_pro" x-model="animationModel" class="w-4 h-4 text-blue-600">
+                                <div>
+                                    <div class="font-medium text-gray-800">Seedance 1.5 Pro</div>
+                                    <div class="text-xs text-gray-500">General, Audio, Unlimited</div>
+                                </div>
+                            </div>
+                            <button type="button" @click.prevent="setDefaultModel('seedance_1.5_pro')" class="p-1 rounded hover:bg-gray-200 transition-smooth" title="Встановити за замовчуванням">
+                                <i data-lucide="star" class="w-4 h-4" :class="defaultModel === 'seedance_1.5_pro' ? 'fill-yellow-400 text-yellow-400' : 'text-gray-400'"></i>
+                            </button>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Duration (dynamic based on model) -->
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">
+                        <i data-lucide="clock" class="w-4 h-4 inline mr-1"></i>
+                        Тривалість анімації
+                    </label>
+                    <div class="space-y-2">
+                        <!-- Kling durations -->
+                        <template x-if="animationModel === 'kling_2.6'">
+                            <div class="flex gap-3">
+                                <label class="flex-1 cursor-pointer">
+                                    <input type="radio" name="duration_seconds" value="5" class="peer hidden">
+                                    <div class="peer-checked:bg-blue-600 peer-checked:text-white peer-checked:border-blue-600 bg-gray-50 border border-gray-300 rounded-lg px-4 py-3 text-center text-gray-800 hover:bg-gray-100 transition-smooth">
+                                        <div class="font-semibold">5 сек</div>
+                                        <div class="text-xs opacity-75">Швидко</div>
+                                    </div>
+                                </label>
+                                <label class="flex-1 cursor-pointer">
+                                    <input type="radio" name="duration_seconds" value="10" class="peer hidden" checked>
+                                    <div class="peer-checked:bg-blue-600 peer-checked:text-white peer-checked:border-blue-600 bg-gray-50 border border-gray-300 rounded-lg px-4 py-3 text-center text-gray-800 hover:bg-gray-100 transition-smooth">
+                                        <div class="font-semibold">10 сек</div>
+                                        <div class="text-xs opacity-75">Стандарт</div>
+                                    </div>
+                                </label>
+                            </div>
+                        </template>
+                        <!-- Seedance durations -->
+                        <template x-if="animationModel === 'seedance_1.5_pro'">
+                            <div class="flex gap-3">
+                                <label class="flex-1 cursor-pointer">
+                                    <input type="radio" name="duration_seconds" value="8" class="peer hidden">
+                                    <div class="peer-checked:bg-blue-600 peer-checked:text-white peer-checked:border-blue-600 bg-gray-50 border border-gray-300 rounded-lg px-4 py-3 text-center text-gray-800 hover:bg-gray-100 transition-smooth">
+                                        <div class="font-semibold">8 сек</div>
+                                        <div class="text-xs opacity-75">Швидко</div>
+                                    </div>
+                                </label>
+                                <label class="flex-1 cursor-pointer">
+                                    <input type="radio" name="duration_seconds" value="12" class="peer hidden" checked>
+                                    <div class="peer-checked:bg-blue-600 peer-checked:text-white peer-checked:border-blue-600 bg-gray-50 border border-gray-300 rounded-lg px-4 py-3 text-center text-gray-800 hover:bg-gray-100 transition-smooth">
+                                        <div class="font-semibold">12 сек</div>
+                                        <div class="text-xs opacity-75">Стандарт</div>
+                                    </div>
+                                </label>
+                            </div>
+                        </template>
+                    </div>
+                    <p class="text-xs text-gray-500 mt-2">
+                        <button type="button" @click="setDefaultDuration()" class="text-blue-600 hover:text-blue-700 flex items-center space-x-1">
+                            <i data-lucide="star" class="w-3 h-3"></i>
+                            <span>Зберегти як default</span>
+                        </button>
+                    </p>
+                </div>
+            </div>
+
+            <!-- Hidden field for engine compatibility -->
+            <input type="hidden" name="engine" value="higgsfield">
+        </div>
+
+        <!-- Step 2: Topic / Idea -->
+        <div class="bg-white rounded-xl border border-gray-200 p-6 space-y-6 shadow-sm">
+            <div class="flex items-center space-x-3 mb-4">
+                <div class="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center text-white font-bold">2</div>
+                <h2 class="text-xl font-semibold text-gray-800">
+                    {% if mode == 'auto' %}
+                        Генерація теми
+                    {% else %}
+                        Ваша ідея
+                    {% endif %}
+                </h2>
+            </div>
+
+            {% if mode == 'auto' %}
+            <!-- AUTO MODE: AI generates topic -->
+            <div class="bg-purple-50 border border-purple-200 rounded-lg p-4">
+                <div class="flex items-center space-x-3 mb-3">
+                    <i data-lucide="sparkles" class="w-6 h-6 text-purple-600"></i>
+                    <span class="font-medium text-purple-800">AI сам вигадає тему</span>
+                </div>
+                <p class="text-purple-700 text-sm">
+                    GEN1 автоматично створить унікальну та цікаву тему для viral короткого відео.
+                    Тема буде в стилі "Edible House" - фантастичні їстівні будинки та конструкції.
+                </p>
+                <input type="hidden" name="topic" value="__AUTO_GENERATE__">
+            </div>
+            {% else %}
+            <!-- IDEA MODE: User provides hint -->
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-2">
+                    Опишіть вашу ідею або підказку для AI
+                </label>
+                <textarea
+                    name="topic"
+                    id="topic-input"
+                    required
+                    rows="3"
+                    placeholder="Наприклад: Японський стиль, суші, бамбук, сакура..."
+                    class="w-full bg-gray-50 border border-gray-300 rounded-lg px-4 py-3 text-gray-800 placeholder-gray-400 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-smooth resize-none"
+                ></textarea>
+                <p class="text-xs text-gray-500 mt-2">
+                    <i data-lucide="info" class="w-3 h-3 inline"></i>
+                    AI використає вашу ідею як натхнення для створення унікальної теми
+                </p>
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- Step 3: Script Generation -->
+        <div class="bg-white rounded-xl border border-gray-200 p-6 space-y-6 shadow-sm">
+            <div class="flex items-center justify-between mb-4">
+                <div class="flex items-center space-x-3">
+                    <div class="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center text-white font-bold">3</div>
+                    <h2 class="text-xl font-semibold text-gray-800">Сценарій</h2>
+                </div>
+                <button
+                    type="button"
+                    hx-post="/api/channel/{{ channel.id }}/generate-scripts"
+                    hx-target="#scripts-container"
+                    hx-swap="innerHTML"
+                    hx-include="[name='format'], [name='duration_seconds'], [name='engine'], [name='topic']"
+                    class="flex items-center space-x-2 bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg transition-smooth"
+                >
+                    <i data-lucide="sparkles" class="w-4 h-4"></i>
+                    <span>Згенерувати 3 сценарії</span>
+                    <span class="htmx-indicator">
+                        <i data-lucide="loader" class="w-4 h-4 animate-spin"></i>
+                    </span>
+                </button>
+            </div>
+
+            <!-- Scripts Container -->
+            <div id="scripts-container" class="space-y-4">
+                <div class="text-center py-8 text-gray-400">
+                    <i data-lucide="file-text" class="w-12 h-12 mx-auto mb-3 opacity-50"></i>
+                    <p>Натисніть "Згенерувати 3 сценарії", щоб отримати варіанти</p>
+                </div>
+            </div>
+
+            <!-- Manual Script Input -->
+            <div class="border-t border-gray-200 pt-6">
+                <label class="block text-sm font-medium text-gray-700 mb-2">
+                    Або введіть свій сценарій вручну
+                </label>
+                <textarea
+                    name="selected_script"
+                    id="manual-script"
+                    rows="6"
+                    placeholder="Введіть детальний опис кожної сцени..."
+                    class="w-full bg-gray-50 border border-gray-300 rounded-lg px-4 py-3 text-gray-800 placeholder-gray-400 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-smooth resize-none font-mono text-sm"
+                ></textarea>
+            </div>
+        </div>
+
+        <!-- Step 4: Launch -->
+        <div class="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
+            <div class="flex items-center space-x-3 mb-6">
+                <div class="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center text-white font-bold">4</div>
+                <h2 class="text-xl font-semibold text-gray-800">Запуск</h2>
+            </div>
+
+            <!-- Estimated Time -->
+            <div class="bg-gray-50 rounded-lg p-4 mb-6 flex items-center justify-between border border-gray-200">
+                <div class="flex items-center space-x-3">
+                    <i data-lucide="clock" class="w-5 h-5 text-yellow-500"></i>
+                    <span class="text-gray-700">Орієнтовний час генерації:</span>
+                </div>
+                <span id="estimated-time" class="text-xl font-bold text-gray-800">~15 хв</span>
+            </div>
+
+            <!-- Project Name (optional) -->
+            <div class="mb-6">
+                <label class="block text-sm font-medium text-gray-700 mb-2">
+                    Назва проєкту (опціонально)
+                </label>
+                <input
+                    type="text"
+                    name="project_name"
+                    placeholder="Автоматично: Project_XXX - [Topic]"
+                    class="w-full bg-gray-50 border border-gray-300 rounded-lg px-4 py-3 text-gray-800 placeholder-gray-400 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-smooth"
+                >
+            </div>
+
+            <!-- Actions -->
+            <div class="flex items-center justify-between pt-4 border-t border-gray-200">
+                <a
+                    href="/channel/{{ channel.id }}"
+                    class="px-4 py-2 text-gray-500 hover:text-gray-700 transition-smooth flex items-center space-x-2"
+                >
+                    <i data-lucide="x" class="w-4 h-4"></i>
+                    <span>Скасувати</span>
+                </a>
+                <button
+                    type="submit"
+                    class="flex items-center space-x-2 bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-lg transition-smooth text-lg font-semibold"
+                >
+                    <i data-lucide="rocket" class="w-5 h-5"></i>
+                    <span>ЗАПУСТИТИ</span>
+                    <span class="htmx-indicator">
+                        <i data-lucide="loader" class="w-5 h-5 animate-spin"></i>
+                    </span>
+                </button>
+            </div>
+        </div>
+    </form>
+</div>
+
+<script>
+    // Alpine.js component for generation settings
+    function generationSettings() {
+        // Load defaults from localStorage
+        const savedModel = localStorage.getItem('defaultAnimationModel') || 'kling_2.6';
+        const savedDurations = JSON.parse(localStorage.getItem('defaultDurations') || '{}');
+
+        return {
+            animationModel: savedModel,
+            defaultModel: savedModel,
+            defaultDurations: savedDurations,
+
+            setDefaultModel(model) {
+                this.defaultModel = model;
+                localStorage.setItem('defaultAnimationModel', model);
+                showToast('Модель за замовчуванням збережено', 'success');
+                // Re-render icons
+                this.$nextTick(() => lucide.createIcons());
+            },
+
+            setDefaultDuration() {
+                const selectedDuration = document.querySelector('[name="duration_seconds"]:checked');
+                if (selectedDuration) {
+                    this.defaultDurations[this.animationModel] = selectedDuration.value;
+                    localStorage.setItem('defaultDurations', JSON.stringify(this.defaultDurations));
+                    showToast(`Тривалість ${selectedDuration.value}с збережено для ${this.animationModel}`, 'success');
+                }
+            },
+
+            init() {
+                // Apply saved default duration when model changes
+                this.$watch('animationModel', (model) => {
+                    this.$nextTick(() => {
+                        const savedDuration = this.defaultDurations[model];
+                        if (savedDuration) {
+                            const radio = document.querySelector(`[name="duration_seconds"][value="${savedDuration}"]`);
+                            if (radio) radio.checked = true;
+                        }
+                        lucide.createIcons();
+                        this.updateEstimatedTime();
+                    });
+                });
+            },
+
+            updateEstimatedTime() {
+                const duration = document.querySelector('[name="duration_seconds"]:checked');
+                if (duration) {
+                    const sec = parseInt(duration.value);
+                    const scenes = Math.ceil(sec / 5);
+                    const estimatedMinutes = Math.max(10, scenes * 4);
+                    document.getElementById('estimated-time').textContent = `~${estimatedMinutes} хв`;
+                }
+            }
+        }
+    }
+
+    // Update estimated time when duration changes
+    document.addEventListener('change', function(e) {
+        if (e.target.name === 'duration_seconds') {
+            const duration = parseInt(e.target.value);
+            const scenes = Math.ceil(duration / 5);
+            const estimatedMinutes = Math.max(10, scenes * 4);
+            document.getElementById('estimated-time').textContent = `~${estimatedMinutes} хв`;
+        }
+    });
+</script>
+{% endblock %}

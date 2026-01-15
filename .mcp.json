@@ -1,0 +1,26 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "@anthropic-ai/mcp-server-filesystem",
+        "D:/YTAuto/YTAuto/projects",
+        "D:/YTAuto/YTAuto/config",
+        "D:/YTAuto/YTAuto/data",
+        "D:/YTAuto/YTAuto/logs"
+      ],
+      "description": "Access to project files, configs, data and logs"
+    },
+    "fetch": {
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "@anthropic-ai/mcp-server-fetch"],
+      "description": "HTTP requests to external APIs (Higgsfield, ElevenLabs, etc.)"
+    },
+    "sqlite": {
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "@anthropic-ai/mcp-server-sqlite",
+        "--db-path", "D:/YTAuto/YTAuto/data/state.db"
+      ],
+      "description": "Direct access to SQLite database for analytics"
+    }
+  }
+}

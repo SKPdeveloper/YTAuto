@@ -1,0 +1,51 @@
+<!-- Channel Card Component -->
+<a href="/channel/{{ channel.id }}" class="block bg-white rounded-xl border border-gray-200 p-6 card-hover transition-smooth shadow-sm hover:shadow-md">
+    <div class="flex items-start justify-between mb-4">
+        <div class="flex items-center space-x-3">
+            <div class="w-12 h-12 bg-gradient-to-br from-blue-500 to-purple-600 rounded-lg flex items-center justify-center text-2xl">
+                📺
+            </div>
+            <div>
+                <h3 class="text-lg font-semibold text-gray-800">{{ channel.name }}</h3>
+                <p class="text-sm text-gray-400 truncate max-w-[200px]" title="{{ channel.folder_path }}">
+                    {{ channel.folder_path }}
+                </p>
+            </div>
+        </div>
+        <div class="flex items-center space-x-1">
+            {% if channel.active_projects > 0 %}
+            <span class="w-2 h-2 bg-green-500 rounded-full pulse-soft"></span>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Stats -->
+    <div class="grid grid-cols-3 gap-4 mb-4">
+        <div class="text-center">
+            <div class="text-xl font-bold text-gray-800">{{ channel.total_projects or 0 }}</div>
+            <div class="text-xs text-gray-500">Всього</div>
+        </div>
+        <div class="text-center">
+            <div class="text-xl font-bold text-orange-500">{{ channel.active_projects or 0 }}</div>
+            <div class="text-xs text-gray-500">Активних</div>
+        </div>
+        <div class="text-center">
+            <div class="text-xl font-bold text-green-500">{{ channel.ready_projects or 0 }}</div>
+            <div class="text-xs text-gray-500">Готових</div>
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <div class="flex items-center justify-between text-sm">
+        <div class="flex items-center space-x-2 text-gray-500">
+            <i data-lucide="monitor" class="w-4 h-4"></i>
+            <span>{{ channel.default_format }}</span>
+            <span class="text-gray-300">|</span>
+            <span>{{ channel.default_engine }}</span>
+        </div>
+        <div class="text-blue-600 flex items-center space-x-1">
+            <span>Відкрити</span>
+            <i data-lucide="arrow-right" class="w-4 h-4"></i>
+        </div>
+    </div>
+</a>

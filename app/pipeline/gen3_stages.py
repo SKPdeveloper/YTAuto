@@ -1,0 +1,410 @@
+"""
+GEN3a and GEN3b Pipeline Stages
+
+GEN3a Stage: Video Analysis (Video Analyst v1.3.1)
+- Analyzes generated videos for glitches, action peaks, speed maps
+- Uses Gemini Vision API
+- Outputs Gen3aOutput for GEN3b
+
+GEN3b Stage: Manifest Generation (FFmpeg Manifest v1.3.1)
+- Creates production-ready manifest.json
+- Creative decisions on effects, subtitles, audio
+- Outputs Gen3bManifest for rendering
+"""
+
+import json
+from pathlib import Path
+from typing import Optional, Dict, Any, List
+from datetime import datetime
+
+from loguru import logger
+
+from app.pipeline.base import BasePipelineStage, StageResult, StageStatus
+from app.api.schemas import ProjectData, SceneData, SceneStatus
+from app.services.gen3a_service import Gen3aService
+from app.services.gen3b_service import Gen3bService
+
+
+class Gen3aStage(BasePipelineStage):
+    """
+    Stage 5: Video Analysis (GEN3a)
+
+    Analyzes all generated videos using Gemini Vision.
+
+    Process:
+    1. Collect all video paths from scenes
+    2. Load GEN1 and GEN2 briefs
+    3. Run beat analysis on music (if available)
+    4. Send to Gemini for frame-by-frame analysis
+    5. Save gen3a_analysis.json
+
+    Output:
+    - Glitch detection with timestamps
+    - Action peaks and dead spots
+    - Speed map recommendations
+    - Visual classification per scene
+    - Easter egg verification
+    - VO segment timing
+    """
+
+    name = "gen3a_video_analysis"
+    description = "Analyze videos for editing decisions"
+
+    def __init__(self, project: ProjectData, **kwargs):
+        super().__init__(project, **kwargs)
+        self.gen3a_service = None
+
+    async def can_run(self) -> bool:
+        """Check if video analysis should run"""
+        # Run if we have videos but no gen3a analysis
+        has_videos = all(
+            scene.video_path and Path(scene.video_path).exists()
+            for scene in self.project.scenes
+            if scene.scene_number <= 6
+        )
+
+        gen3a_path = Path(self.project.project_dir) / "gen3a_analysis.json"
+        has_analysis = gen3a_path.exists()
+
+        return has_videos and not has_analysis
+
+    async def can_resume(self) -> bool:
+        """Video analysis can be resumed"""
+        return True
+
+    async def execute(self) -> StageResult:
+        """Analyze all videos"""
+
+        await self.notify_progress(0, "Initializing video analysis...")
+
+        try:
+            # Initialize services
+            self.gen3a_service = Gen3aService()
+
+            project_dir = Path(self.project.project_dir)
+
+            # Collect video paths
+            video_paths = []
+            for scene in sorted(self.project.scenes, key=lambda s: s.scene_number):
+                if scene.video_path:
+                    video_paths.append(Path(scene.video_path))
+
+            if not video_paths:
+                return StageResult(
+                    success=False,
+                    stage_name=self.name,
+                    status=StageStatus.FAILED,
+                    message="No videos found for analysis"
+                )
+
+            logger.info(f"[{self.project_id}] Analyzing {len(video_paths)} videos")
+
+            await self.notify_progress(10, f"Found {len(video_paths)} videos to analyze")
+
+            # Load GEN1 and GEN2 briefs (or combined project_brief.json)
+            gen1_brief = await self._load_json(project_dir / "gen1_brief.json")
+            gen2_brief = await self._load_json(project_dir / "gen2_brief.json")
+
+            # Fallback to combined project_brief.json
+            if not gen1_brief or not gen2_brief:
+                project_brief = await self._load_json(project_dir / "project_brief.json")
+                if project_brief:
+                    gen1_brief = project_brief  # Use combined brief as gen1
+                    gen2_brief = project_brief  # Use combined brief as gen2
+                    logger.info(f"[{self.project_id}] Using combined project_brief.json")
+                else:
+                    return StageResult(
+                        success=False,
+                        stage_name=self.name,
+                        status=StageStatus.FAILED,
+                        message="Missing project brief files"
+                    )
+
+            await self.notify_progress(20, "Loaded GEN1 and GEN2 briefs")
+
+            # Find music path
+            music_path = project_dir / "music" / "background.mp3"
+            if not music_path.exists():
+                music_path = project_dir / "music.mp3"  # Legacy path
+            if not music_path.exists():
+                music_path = None
+                logger.warning(f"[{self.project_id}] No music file found")
+
+            await self.notify_progress(30, "Starting preprocessing and video analysis...")
+
+            # PUSH: Start notification
+            await self.notifier.push_info(
+                title="Video Analysis Started",
+                message=f"Preprocessing and analyzing {len(video_paths)} videos...",
+                project_id=self.project_id
+            )
+
+            # Run GEN3a analysis (preprocessing is done inside)
+            analysis = await self.gen3a_service.analyze_videos(
+                video_paths=video_paths,
+                gen1_brief=gen1_brief,
+                gen2_brief=gen2_brief,
+                music_path=music_path,
+                voiceover_path=project_dir / "voiceover.mp3",
+                project_dir=project_dir,
+            )
+
+            await self.notify_progress(90, "Saving analysis results...")
+
+            # Save analysis
+            analysis_path = project_dir / "gen3a_analysis.json"
+            with open(analysis_path, "w", encoding="utf-8") as f:
+                json.dump(analysis.model_dump(), f, indent=2, ensure_ascii=False)
+
+            logger.success(f"[{self.project_id}] GEN3a analysis saved: {analysis_path}")
+
+            await self.notify_progress(100, "Video analysis complete")
+
+            # PUSH: Success notification
+            await self.notifier.push_success(
+                title="Video Analysis Complete",
+                message=f"Analyzed {len(analysis.scenes)} scenes, {analysis.gen3b_handoff.total_output_duration:.1f}s output",
+                project_id=self.project_id
+            )
+
+            return StageResult(
+                success=True,
+                stage_name=self.name,
+                message=f"Analyzed {len(video_paths)} videos",
+                data={
+                    "scenes_analyzed": len(analysis.scenes),
+                    "total_duration": analysis.gen3b_handoff.total_output_duration,
+                    "bpm": analysis.music_analysis.bpm,
+                    "hook_style": analysis.hook_variety_analysis.recommended_style,
+                }
+            )
+
+        except Exception as e:
+            logger.error(f"[{self.project_id}] Video analysis failed: {e}")
+
+            await self.notifier.push_error(
+                title="Video Analysis Error",
+                message=str(e)[:100],
+                project_id=self.project_id,
+                is_critical=True
+            )
+
+            return StageResult(
+                success=False,
+                stage_name=self.name,
+                status=StageStatus.FAILED,
+                message=str(e),
+                error=e
+            )
+
+    async def _load_json(self, path: Path) -> Optional[Dict[str, Any]]:
+        """Load JSON file if exists."""
+        if not path.exists():
+            return None
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+
+class Gen3bStage(BasePipelineStage):
+    """
+    Stage 6: Manifest Generation (GEN3b)
+
+    Creates production-ready manifest.json for FFmpeg rendering.
+
+    Process:
+    1. Load GEN3a analysis
+    2. Load GEN1 and GEN2 briefs
+    3. Generate creative decisions (effects, subtitles, audio)
+    4. Output manifest.json
+
+    Output:
+    - Hook section with style and effects
+    - Scene processing (speed, effects, cuts)
+    - Subtitle styles and animations
+    - 5-layer audio plan
+    - Global effects
+    """
+
+    name = "gen3b_manifest_generation"
+    description = "Generate FFmpeg manifest"
+
+    def __init__(self, project: ProjectData, **kwargs):
+        super().__init__(project, **kwargs)
+        self.gen3b_service = None
+
+    async def can_run(self) -> bool:
+        """Check if manifest generation should run"""
+        project_dir = Path(self.project.project_dir)
+
+        # Need GEN3a analysis
+        gen3a_path = project_dir / "gen3a_analysis.json"
+        has_analysis = gen3a_path.exists()
+
+        # Check if manifest already exists
+        manifest_path = project_dir / "manifest.json"
+        has_manifest = manifest_path.exists()
+
+        return has_analysis and not has_manifest
+
+    async def can_resume(self) -> bool:
+        """Manifest generation can be resumed"""
+        return True
+
+    async def execute(self) -> StageResult:
+        """Generate FFmpeg manifest"""
+
+        await self.notify_progress(0, "Initializing manifest generation...")
+
+        try:
+            self.gen3b_service = Gen3bService()
+            project_dir = Path(self.project.project_dir)
+
+            # Load GEN3a analysis
+            await self.notify_progress(10, "Loading video analysis...")
+
+            gen3a_path = project_dir / "gen3a_analysis.json"
+            if not gen3a_path.exists():
+                return StageResult(
+                    success=False,
+                    stage_name=self.name,
+                    status=StageStatus.FAILED,
+                    message="GEN3a analysis not found"
+                )
+
+            from app.services.gen_models import Gen3aOutput
+            with open(gen3a_path, "r", encoding="utf-8") as f:
+                gen3a_data = json.load(f)
+            gen3a_analysis = Gen3aOutput.model_validate(gen3a_data)
+
+            # Load briefs
+            gen1_brief = await self._load_json(project_dir / "gen1_brief.json") or {}
+            gen2_brief = await self._load_json(project_dir / "gen2_brief.json") or {}
+
+            await self.notify_progress(30, "Generating creative decisions...")
+
+            # PUSH: Start notification
+            await self.notifier.push_info(
+                title="Manifest Generation Started",
+                message="Creating editing decisions and FFmpeg manifest...",
+                project_id=self.project_id
+            )
+
+            # Generate manifest
+            manifest = await self.gen3b_service.generate_manifest(
+                gen3a_analysis=gen3a_analysis,
+                gen1_brief=gen1_brief,
+                gen2_brief=gen2_brief,
+            )
+
+            await self.notify_progress(80, "Saving manifest...")
+
+            # Save manifest
+            manifest_path = project_dir / "manifest.json"
+            self.gen3b_service.save_manifest(manifest, manifest_path)
+
+            logger.success(f"[{self.project_id}] Manifest saved: {manifest_path}")
+
+            await self.notify_progress(100, "Manifest generation complete")
+
+            # PUSH: Success notification
+            await self.notifier.push_success(
+                title="Manifest Ready",
+                message=f"Created {manifest.total_duration:.1f}s video manifest with {len(manifest.scenes)} scenes",
+                project_id=self.project_id
+            )
+
+            return StageResult(
+                success=True,
+                stage_name=self.name,
+                message=f"Generated manifest for {manifest.total_duration}s video",
+                data={
+                    "total_duration": manifest.total_duration,
+                    "scenes": len(manifest.scenes),
+                    "subtitles": len(manifest.subtitles),
+                    "hook_style": manifest.hook.style,
+                    "loop_compliant": manifest.loop_compliant,
+                }
+            )
+
+        except Exception as e:
+            logger.error(f"[{self.project_id}] Manifest generation failed: {e}")
+
+            await self.notifier.push_error(
+                title="Manifest Generation Error",
+                message=str(e)[:100],
+                project_id=self.project_id,
+                is_critical=True
+            )
+
+            return StageResult(
+                success=False,
+                stage_name=self.name,
+                status=StageStatus.FAILED,
+                message=str(e),
+                error=e
+            )
+
+    async def _load_json(self, path: Path) -> Optional[Dict[str, Any]]:
+        """Load JSON file if exists."""
+        if not path.exists():
+            return None
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    async def generate_simple_manifest(self) -> StageResult:
+        """
+        Generate simple manifest without LLM call (for testing).
+
+        Uses GEN3a analysis directly without creative decisions.
+        """
+        try:
+            self.gen3b_service = Gen3bService()
+            project_dir = Path(self.project.project_dir)
+
+            # Load GEN3a analysis
+            gen3a_path = project_dir / "gen3a_analysis.json"
+            if not gen3a_path.exists():
+                return StageResult(
+                    success=False,
+                    stage_name=self.name,
+                    status=StageStatus.FAILED,
+                    message="GEN3a analysis not found"
+                )
+
+            from app.services.gen_models import Gen3aOutput
+            with open(gen3a_path, "r", encoding="utf-8") as f:
+                gen3a_data = json.load(f)
+            gen3a_analysis = Gen3aOutput.model_validate(gen3a_data)
+
+            # Generate simple manifest
+            manifest = await self.gen3b_service.generate_simple_manifest(
+                gen3a_analysis=gen3a_analysis,
+                project_dir=project_dir,
+            )
+
+            # Save manifest
+            manifest_path = project_dir / "manifest.json"
+            self.gen3b_service.save_manifest(manifest, manifest_path)
+
+            return StageResult(
+                success=True,
+                stage_name=self.name,
+                message="Generated simple manifest",
+                data={"total_duration": manifest.total_duration}
+            )
+
+        except Exception as e:
+            return StageResult(
+                success=False,
+                stage_name=self.name,
+                status=StageStatus.FAILED,
+                message=str(e),
+                error=e
+            )
+
+
+# ============================================================================
+# EXPORT
+# ============================================================================
+
+__all__ = ["Gen3aStage", "Gen3bStage"]

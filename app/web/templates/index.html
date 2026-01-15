@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+
+{% block title %}Канали - Edible House Automator{% endblock %}
+
+{% block content %}
+<div class="space-y-8">
+    <!-- Header -->
+    <div class="flex items-center justify-between">
+        <div>
+            <h1 class="text-3xl font-bold text-gray-800">Мої канали</h1>
+            <p class="text-gray-500 mt-1">Управління каналами та проєктами</p>
+        </div>
+        <button
+            hx-get="/api/modal/new-channel"
+            hx-target="#modal-container"
+            hx-swap="innerHTML"
+            class="flex items-center space-x-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-smooth"
+        >
+            <i data-lucide="plus" class="w-5 h-5"></i>
+            <span>Новий канал</span>
+        </button>
+    </div>
+
+    <!-- Channels Grid -->
+    {% if channels %}
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {% for channel in channels %}
+        {% include "components/channel_card.html" %}
+        {% endfor %}
+    </div>
+    {% else %}
+    <!-- Empty State -->
+    <div class="text-center py-16 bg-white rounded-xl border border-gray-200 shadow-sm">
+        <div class="text-6xl mb-4">📺</div>
+        <h3 class="text-xl font-semibold text-gray-800 mb-2">Немає каналів</h3>
+        <p class="text-gray-500 mb-6">Створіть перший канал, щоб почати генерацію відео</p>
+        <button
+            hx-get="/api/modal/new-channel"
+            hx-target="#modal-container"
+            hx-swap="innerHTML"
+            class="inline-flex items-center space-x-2 bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg transition-smooth"
+        >
+            <i data-lucide="plus" class="w-5 h-5"></i>
+            <span>Створити канал</span>
+        </button>
+    </div>
+    {% endif %}
+
+    <!-- Quick Stats (if channels exist) -->
+    {% if channels %}
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mt-8">
+        <div class="bg-white rounded-lg border border-gray-200 p-4 shadow-sm">
+            <div class="flex items-center space-x-3">
+                <div class="p-2 bg-blue-100 rounded-lg">
+                    <i data-lucide="tv" class="w-5 h-5 text-blue-600"></i>
+                </div>
+                <div>
+                    <div class="text-2xl font-bold text-gray-800">{{ channels|length }}</div>
+                    <div class="text-sm text-gray-500">Каналів</div>
+                </div>
+            </div>
+        </div>
+        <div class="bg-white rounded-lg border border-gray-200 p-4 shadow-sm">
+            <div class="flex items-center space-x-3">
+                <div class="p-2 bg-green-100 rounded-lg">
+                    <i data-lucide="check-circle" class="w-5 h-5 text-green-600"></i>
+                </div>
+                <div>
+                    <div class="text-2xl font-bold text-gray-800">{{ total_ready }}</div>
+                    <div class="text-sm text-gray-500">Готових відео</div>
+                </div>
+            </div>
+        </div>
+        <div class="bg-white rounded-lg border border-gray-200 p-4 shadow-sm">
+            <div class="flex items-center space-x-3">
+                <div class="p-2 bg-orange-100 rounded-lg">
+                    <i data-lucide="loader" class="w-5 h-5 text-orange-600"></i>
+                </div>
+                <div>
+                    <div class="text-2xl font-bold text-gray-800">{{ total_active }}</div>
+                    <div class="text-sm text-gray-500">В процесі</div>
+                </div>
+            </div>
+        </div>
+        <div class="bg-white rounded-lg border border-gray-200 p-4 shadow-sm">
+            <div class="flex items-center space-x-3">
+                <div class="p-2 bg-purple-100 rounded-lg">
+                    <i data-lucide="arrow-up" class="w-5 h-5 text-purple-600"></i>
+                </div>
+                <div>
+                    <div class="text-2xl font-bold text-gray-800" id="topaz-queue-count">{{ topaz_queue_size }}</div>
+                    <div class="text-sm text-gray-500">Topaz черга</div>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

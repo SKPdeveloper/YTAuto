@@ -1,0 +1,709 @@
+"""
+ManifestRenderer - FFmpeg Video Renderer v1.0
+
+Takes Gen3bManifest and renders the final video using FFmpeg.
+
+Features:
+- Video concatenation with speed changes
+- Effects application (zoom, shake, glow, etc.)
+- Hook insertion (0.3s visual impact)
+- Subtitle overlay with animations
+- 5-layer audio mixing
+- Loop engineering compliance
+- 9:16 vertical format output
+
+Workflow:
+1. Parse Gen3bManifest
+2. Process each scene with speed segments and effects
+3. Apply hook at the beginning
+4. Overlay subtitles
+5. Mix 5-layer audio
+6. Export final video
+
+Output: final_video.mp4 (9:16, 25s, 60fps)
+"""
+
+import json
+import subprocess
+import asyncio
+from pathlib import Path
+from typing import List, Optional, Dict, Any
+from dataclasses import dataclass
+
+from app.utils.logger import logger
+from app.services.gen_models import (
+    Gen3bManifest,
+    ManifestScene,
+    ManifestEffect,
+    ManifestSubtitle,
+    SpeedSegment,
+)
+from app.services.audio_engine import (
+    AudioMixer,
+    AudioMixConfig,
+    AudioLayer,
+)
+
+
+@dataclass
+class RenderConfig:
+    """Configuration for video rendering."""
+    output_width: int = 1080
+    output_height: int = 1920  # 9:16 vertical
+    fps: int = 60
+    video_codec: str = "libx264"
+    audio_codec: str = "aac"
+    video_bitrate: str = "8M"
+    audio_bitrate: str = "192k"
+    preset: str = "medium"
+    crf: int = 18  # Quality (lower = better, 0-51)
+
+
+class ManifestRenderer:
+    """
+    FFmpeg Video Renderer for Glaze City Pipeline
+
+    Takes Gen3bManifest and renders the final video with:
+    - Scene concatenation with speed changes
+    - Effect application
+    - Hook at the beginning
+    - Subtitle overlays
+    - 5-layer audio mixing
+
+    Output: 9:16 vertical, 25s, 60fps
+    """
+
+    def __init__(self, config: Optional[RenderConfig] = None):
+        """Initialize ManifestRenderer with optional config."""
+        self.config = config or RenderConfig()
+        self.audio_mixer = AudioMixer()
+
+        logger.info("ManifestRenderer initialized:")
+        logger.info(f"  Output: {self.config.output_width}x{self.config.output_height}")
+        logger.info(f"  FPS: {self.config.fps}")
+        logger.info(f"  Codec: {self.config.video_codec}")
+
+    async def render(
+        self,
+        manifest: Gen3bManifest,
+        project_dir: Path,
+        output_filename: str = "final_video.mp4",
+    ) -> Path:
+        """
+        Render final video from manifest.
+
+        Args:
+            manifest: Gen3bManifest with all rendering instructions
+            project_dir: Project directory containing source files
+            output_filename: Output video filename
+
+        Returns:
+            Path to rendered video
+
+        Raises:
+            Exception: If rendering fails
+        """
+        logger.info("=" * 60)
+        logger.info("ManifestRenderer: Starting Render")
+        logger.info("=" * 60)
+        logger.info(f"  Total duration: {manifest.total_duration}s")
+        logger.info(f"  Scenes: {len(manifest.scenes)}")
+        logger.info(f"  Subtitles: {len(manifest.subtitles)}")
+        logger.info(f"  Hook style: {manifest.hook.style}")
+
+        output_path = project_dir / output_filename
+
+        try:
+            # Step 1: Process scenes with speed changes
+            processed_scenes = await self._process_scenes(manifest.scenes, project_dir)
+
+            # Step 2: Create hook video
+            hook_path = await self._create_hook(manifest, project_dir, processed_scenes)
+
+            # Step 3: Concatenate all clips
+            concat_path = await self._concatenate_clips(
+                hook_path, processed_scenes, project_dir
+            )
+
+            # Step 4: Apply global effects
+            effects_path = await self._apply_global_effects(
+                concat_path, manifest.global_effects, project_dir
+            )
+
+            # Step 5: Add subtitles
+            subtitled_path = await self._add_subtitles(
+                effects_path, manifest.subtitles, project_dir
+            )
+
+            # Step 6: Mix 5-layer audio
+            final_path = await self._mix_audio(
+                subtitled_path, manifest, project_dir, output_path
+            )
+
+            logger.success("=" * 60)
+            logger.success("ManifestRenderer: Render Complete")
+            logger.success(f"  Output: {final_path}")
+            logger.success("=" * 60)
+
+            return final_path
+
+        except Exception as e:
+            logger.error(f"Render failed: {e}")
+            raise
+
+    def _resolve_source_path(self, project_dir: Path, source_file: str) -> Path:
+        """
+        Resolve source file path, handling both relative and absolute paths.
+
+        Fixes path duplication when LLM returns full paths like
+        'projects/proj_.../scene_1/video.mp4' instead of relative 'scene_1/video.mp4'.
+        """
+        source_path = Path(source_file)
+
+        # If it's an absolute path and exists, use it directly
+        if source_path.is_absolute() and source_path.exists():
+            return source_path
+
+        # Check if source_file contains the project directory name (duplication case)
+        project_name = project_dir.name
+        if project_name in source_file:
+            # Try to extract just the relative part after project name
+            # e.g., "projects/proj_xxx/scene_1/video.mp4" -> "scene_1/video.mp4"
+            parts = source_file.replace("\\", "/").split(project_name)
+            if len(parts) > 1:
+                relative_part = parts[-1].lstrip("/")
+                resolved = project_dir / relative_part
+                if resolved.exists():
+                    return resolved
+
+        # Standard case: join with project_dir
+        return project_dir / source_file
+
+    async def _process_scenes(
+        self,
+        scenes: List[ManifestScene],
+        project_dir: Path,
+    ) -> List[Path]:
+        """
+        Process each scene with speed changes and effects.
+
+        Returns:
+            List of paths to processed scene videos
+        """
+        processed = []
+
+        for scene in scenes:
+            source_path = self._resolve_source_path(project_dir, scene.source_file)
+
+            if not source_path.exists():
+                logger.warning(f"Scene {scene.scene_number} source not found: {source_path}")
+                continue
+
+            # Process speed segments
+            output_path = project_dir / f"processed_scene_{scene.scene_number}.mp4"
+
+            if scene.speed_segments:
+                await self._apply_speed_map(source_path, scene.speed_segments, output_path)
+            else:
+                # Copy without speed changes
+                output_path = source_path
+
+            # Apply scene-specific effects
+            if scene.effects:
+                effects_output = project_dir / f"effects_scene_{scene.scene_number}.mp4"
+                await self._apply_effects(output_path, scene.effects, effects_output)
+                output_path = effects_output
+
+            processed.append(output_path)
+            logger.info(f"  Processed scene {scene.scene_number}")
+
+        return processed
+
+    async def _apply_speed_map(
+        self,
+        input_path: Path,
+        speed_segments: List[SpeedSegment],
+        output_path: Path,
+    ) -> None:
+        """Apply speed changes to video based on speed map."""
+        # Build FFmpeg filter for variable speed
+        # Using setpts filter for speed changes
+
+        filter_parts = []
+        for i, seg in enumerate(speed_segments):
+            # setpts=PTS/speed changes video speed
+            # speed > 1 = faster, speed < 1 = slower
+            speed = seg.speed
+            start = seg.source_start
+            end = seg.source_end
+
+            # We'll use a complex filter for segment-based speed
+            filter_parts.append(
+                f"between(t,{start},{end})*{1/speed}"
+            )
+
+        # For simplicity, apply average speed if multiple segments
+        if speed_segments:
+            avg_speed = sum(s.speed for s in speed_segments) / len(speed_segments)
+            pts_filter = f"setpts={1/avg_speed}*PTS"
+        else:
+            pts_filter = "setpts=PTS"
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(input_path),
+            "-filter_complex", f"[0:v]{pts_filter}[v]",
+            "-map", "[v]",
+            "-an",  # No audio for now
+            "-c:v", self.config.video_codec,
+            "-preset", self.config.preset,
+            "-crf", str(self.config.crf),
+            str(output_path)
+        ]
+
+        await self._run_ffmpeg(cmd)
+
+    async def _apply_effects(
+        self,
+        input_path: Path,
+        effects: List[ManifestEffect],
+        output_path: Path,
+    ) -> None:
+        """Apply visual effects to video."""
+        filters = []
+
+        for effect in effects:
+            effect_filter = self._get_effect_filter(effect)
+            if effect_filter:
+                filters.append(effect_filter)
+
+        if not filters:
+            # No effects, just copy
+            import shutil
+            shutil.copy(input_path, output_path)
+            return
+
+        filter_chain = ",".join(filters)
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(input_path),
+            "-vf", filter_chain,
+            "-c:v", self.config.video_codec,
+            "-preset", self.config.preset,
+            "-crf", str(self.config.crf),
+            "-c:a", "copy",
+            str(output_path)
+        ]
+
+        await self._run_ffmpeg(cmd)
+
+    def _get_effect_filter(self, effect: ManifestEffect) -> Optional[str]:
+        """Convert ManifestEffect to FFmpeg filter string."""
+        effect_type = effect.type.upper()
+        params = effect.params or {}
+        duration = effect.output_end - effect.output_start
+
+        # Map effect types to FFmpeg filters
+        effect_map = {
+            "ZOOM_IN": f"zoompan=z='min(zoom+0.0015,1.5)':d={int(duration * 30)}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'",
+            "ZOOM_OUT": f"zoompan=z='max(1.5-zoom*0.0015,1)':d={int(duration * 30)}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'",
+            "ZOOM_PUNCH": f"zoompan=z='if(between(t,{effect.output_start},{effect.output_start + 0.1}),1.1,1)':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'",
+            "SHAKE": "crop=iw-10:ih-10:x='5+random(0)*5':y='5+random(0)*5'",
+            "GLOW": "eq=brightness=0.06:saturation=1.3",
+            "FLASH": f"fade=t=in:st={effect.output_start}:d=0.1,fade=t=out:st={effect.output_start + 0.1}:d=0.1",
+            "VIGNETTE": "vignette=PI/4",
+            "RGB_SPLIT": "rgbashift=rh=-3:bh=3",
+            "CHROMATIC_ABERRATION": "rgbashift=rh=-3:bh=3",
+            "GLITCH": "noise=alls=20:allf=t+u",
+            "LETTERBOX": "drawbox=x=0:y=0:w=iw:h=ih*0.1:c=black:t=fill,drawbox=x=0:y=ih*0.9:w=iw:h=ih*0.1:c=black:t=fill",
+        }
+
+        return effect_map.get(effect_type)
+
+    async def _create_hook(
+        self,
+        manifest: Gen3bManifest,
+        project_dir: Path,
+        processed_scenes: List[Path],
+    ) -> Optional[Path]:
+        """Create hook video from first scene."""
+        if not processed_scenes:
+            return None
+
+        hook = manifest.hook
+        hook_path = project_dir / "hook.mp4"
+
+        # Extract first frames based on hook duration
+        first_scene = processed_scenes[0]
+
+        # Apply hook effects
+        hook_filters = []
+
+        # Add hook style effects
+        style_effects = self._get_hook_style_filters(hook.style)
+        hook_filters.extend(style_effects)
+
+        # Add any specified effects
+        for effect in hook.effects:
+            ef = self._get_effect_filter(effect)
+            if ef:
+                hook_filters.append(ef)
+
+        filter_chain = ",".join(hook_filters) if hook_filters else "null"
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(first_scene),
+            "-t", str(hook.duration),
+            "-vf", filter_chain,
+            "-c:v", self.config.video_codec,
+            "-preset", self.config.preset,
+            "-crf", str(self.config.crf),
+            "-an",
+            str(hook_path)
+        ]
+
+        await self._run_ffmpeg(cmd)
+        logger.info(f"  Created hook ({hook.style}, {hook.duration}s)")
+
+        return hook_path
+
+    def _get_hook_style_filters(self, style: str) -> List[str]:
+        """Get FFmpeg filters for hook style."""
+        style = style.upper()
+
+        style_filters = {
+            "CLASSIC": [
+                "eq=brightness=0.1:saturation=1.2",
+            ],
+            "IMPACT": [
+                "eq=brightness=0.15:contrast=1.3",
+                "unsharp=5:5:1.5:5:5:0.0",
+            ],
+            "GLITCH": [
+                "noise=alls=30:allf=t",
+                "rgbashift=rh=-5:bh=5",
+            ],
+            "ELEGANT": [
+                "curves=preset=lighter",
+                "vignette=PI/5",
+            ],
+            "DRAMATIC": [
+                "eq=contrast=1.4:brightness=-0.05",
+                "vignette=PI/3",
+            ],
+        }
+
+        return style_filters.get(style, [])
+
+    async def _concatenate_clips(
+        self,
+        hook_path: Optional[Path],
+        scene_paths: List[Path],
+        project_dir: Path,
+    ) -> Path:
+        """Concatenate hook and all scenes."""
+        output_path = project_dir / "concatenated.mp4"
+
+        # Create concat file
+        concat_file = project_dir / "concat_list.txt"
+        with open(concat_file, "w") as f:
+            if hook_path and hook_path.exists():
+                f.write(f"file '{hook_path}'\n")
+            for path in scene_paths:
+                if path.exists():
+                    f.write(f"file '{path}'\n")
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", str(concat_file),
+            "-c:v", self.config.video_codec,
+            "-preset", self.config.preset,
+            "-crf", str(self.config.crf),
+            str(output_path)
+        ]
+
+        await self._run_ffmpeg(cmd)
+        logger.info("  Concatenated all clips")
+
+        return output_path
+
+    async def _apply_global_effects(
+        self,
+        input_path: Path,
+        effects: List[ManifestEffect],
+        project_dir: Path,
+    ) -> Path:
+        """Apply global effects to concatenated video."""
+        if not effects:
+            return input_path
+
+        output_path = project_dir / "global_effects.mp4"
+        await self._apply_effects(input_path, effects, output_path)
+        logger.info(f"  Applied {len(effects)} global effects")
+
+        return output_path
+
+    async def _add_subtitles(
+        self,
+        input_path: Path,
+        subtitles: List[ManifestSubtitle],
+        project_dir: Path,
+    ) -> Path:
+        """Add subtitles to video."""
+        if not subtitles:
+            return input_path
+
+        output_path = project_dir / "subtitled.mp4"
+
+        # Create ASS subtitle file
+        ass_path = project_dir / "subtitles.ass"
+        self._create_ass_file(subtitles, ass_path)
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(input_path),
+            "-vf", f"ass={ass_path}",
+            "-c:v", self.config.video_codec,
+            "-preset", self.config.preset,
+            "-crf", str(self.config.crf),
+            "-c:a", "copy",
+            str(output_path)
+        ]
+
+        await self._run_ffmpeg(cmd)
+        logger.info(f"  Added {len(subtitles)} subtitles")
+
+        return output_path
+
+    def _create_ass_file(
+        self,
+        subtitles: List[ManifestSubtitle],
+        output_path: Path,
+    ) -> None:
+        """Create ASS subtitle file from manifest subtitles."""
+        # ASS header
+        header = """[Script Info]
+Title: Glaze City Subtitles
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,72,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,3,2,8,50,50,100,1
+Style: Impact,Impact,80,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,4,3,8,50,50,100,1
+Style: Elegant,Georgia,68,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,1,0,0,100,100,2,0,1,2,1,8,50,50,100,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+
+        lines = [header]
+
+        for sub in subtitles:
+            start = self._seconds_to_ass_time(sub.start_time)
+            end = self._seconds_to_ass_time(sub.end_time)
+            style = sub.style if sub.style in ["Default", "Impact", "Elegant"] else "Default"
+            text = sub.text.replace("\n", "\\N")
+
+            # Apply animation effects
+            effects = ""
+            if sub.animation == "FADE_IN":
+                effects = "{\\fad(200,0)}"
+            elif sub.animation == "FADE_OUT":
+                effects = "{\\fad(0,200)}"
+            elif sub.animation == "FADE_IN_OUT":
+                effects = "{\\fad(200,200)}"
+            elif sub.animation == "POP":
+                effects = "{\\t(0,100,\\fscx120\\fscy120)\\t(100,200,\\fscx100\\fscy100)}"
+
+            lines.append(f"Dialogue: 0,{start},{end},{style},,0,0,0,,{effects}{text}")
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+
+    def _seconds_to_ass_time(self, seconds: float) -> str:
+        """Convert seconds to ASS time format (H:MM:SS.cc)."""
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+        centisecs = int((seconds % 1) * 100)
+        return f"{hours}:{minutes:02d}:{secs:02d}.{centisecs:02d}"
+
+    async def _mix_audio(
+        self,
+        video_path: Path,
+        manifest: Gen3bManifest,
+        project_dir: Path,
+        output_path: Path,
+    ) -> Path:
+        """Mix 5-layer audio and combine with video."""
+        # Create audio mix configuration
+        audio_config = self.audio_mixer.create_default_config(
+            total_duration=manifest.total_duration,
+            vo_path=project_dir / "voiceover.mp3",
+            music_path=project_dir / "music.mp3",
+            bed_path=project_dir / "ambient.mp3" if (project_dir / "ambient.mp3").exists() else None,
+        )
+
+        # Add SFX events from manifest
+        audio_layers = manifest.audio_layers
+        for sfx in audio_layers.sfx_events:
+            sfx_path = project_dir / "sfx" / sfx.file
+            if sfx_path.exists():
+                self.audio_mixer.add_sfx_event(
+                    audio_config,
+                    sfx.timestamp,
+                    sfx_path,
+                    sfx.volume,
+                    sfx.reason,
+                )
+
+        # Add FOLEY events
+        for foley in audio_layers.foley_events:
+            foley_path = project_dir / "foley" / foley.file
+            if foley_path.exists():
+                self.audio_mixer.add_foley_event(
+                    audio_config,
+                    foley.timestamp,
+                    foley_path,
+                    foley.volume,
+                    foley.reason,
+                )
+
+        # Add VO segments for ducking
+        for vo_seg in manifest.vo_segments if hasattr(manifest, 'vo_segments') else []:
+            self.audio_mixer.add_vo_segment(
+                audio_config,
+                vo_seg.get("start", 0),
+                vo_seg.get("end", 0),
+            )
+
+        # Log configuration
+        self.audio_mixer.log_config(audio_config)
+
+        # Build FFmpeg command with audio mixing
+        input_files = self.audio_mixer.get_input_files(audio_config)
+        filter_complex = self.audio_mixer.generate_ffmpeg_filter(audio_config)
+
+        # Build full command
+        cmd = ["ffmpeg", "-y", "-i", str(video_path)]
+
+        # Add audio inputs
+        for _, path in input_files:
+            cmd.extend(["-i", str(path)])
+
+        # Add filter complex and output
+        if filter_complex:
+            cmd.extend([
+                "-filter_complex", filter_complex,
+                "-map", "0:v",
+                "-map", "[aout]",
+            ])
+        else:
+            cmd.extend(["-map", "0:v"])
+            if input_files:
+                cmd.extend(["-map", "1:a"])
+
+        cmd.extend([
+            "-c:v", "copy",
+            "-c:a", self.config.audio_codec,
+            "-b:a", self.config.audio_bitrate,
+            str(output_path)
+        ])
+
+        await self._run_ffmpeg(cmd)
+        logger.info("  Mixed 5-layer audio")
+
+        return output_path
+
+    async def _run_ffmpeg(self, cmd: List[str]) -> None:
+        """Run FFmpeg command asynchronously."""
+        logger.debug(f"FFmpeg: {' '.join(cmd[:10])}...")
+
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        stdout, stderr = await process.communicate()
+
+        if process.returncode != 0:
+            error_msg = stderr.decode() if stderr else "Unknown error"
+            raise Exception(f"FFmpeg failed: {error_msg[:500]}")
+
+    async def render_simple(
+        self,
+        manifest: Gen3bManifest,
+        project_dir: Path,
+        output_filename: str = "final_video.mp4",
+    ) -> Path:
+        """
+        Simple render without complex processing (for testing).
+
+        Just concatenates scenes and adds basic audio.
+        """
+        logger.info("ManifestRenderer: Simple render mode")
+
+        output_path = project_dir / output_filename
+
+        # Find scene videos
+        scene_paths = []
+        for scene in manifest.scenes:
+            source_path = self._resolve_source_path(project_dir, scene.source_file)
+            if source_path.exists():
+                scene_paths.append(source_path)
+
+        if not scene_paths:
+            raise Exception("No scene videos found for rendering")
+
+        # Create concat file
+        concat_file = project_dir / "concat_list.txt"
+        with open(concat_file, "w") as f:
+            for path in scene_paths:
+                f.write(f"file '{path}'\n")
+
+        # Simple concat with VO
+        vo_path = project_dir / "voiceover.mp3"
+        music_path = project_dir / "music.mp3"
+
+        cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_file)]
+
+        # Add audio if available
+        audio_inputs = []
+        if vo_path.exists():
+            cmd.extend(["-i", str(vo_path)])
+            audio_inputs.append("vo")
+        if music_path.exists():
+            cmd.extend(["-i", str(music_path)])
+            audio_inputs.append("music")
+
+        # Output settings
+        cmd.extend([
+            "-c:v", self.config.video_codec,
+            "-preset", "fast",
+            "-crf", "23",
+        ])
+
+        if audio_inputs:
+            cmd.extend(["-c:a", self.config.audio_codec, "-b:a", "192k"])
+
+        cmd.append(str(output_path))
+
+        await self._run_ffmpeg(cmd)
+
+        logger.success(f"Simple render complete: {output_path}")
+        return output_path
+
+
+# ============================================================================
+# EXPORT
+# ============================================================================
+
+__all__ = ["ManifestRenderer", "RenderConfig"]

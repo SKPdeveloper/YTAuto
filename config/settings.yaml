@@ -1,0 +1,153 @@
+# ============================================================================
+# Edible House Automator - Additional Settings
+# Цей файл містить додаткові налаштування які не є sensitive
+# ============================================================================
+
+# Prompts для ContentBrain
+content_brain:
+  system_prompt: |
+    You are a creative scriptwriter for food content videos.
+    Create engaging, appetizing scenarios that work well for AI image generation.
+
+  script_generation_template: |
+    Create a {num_scenes}-scene script for a video about: {topic}
+
+    Requirements:
+    1. Each scene should be visually distinct and appetizing
+    2. Include detailed visual descriptions for AI image generation
+    3. Focus on close-ups, textures, and delicious details
+    4. Keep descriptions under 150 words per scene
+
+    Output JSON format:
+    {{
+      "title": "Video title",
+      "scenes": [
+        {{
+          "scene_number": 1,
+          "description": "What happens in this scene",
+          "prompt": "Detailed visual prompt for image generation",
+          "duration": 5
+        }}
+      ]
+    }}
+
+# Prompts для GeminiValidator
+gemini_validator:
+  validation_prompt_template: |
+    You are an expert image quality validator for AI-generated food videos.
+
+    **Script Description:** {script}
+    **Generation Prompt:** {prompt}
+
+    **Task:** Analyze these {count} images and select the BEST one based on:
+    1. Accuracy to the prompt (does it match what was requested?)
+    2. Visual quality (sharpness, colors, composition)
+    3. "Deliciousness factor" (does it look appetizing?)
+
+    **Output ONLY a JSON:**
+    {{
+      "best_image": <index 0-{count_minus_1}>,
+      "status": "SUCCESS" or "FAIL",
+      "reasoning": "<brief explanation>"
+    }}
+
+    **FAIL criteria:** If ALL images are blurry, off-topic, or unappetizing.
+
+# Higgsfield prompts enhancement
+higgsfield:
+  prompt_enhancements:
+    prefix: "professional food photography, "
+    suffix: ", highly detailed, 8k, studio lighting, appetizing"
+
+  negative_prompt: "blurry, low quality, distorted, unappetizing, artificial"
+
+  video_prompt_template: |
+    {motion_description}
+
+    Camera: {camera_movement}
+    Pace: {pace}
+
+# Telegram messages
+telegram:
+  messages:
+    scene_approval: |
+      🎬 **СЦЕНА №{scene_number}**
+
+      📝 **Промпт:** {prompt}
+
+      🎨 **Модель:** {model}
+
+      Перевір відео та обери дію:
+
+    manual_selection: |
+      🆘 **Gemini не зміг вибрати зображення для Сцени #{scene_number}**
+
+      📝 **Промпт:** {prompt}
+
+      Ось {count} варіанти. Вибери найкращий:
+
+    generation_complete: |
+      ✅ **Проєкт "{topic}" завершено!**
+
+      📊 **Статистика:**
+      - Сцен оброблено: {scenes_count}
+      - Upscaled відео: {upscaled_count}
+
+      📁 Файли збережено в: {project_dir}
+
+# Topaz Video AI
+topaz:
+  # Додаткові параметри FFmpeg
+  ffmpeg_args:
+    - "-hide_banner"
+    - "-nostdin"
+    - "-y"  # Перезаписувати без питань
+    - "-strict"
+    - "2"
+
+  # Codec settings
+  codec: "h264"
+  pix_fmt: "yuv420p"
+
+  # Моделі для різних цілей
+  models:
+    upscale_4k: "alq-13"
+    upscale_hd: "proteus"
+    enhance: "artemis-lq-v14"
+
+# Web UI
+web_ui:
+  page_title: "Edible House Automator 🎬"
+
+  refresh_interval: 5  # секунди
+
+  # Status icons
+  status_icons:
+    pending: "⏳"
+    generating_images: "🎨"
+    validating: "🔍"
+    generating_video: "🎬"
+    awaiting_approval: "👁️"
+    approved: "✅"
+    upscaling: "⚙️"
+    completed: "🎉"
+    failed: "❌"
+
+# Logging
+logging:
+  # Форматування для різних рівнів
+  formats:
+    debug: "{time:HH:mm:ss} | {level} | {name}:{line} | {message}"
+    info: "{time:HH:mm:ss} | {message}"
+    error: "{time:HH:mm:ss} | ERROR | {name}:{line} | {message}"
+
+# File cleanup
+cleanup:
+  # Автоматичне очищення старих файлів
+  enabled: true
+
+  # Зберігати останні N проєктів
+  keep_last_projects: 10
+
+  # Очищати тимчасові файли старіші за N днів
+  temp_files_max_age_days: 7

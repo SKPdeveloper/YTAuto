@@ -1,0 +1,675 @@
+{% extends "base.html" %}
+
+{% block title %}CONTROL // Edible House{% endblock %}
+
+{% block head %}
+<style>
+    body {
+        background: #0a0a0a !important;
+        color: #e5e5e5 !important;
+        font-family: 'JetBrains Mono', 'Consolas', monospace;
+    }
+
+    .brutal-card {
+        background: #141414;
+        border: 2px solid #333;
+        box-shadow: 8px 8px 0 #000;
+    }
+
+    .brutal-card:hover {
+        border-color: #555;
+    }
+
+    .brutal-btn {
+        background: #fff;
+        color: #000;
+        font-weight: 900;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        border: none;
+        padding: 12px 24px;
+        transition: all 0.1s;
+    }
+
+    .brutal-btn:hover {
+        background: #e5e5e5;
+        transform: translate(-2px, -2px);
+        box-shadow: 4px 4px 0 #fff;
+    }
+
+    .brutal-btn:disabled {
+        background: #333;
+        color: #666;
+        cursor: not-allowed;
+        transform: none;
+        box-shadow: none;
+    }
+
+    .brutal-btn-danger {
+        background: #ff3333;
+        color: #fff;
+    }
+
+    .brutal-btn-danger:hover {
+        background: #ff5555;
+        box-shadow: 4px 4px 0 #ff3333;
+    }
+
+    .brutal-input {
+        background: #000;
+        border: 2px solid #444;
+        color: #fff;
+        font-family: 'JetBrains Mono', monospace;
+        padding: 8px 12px;
+    }
+
+    .brutal-input:focus {
+        outline: none;
+        border-color: #fff;
+    }
+
+    .image-grid-item {
+        border: 3px solid #333;
+        transition: all 0.15s;
+    }
+
+    .image-grid-item:hover {
+        border-color: #666;
+    }
+
+    .image-grid-item.selected {
+        border-color: #fff;
+        box-shadow: 0 0 0 3px #fff;
+    }
+
+    .progress-brutal {
+        height: 4px;
+        background: #333;
+    }
+
+    .progress-brutal-fill {
+        height: 100%;
+        background: #fff;
+        transition: width 0.3s;
+    }
+
+    .log-line {
+        border-bottom: 1px solid #222;
+        padding: 6px 0;
+    }
+
+    .status-dot {
+        width: 8px;
+        height: 8px;
+        display: inline-block;
+    }
+
+    @keyframes blink {
+        0%, 50% { opacity: 1; }
+        51%, 100% { opacity: 0; }
+    }
+
+    .blink {
+        animation: blink 1s infinite;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div x-data="controlPanel()" x-init="init()" class="space-y-6">
+
+    <!-- HEADER -->
+    <div class="flex items-center justify-between border-b-2 border-white pb-4 mb-8">
+        <div>
+            <h1 class="text-4xl font-black tracking-tight">CONTROL PANEL</h1>
+            <p class="text-gray-500 uppercase tracking-widest text-xs mt-1">PIPELINE MANAGEMENT SYSTEM</p>
+        </div>
+        <button
+            @click="startPipeline()"
+            :disabled="pipelineRunning"
+            class="brutal-btn flex items-center space-x-3"
+        >
+            <span class="status-dot" :class="pipelineRunning ? 'bg-green-500 blink' : 'bg-gray-600'"></span>
+            <span x-text="pipelineRunning ? 'RUNNING' : 'START'"></span>
+        </button>
+    </div>
+
+    <!-- SCHEDULE -->
+    <div class="brutal-card p-6">
+        <div class="flex items-center justify-between">
+            <div>
+                <h2 class="text-xl font-black uppercase tracking-wide">SCHEDULE</h2>
+                <p class="text-gray-500 text-xs uppercase mt-1">DAILY AUTO-START</p>
+            </div>
+            <div class="flex items-center space-x-6">
+                <input
+                    type="time"
+                    x-model="scheduleTime"
+                    @change="updateSchedule()"
+                    class="brutal-input text-2xl w-32"
+                >
+                <label class="flex items-center space-x-3 cursor-pointer select-none">
+                    <div
+                        @click="scheduleEnabled = !scheduleEnabled; updateSchedule()"
+                        :class="scheduleEnabled ? 'bg-white' : 'bg-transparent'"
+                        class="w-6 h-6 border-2 border-white flex items-center justify-center"
+                    >
+                        <span x-show="scheduleEnabled" class="text-black font-black">X</span>
+                    </div>
+                    <span class="uppercase tracking-wide text-sm">ENABLED</span>
+                </label>
+            </div>
+        </div>
+        <div class="mt-4 text-xs text-gray-500 uppercase" x-show="scheduleEnabled">
+            NEXT RUN: <span class="text-white font-mono" x-text="nextRun || '---'"></span>
+        </div>
+    </div>
+
+    <!-- PIPELINE STATUS -->
+    <div class="brutal-card p-6" x-show="pipelineRunning || currentStage">
+        <h2 class="text-xl font-black uppercase tracking-wide mb-4">STATUS</h2>
+        <div class="grid grid-cols-3 gap-6 text-sm">
+            <div>
+                <span class="text-gray-500 uppercase text-xs">STAGE</span>
+                <div class="text-lg font-bold mt-1" x-text="currentStage || 'IDLE'"></div>
+            </div>
+            <div>
+                <span class="text-gray-500 uppercase text-xs">PROJECT</span>
+                <div class="font-mono mt-1" x-text="currentProject || '---'"></div>
+            </div>
+            <div>
+                <span class="text-gray-500 uppercase text-xs">PROGRESS</span>
+                <div class="font-bold mt-1" x-text="progress + '%'"></div>
+            </div>
+        </div>
+        <div class="progress-brutal mt-4">
+            <div class="progress-brutal-fill" :style="`width: ${progress}%`"></div>
+        </div>
+    </div>
+
+    <!-- SCENE 1 APPROVAL -->
+    <div class="brutal-card p-6" x-show="awaitingApproval && approvalType === 'primary'">
+        <div class="flex items-center justify-between mb-6">
+            <div>
+                <h2 class="text-xl font-black uppercase tracking-wide">SCENE 1 // PRIMARY REFERENCE</h2>
+                <p class="text-gray-500 text-xs uppercase mt-1">SELECT ONE OR REJECT ALL</p>
+            </div>
+            <button @click="rejectAllImages()" class="brutal-btn brutal-btn-danger">
+                ALL TRASH
+            </button>
+        </div>
+
+        <div class="grid grid-cols-2 gap-4">
+            <template x-for="(img, idx) in candidateImages" :key="idx">
+                <div
+                    @click="selectImage(idx)"
+                    :class="{'selected': selectedImage === idx}"
+                    class="image-grid-item relative cursor-pointer"
+                >
+                    <img :src="img.url" class="w-full h-72 object-cover grayscale hover:grayscale-0 transition-all">
+                    <div class="absolute bottom-0 left-0 right-0 bg-black/80 p-3">
+                        <div class="flex justify-between text-xs uppercase tracking-wide">
+                            <span>SCORE: <span class="font-bold" x-text="img.score + '%'"></span></span>
+                            <span>GRADE: <span class="font-bold" x-text="img.grade"></span></span>
+                        </div>
+                    </div>
+                    <div x-show="selectedImage === idx" class="absolute top-3 right-3 bg-white text-black px-2 py-1 text-xs font-black uppercase">
+                        SELECTED
+                    </div>
+                </div>
+            </template>
+        </div>
+
+        <div class="mt-6 flex justify-end">
+            <button
+                @click="approveSelected()"
+                :disabled="selectedImage === null"
+                class="brutal-btn"
+            >
+                APPROVE SELECTED
+            </button>
+        </div>
+    </div>
+
+    <!-- SCENES 2-6 DISPLAY (READ-ONLY) -->
+    <div class="brutal-card p-6" x-show="sceneImages.length > 0">
+        <div class="mb-6">
+            <h2 class="text-xl font-black uppercase tracking-wide">SCENES 2-6 // AUTO-GENERATING</h2>
+            <p class="text-gray-500 text-xs uppercase mt-1">IMAGES GENERATING AUTOMATICALLY</p>
+        </div>
+
+        <div class="grid grid-cols-5 gap-3">
+            <template x-for="scene in sceneImages" :key="scene.scene_num">
+                <div class="text-center">
+                    <div class="text-xs uppercase tracking-wide text-gray-500 mb-2">
+                        SCENE <span class="text-white font-bold" x-text="scene.scene_num"></span>
+                    </div>
+                    <div
+                        :class="{
+                            'border-white': scene.status === 'approved' || scene.status === 'ready',
+                            'border-yellow-500 blink': scene.status === 'generating',
+                            'border-gray-600': scene.status === 'pending'
+                        }"
+                        class="image-grid-item relative"
+                    >
+                        <img :src="scene.url" class="w-full h-32 object-cover">
+                    </div>
+                    <div class="text-xs mt-2 uppercase tracking-wide"
+                         :class="{
+                            'text-green-500': scene.status === 'approved' || scene.status === 'ready',
+                            'text-yellow-500 blink': scene.status === 'generating',
+                            'text-gray-500': scene.status === 'pending'
+                         }"
+                         x-text="scene.status">
+                    </div>
+                </div>
+            </template>
+        </div>
+    </div>
+
+    <!-- VIDEO PREVIEWS (READ-ONLY) -->
+    <div class="brutal-card p-6" x-show="videoPreviews.length > 0">
+        <div class="flex items-center justify-between mb-6">
+            <div>
+                <h2 class="text-xl font-black uppercase tracking-wide">VIDEO PREVIEWS</h2>
+                <p class="text-gray-500 text-xs uppercase mt-1">
+                    <span x-text="videoPreviews.filter(v => v.status === 'ready' || v.status === 'downloaded').length"></span> /
+                    <span x-text="videoPreviews.length"></span> READY
+                </p>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-3 gap-4">
+            <template x-for="video in videoPreviews" :key="video.scene_num">
+                <div class="text-center">
+                    <div class="text-xs uppercase tracking-wide text-gray-500 mb-2">
+                        SCENE <span class="text-white font-bold" x-text="video.scene_num"></span>
+                        <span class="ml-2" :class="{
+                            'text-green-500': video.status === 'ready' || video.status === 'downloaded',
+                            'text-yellow-500 blink': video.status === 'generating',
+                            'text-gray-500': video.status === 'pending'
+                        }" x-text="video.status"></span>
+                    </div>
+                    <div class="border-2 border-gray-700 hover:border-white transition-colors">
+                        <video
+                            :src="video.video_url"
+                            class="w-full h-40 object-cover"
+                            controls
+                            muted
+                        ></video>
+                    </div>
+                </div>
+            </template>
+        </div>
+    </div>
+
+    <!-- FINAL VIDEO -->
+    <div class="brutal-card p-6" x-show="finalVideoPath">
+        <div class="flex items-center justify-between mb-6">
+            <div>
+                <h2 class="text-xl font-black uppercase tracking-wide">FINAL VIDEO</h2>
+                <p class="text-gray-500 text-xs uppercase mt-1" x-text="finalVideoPath"></p>
+            </div>
+            <div class="flex space-x-3">
+                <button
+                    @click="startTopazProcessing()"
+                    :disabled="topazProcessing"
+                    class="brutal-btn"
+                    :class="{'bg-yellow-500': topazProcessing}"
+                >
+                    <span x-text="topazProcessing ? 'PROCESSING...' : 'POSTPROCESS (TOPAZ)'"></span>
+                </button>
+                <a :href="'/projects/' + currentProject + '/final.mp4'" download class="brutal-btn bg-green-500 text-white">
+                    DOWNLOAD
+                </a>
+            </div>
+        </div>
+
+        <div class="relative">
+            <video
+                :src="'/projects/' + currentProject + '/final.mp4'"
+                controls
+                class="w-full border-2 border-white"
+                style="max-height: 500px"
+            ></video>
+        </div>
+
+        <!-- Topaz Enhanced Video -->
+        <div x-show="topazVideoPath" class="mt-6 border-t-2 border-gray-700 pt-6">
+            <div class="flex items-center justify-between mb-4">
+                <div>
+                    <h3 class="text-lg font-bold uppercase">ENHANCED VIDEO</h3>
+                    <p class="text-green-500 text-xs uppercase">TOPAZ VIDEO AI</p>
+                </div>
+                <a :href="topazVideoPath" download class="brutal-btn bg-green-500 text-white">
+                    DOWNLOAD ENHANCED
+                </a>
+            </div>
+            <video
+                :src="topazVideoPath"
+                controls
+                class="w-full border-2 border-green-500"
+                style="max-height: 500px"
+            ></video>
+        </div>
+    </div>
+
+    <!-- ACTIVITY LOG -->
+    <div class="brutal-card p-6">
+        <h2 class="text-xl font-black uppercase tracking-wide mb-4">LOG</h2>
+        <div class="space-y-0 max-h-80 overflow-y-auto text-xs" id="activity-log">
+            <template x-for="log in logs" :key="log.id">
+                <div class="log-line flex items-start space-x-4">
+                    <span class="text-gray-600 whitespace-nowrap font-mono" x-text="log.time"></span>
+                    <span class="status-dot mt-1.5" :class="{
+                        'bg-green-500': log.type === 'success',
+                        'bg-red-500': log.type === 'error',
+                        'bg-yellow-500': log.type === 'warning',
+                        'bg-white': log.type === 'info'
+                    }"></span>
+                    <span class="uppercase tracking-wide" :class="{
+                        'text-green-400': log.type === 'success',
+                        'text-red-400': log.type === 'error',
+                        'text-yellow-400': log.type === 'warning',
+                        'text-gray-300': log.type === 'info'
+                    }" x-text="log.message"></span>
+                </div>
+            </template>
+            <div x-show="logs.length === 0" class="text-gray-600 uppercase text-center py-8 tracking-widest">
+                NO ACTIVITY
+            </div>
+        </div>
+    </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/control-push.js"></script>
+<script>
+function controlPanel() {
+    return {
+        scheduleTime: '09:00',
+        scheduleEnabled: true,
+        nextRun: '',
+        pipelineRunning: false,
+        currentStage: '',
+        currentProject: '',
+        progress: 0,
+        awaitingApproval: false,
+        approvalType: '',
+        candidateImages: [],
+        selectedImage: null,
+        sceneImages: [],
+        videoPreviews: [],
+        videoProgress: { found: 0, total: 0, elapsed: 0 },
+        logs: [],
+        logIdCounter: 0,
+        ws: null,
+        finalVideoPath: '',
+        topazVideoPath: '',
+        topazProcessing: false,
+
+        async init() {
+            this.loadSchedule();
+            this.connectWebSocket();
+            this.requestNotificationPermission();
+            await this.loadCurrentState();
+            this.addLog('info', 'SYSTEM INITIALIZED');
+        },
+
+        async loadCurrentState() {
+            try {
+                const res = await fetch('/api/control/current-state');
+                const data = await res.json();
+                
+                this.pipelineRunning = data.pipeline_running;
+                this.currentStage = data.current_stage;
+                this.progress = data.progress;
+                this.awaitingApproval = data.awaiting_approval;
+                
+                if (data.approval_type === 'primary' && data.candidate_images.length > 0) {
+                    this.candidateImages = data.candidate_images;
+                }
+                if (data.approval_type === 'scenes' && data.scene_images.length > 0) {
+                    this.sceneImages = data.scene_images;
+                }
+                
+                if (data.awaiting_approval) {
+                    this.addLog('info', 'RESTORED STATE: AWAITING ' + data.approval_type.toUpperCase() + ' APPROVAL');
+                }
+            } catch(e) {
+                console.error('Failed to load state:', e);
+            }
+        },
+
+        async requestNotificationPermission() {
+            if ('Notification' in window && Notification.permission === 'default') {
+                await Notification.requestPermission();
+                this.addLog('info', 'NOTIFICATIONS: ' + Notification.permission.toUpperCase());
+            }
+        },
+
+        connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            this.ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+
+            this.ws.onopen = () => {
+                this.addLog('success', 'WEBSOCKET CONNECTED');
+                document.getElementById('ws-status').classList.remove('bg-red-500');
+                document.getElementById('ws-status').classList.add('bg-green-500');
+            };
+
+            this.ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                this.handleWsMessage(data);
+            };
+
+            this.ws.onclose = () => {
+                this.addLog('warning', 'WEBSOCKET LOST // RECONNECTING');
+                document.getElementById('ws-status').classList.remove('bg-green-500');
+                document.getElementById('ws-status').classList.add('bg-red-500');
+                setTimeout(() => this.connectWebSocket(), 3000);
+            };
+        },
+
+        handleWsMessage(data) {
+            const event = data.event;
+            const payload = data.data || {};
+
+            // Trigger push notification for background alerts
+            if (window.ControlPush) {
+                window.ControlPush.notify(event, payload);
+            }
+
+            switch(event) {
+                case 'pipeline_started':
+                    this.pipelineRunning = true;
+                    this.currentProject = payload.project_id;
+                    this.addLog('info', 'PIPELINE STARTED // ' + payload.project_id);
+                    break;
+
+                case 'stage_changed':
+                    this.currentStage = payload.stage;
+                    this.progress = payload.progress || 0;
+                    this.addLog('info', 'STAGE: ' + payload.stage.toUpperCase());
+                    break;
+
+                case 'approval_required':
+                    this.awaitingApproval = true;
+                    this.approvalType = payload.type;
+                    if (payload.type === 'primary') {
+                        this.candidateImages = payload.images;
+                        this.selectedImage = null;
+                    } else {
+                        this.sceneImages = payload.scenes;
+                    }
+                    this.addLog('warning', 'APPROVAL REQUIRED');
+                    break;
+
+                case 'scene_updated':
+                    const idx = this.sceneImages.findIndex(s => s.scene_num === payload.scene_num);
+                    if (idx !== -1) this.sceneImages[idx] = payload;
+                    break;
+
+                case 'video_preview':
+                    // New video ready for preview
+                    const existingIdx = this.videoPreviews.findIndex(v => v.scene_num === payload.scene_num);
+                    if (existingIdx !== -1) {
+                        this.videoPreviews[existingIdx] = payload;
+                    } else {
+                        this.videoPreviews.push(payload);
+                    }
+                    this.addLog(`[Scene ${payload.scene_num}] Video ready for preview`);
+                    break;
+
+                case 'video_progress':
+                    this.videoProgress = payload;
+                    break;
+
+                case 'video_regenerating':
+                    const vidIdx = this.videoPreviews.findIndex(v => v.scene_num === payload.scene_num);
+                    if (vidIdx !== -1) {
+                        this.videoPreviews[vidIdx].status = 'regenerating';
+                    }
+                    break;
+
+                case 'pipeline_completed':
+                    this.pipelineRunning = false;
+                    this.awaitingApproval = false;
+                    this.currentStage = 'COMPLETED';
+                    this.progress = 100;
+                    this.finalVideoPath = payload.video_path;
+                    this.addLog('success', 'PIPELINE COMPLETED // ' + payload.video_path);
+                    break;
+
+                case 'topaz_completed':
+                    this.topazProcessing = false;
+                    this.topazVideoPath = payload.video_path;
+                    this.addLog('success', 'TOPAZ COMPLETE // ' + payload.video_path);
+                    break;
+
+                case 'topaz_progress':
+                    this.addLog('info', 'TOPAZ: ' + payload.message);
+                    break;
+
+                case 'pipeline_error':
+                    this.pipelineRunning = false;
+                    this.addLog('error', 'ERROR: ' + payload.message);
+                    break;
+
+                case 'log':
+                    this.addLog(payload.type || 'info', payload.message.toUpperCase());
+                    break;
+            }
+        },
+
+        addLog(type, message) {
+            const now = new Date();
+            const time = now.toTimeString().slice(0, 8);
+            this.logs.unshift({
+                id: ++this.logIdCounter,
+                time: time,
+                type: type,
+                message: message
+            });
+            if (this.logs.length > 100) this.logs.pop();
+        },
+
+        async loadSchedule() {
+            try {
+                const resp = await fetch('/api/control/schedule');
+                const data = await resp.json();
+                this.scheduleTime = data.time;
+                this.scheduleEnabled = data.enabled;
+                this.nextRun = data.next_run || '';
+            } catch(e) {
+                this.addLog('error', 'FAILED TO LOAD SCHEDULE');
+            }
+        },
+
+        async updateSchedule() {
+            try {
+                const resp = await fetch('/api/control/schedule', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ time: this.scheduleTime, enabled: this.scheduleEnabled })
+                });
+                const data = await resp.json();
+                this.nextRun = data.next_run || '';
+                this.addLog('success', 'SCHEDULE UPDATED // ' + this.scheduleTime);
+            } catch(e) {
+                this.addLog('error', 'SCHEDULE UPDATE FAILED');
+            }
+        },
+
+        async startPipeline() {
+            this.addLog('info', 'STARTING PIPELINE...');
+            try {
+                const resp = await fetch('/api/control/start', {method: 'POST'});
+                const data = await resp.json();
+                if (data.status === 'started') {
+                    this.pipelineRunning = true;
+                    this.currentProject = data.project_id;
+                }
+            } catch(e) {
+                this.addLog('error', 'PIPELINE START FAILED');
+            }
+        },
+
+        selectImage(idx) { this.selectedImage = idx; },
+
+        async approveSelected() {
+            if (this.selectedImage === null) return;
+            try {
+                await fetch('/api/control/approve', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ image_index: this.selectedImage, approval_type: 'primary' })
+                });
+                this.awaitingApproval = false;
+                this.addLog('success', 'PRIMARY APPROVED // IMAGE ' + (this.selectedImage + 1));
+            } catch(e) {
+                this.addLog('error', 'APPROVAL FAILED');
+            }
+        },
+
+        async rejectAllImages() {
+            try {
+                await fetch('/api/control/reject-all', {method: 'POST'});
+                this.candidateImages = [];
+                this.addLog('warning', 'ALL REJECTED // REGENERATING');
+            } catch(e) {
+                this.addLog('error', 'REJECTION FAILED');
+            }
+        },
+
+        // Scene approval functions removed - auto-approve mode
+
+        async startTopazProcessing() {
+            if (!this.currentProject) return;
+            this.topazProcessing = true;
+            this.addLog('info', 'STARTING TOPAZ PROCESSING...');
+            try {
+                const resp = await fetch('/api/control/topaz', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({project_id: this.currentProject})
+                });
+                const data = await resp.json();
+                if (data.status !== 'started') {
+                    throw new Error(data.message || 'Failed');
+                }
+            } catch(e) {
+                this.topazProcessing = false;
+                this.addLog('error', 'TOPAZ FAILED: ' + e.message);
+            }
+        },
+
+        // confirmScenes() removed - auto-confirm mode
+
+        // Video preview methods removed - videos auto-download in pipeline
+    }
+}
+</script>
+{% endblock %}
