@@ -70,13 +70,13 @@ class SubtitleStyle(str, Enum):
 # ============================================================================
 
 class ArchitecturalIdentity(BaseModel):
-    """Архітектурна ідентичність нерухомості."""
-    style_code: str = Field(..., description="Код стилю (JAPANESE_MINIMALIST, BRUTALIST_GOTHIC, etc)")
-    style_description: str = Field(..., description="Опис стилю")
-    stories: int = Field(default=1, description="Кількість поверхів")
-    distinctive_features: List[str] = Field(default_factory=list, description="Відмінні риси")
-    silhouette_description: str = Field(default="", description="Опис силуету")
-    interior_style: str = Field(default="", description="Стиль інтер'єру")
+    """Архітектурна ідентичність нерухомості - ALL FIELDS REQUIRED."""
+    style_code: str = Field(..., description="Код стилю - REQUIRED")
+    style_description: str = Field(..., description="Опис стилю - REQUIRED")
+    stories: int = Field(..., description="Кількість поверхів - REQUIRED")
+    distinctive_features: List[str] = Field(..., description="Відмінні риси - REQUIRED")
+    silhouette_description: str = Field(..., description="Опис силуету - REQUIRED")
+    interior_style: str = Field(..., description="Стиль інтер'єру - REQUIRED")
 
     @model_validator(mode='before')
     @classmethod
@@ -95,19 +95,19 @@ class ArchitecturalIdentity(BaseModel):
 # ============================================================================
 
 class FoodDNA(BaseModel):
-    """Food DNA - маппинг їжі на архітектурні елементи."""
-    walls_become: str = Field(..., description="Що стає стінами")
-    roof_becomes: str = Field(..., description="Що стає дахом")
-    windows_become: str = Field(..., description="Що стає вікнами")
-    door_becomes: str = Field(default="", description="Що стає дверима")
-    doors_become: str = Field(default="", description="Що стає дверима (alias)")
-    floors_become: str = Field(default="", description="Що стає підлогою")
-    columns_become: str = Field(default="", description="Що стає колонами")
-    furniture_becomes: str = Field(default="", description="Що стає меблями")
-    chimney_becomes: str = Field(default="", description="Що стає димоходом")
-    stairs_become: str = Field(default="", description="Що стає сходами")
-    fence_becomes: str = Field(default="", description="Що стає огорожею")
-    landscaping_becomes: str = Field(default="", description="Що стає ландшафтом")
+    """Food DNA - маппинг їжі на архітектурні елементи - ALL FIELDS REQUIRED."""
+    walls_become: str = Field(..., description="Що стає стінами - REQUIRED")
+    roof_becomes: str = Field(..., description="Що стає дахом - REQUIRED")
+    windows_become: str = Field(..., description="Що стає вікнами - REQUIRED")
+    door_becomes: str = Field(..., description="Що стає дверима - REQUIRED")
+    doors_become: str = Field(..., description="Що стає дверима (alias) - REQUIRED")
+    floors_become: str = Field(..., description="Що стає підлогою - REQUIRED")
+    columns_become: str = Field(..., description="Що стає колонами - REQUIRED")
+    furniture_becomes: str = Field(..., description="Що стає меблями - REQUIRED")
+    chimney_becomes: str = Field(..., description="Що стає димоходом - REQUIRED")
+    stairs_become: str = Field(..., description="Що стає сходами - REQUIRED")
+    fence_becomes: str = Field(..., description="Що стає огорожею - REQUIRED")
+    landscaping_becomes: str = Field(..., description="Що стає ландшафтом - REQUIRED")
 
     @model_validator(mode='before')
     @classmethod
@@ -126,12 +126,12 @@ class FoodDNA(BaseModel):
 
 
 class FoodIdentity(BaseModel):
-    """Повна харчова ідентичність нерухомості."""
-    primary_food: str = Field(..., description="Основна їжа")
-    food_dna: FoodDNA = Field(..., description="Food DNA маппинг")
-    texture_keywords: List[str] = Field(default_factory=list, description="Ключові слова текстури")
-    color_keywords: List[str] = Field(default_factory=list, description="Ключові слова кольору")
-    atmosphere: str = Field(default="", description="Атмосфера")
+    """Повна харчова ідентичність нерухомості - ALL FIELDS REQUIRED."""
+    primary_food: str = Field(..., description="Основна їжа - REQUIRED")
+    food_dna: FoodDNA = Field(..., description="Food DNA маппинг - REQUIRED")
+    texture_keywords: List[str] = Field(..., description="Ключові слова текстури - REQUIRED")
+    color_keywords: List[str] = Field(..., description="Ключові слова кольору - REQUIRED")
+    atmosphere: str = Field(..., description="Атмосфера - REQUIRED")
 
     @model_validator(mode='before')
     @classmethod
@@ -150,10 +150,10 @@ class FoodIdentity(BaseModel):
 # ============================================================================
 
 class LightingMaster(BaseModel):
-    """Master налаштування освітлення."""
-    preset: str = Field(..., description="Пресет освітлення")
-    mood_reason: str = Field(default="", description="Чому обрано цей настрій")
-    prompt_snippet: str = Field(..., description="Фрагмент промпту для освітлення")
+    """Master налаштування освітлення - ALL FIELDS REQUIRED."""
+    preset: str = Field(..., description="Пресет освітлення - REQUIRED")
+    mood_reason: str = Field(..., description="Чому обрано цей настрій - REQUIRED")
+    prompt_snippet: str = Field(..., description="Фрагмент промпту для освітлення - REQUIRED")
 
     @model_validator(mode='before')
     @classmethod
@@ -172,9 +172,9 @@ class LightingMaster(BaseModel):
 # ============================================================================
 
 class ForegroundElement(BaseModel):
-    """Елемент переднього плану для Scene 1."""
-    type: str = Field(default="NONE", description="Тип (STEAM, GLAZE_DRIP, FALLING_INGREDIENT, NONE)")
-    prompt_snippet: str = Field(default="", description="Фрагмент промпту")
+    """Елемент переднього плану для Scene 1 - ALL FIELDS REQUIRED."""
+    type: str = Field(..., description="Тип (STEAM, GLAZE_DRIP, FALLING_INGREDIENT, NONE) - REQUIRED")
+    prompt_snippet: str = Field(..., description="Фрагмент промпту - REQUIRED")
 
 
 # ============================================================================
@@ -182,14 +182,14 @@ class ForegroundElement(BaseModel):
 # ============================================================================
 
 class FirstFrameComposition(BaseModel):
-    """Композиція першого кадру для hook."""
-    hero_subject: str = Field(default="", description="Головний об'єкт")
-    hero_position: str = Field(default="upper_center", description="Позиція (upper_center, center_left, etc)")
-    foreground_element: str = Field(default="", description="Елемент переднього плану")
-    background_depth: str = Field(default="", description="Глибина фону")
-    lighting_direction: str = Field(default="", description="Напрям освітлення")
-    hook_element: str = Field(default="", description="Hook елемент")
-    safe_zone_compliance: bool = Field(default=True, description="Відповідність Safe Zone")
+    """Композиція першого кадру для hook - ALL FIELDS REQUIRED."""
+    hero_subject: str = Field(..., description="Головний об'єкт - REQUIRED")
+    hero_position: str = Field(..., description="Позиція (upper_center, center_left, etc) - REQUIRED")
+    foreground_element: str = Field(..., description="Елемент переднього плану - REQUIRED")
+    background_depth: str = Field(..., description="Глибина фону - REQUIRED")
+    lighting_direction: str = Field(..., description="Напрям освітлення - REQUIRED")
+    hook_element: str = Field(..., description="Hook елемент - REQUIRED")
+    safe_zone_compliance: bool = Field(..., description="Відповідність Safe Zone - REQUIRED")
 
 
 # ============================================================================
@@ -197,17 +197,17 @@ class FirstFrameComposition(BaseModel):
 # ============================================================================
 
 class HookStyleDefinition(BaseModel):
-    """Визначення стилю хуку."""
-    duration: float = Field(default=0.3, description="Тривалість в секундах")
-    effects: List[Dict[str, Any]] = Field(default_factory=list, description="Список ефектів")
-    sfx: str = Field(default="", description="Звуковий ефект")
+    """Визначення стилю хуку - ALL FIELDS REQUIRED."""
+    duration: float = Field(..., description="Тривалість в секундах - REQUIRED")
+    effects: List[Dict[str, Any]] = Field(..., description="Список ефектів - REQUIRED")
+    sfx: str = Field(..., description="Звуковий ефект - REQUIRED")
 
 
 class HookMatrix(BaseModel):
-    """Матриця доступних стилів хуків."""
-    selected_style: str = Field(default="CLASSIC", description="Обраний стиль")
-    style_reason: str = Field(default="", description="Чому обрано цей стиль")
-    avoid_styles: List[str] = Field(default_factory=list, description="Стилі яких уникати (для variety)")
+    """Матриця доступних стилів хуків - ALL FIELDS REQUIRED."""
+    selected_style: str = Field(..., description="Обраний стиль - REQUIRED")
+    style_reason: str = Field(..., description="Чому обрано цей стиль - REQUIRED")
+    avoid_styles: List[str] = Field(..., description="Стилі яких уникати (для variety) - REQUIRED")
 
 
 # ============================================================================
@@ -215,27 +215,27 @@ class HookMatrix(BaseModel):
 # ============================================================================
 
 class FoodMaterial(BaseModel):
-    """Харчові матеріали нерухомості."""
-    primary: str = Field(..., description="Основний матеріал")
-    secondary: List[str] = Field(default_factory=list, description="Додаткові матеріали")
+    """Харчові матеріали нерухомості - ALL FIELDS REQUIRED."""
+    primary: str = Field(..., description="Основний матеріал - REQUIRED")
+    secondary: List[str] = Field(..., description="Додаткові матеріали - REQUIRED")
 
 
 class PropertySpecs(BaseModel):
-    """Характеристики нерухомості."""
-    bedrooms: int = Field(default=0)
-    bathrooms: int = Field(default=0)
-    sqft: int = Field(default=0)
-    unique_feature: str = Field(default="", description="Унікальна фіча")
+    """Характеристики нерухомості - ALL FIELDS REQUIRED."""
+    bedrooms: int = Field(..., description="Кількість спалень - REQUIRED")
+    bathrooms: int = Field(..., description="Кількість ванних - REQUIRED")
+    sqft: int = Field(..., description="Площа - REQUIRED")
+    unique_feature: str = Field(..., description="Унікальна фіча - REQUIRED")
 
 
 class PropertyBrief(BaseModel):
-    """Інформація про нерухомість."""
-    name: str = Field(..., alias="name", description="Назва нерухомості")
-    location: str = Field(default="", description="Район в Glaze City")
-    price: str = Field(default="", description="Ціна як текст")
-    price_numeric: Union[int, float] = Field(default=0, description="Ціна як число")
-    food_material: Union[FoodMaterial, str] = Field(default="", description="Харчові матеріали")
-    specs: Union[PropertySpecs, str] = Field(default="", description="Характеристики")
+    """Інформація про нерухомість - ALL FIELDS REQUIRED."""
+    name: str = Field(..., alias="name", description="Назва нерухомості - REQUIRED")
+    location: str = Field(..., description="Район в Glaze City - REQUIRED")
+    price: str = Field(..., description="Ціна як текст - REQUIRED")
+    price_numeric: Union[int, float] = Field(..., description="Ціна як число - REQUIRED")
+    food_material: Union[FoodMaterial, str] = Field(..., description="Харчові матеріали - REQUIRED")
+    specs: Union[PropertySpecs, str] = Field(..., description="Характеристики - REQUIRED")
 
     class Config:
         populate_by_name = True
@@ -246,16 +246,16 @@ class PropertyBrief(BaseModel):
 # ============================================================================
 
 class HookStrategy(BaseModel):
-    """Стратегія хуку для залучення."""
-    type: str = Field(..., description="Тип хука (THE_IMPOSSIBLE, THE_ABSURD_LOGIC, etc)")
-    psychological_trigger: str = Field(default="", description="Психологічний тригер")
-    first_frame_visual: str = Field(default="", description="Візуал першого кадру")
-    first_words: str = Field(default="", description="Перші слова VO")
-    complete_hook_vo: str = Field(default="", description="Повний hook voiceover")
-    scroll_stop_element: str = Field(default="", description="Елемент що зупиняє скрол")
-    opening_line: str = Field(default="", description="Початкова фраза (legacy)")
-    visual_hook: str = Field(default="", description="Візуальний хук (legacy)")
-    audio_hook: str = Field(default="", description="Аудіо хук (legacy)")
+    """Стратегія хуку для залучення - ALL FIELDS REQUIRED."""
+    type: str = Field(..., description="Тип хука (THE_IMPOSSIBLE, THE_ABSURD_LOGIC, etc) - REQUIRED")
+    psychological_trigger: str = Field(..., description="Психологічний тригер - REQUIRED")
+    first_frame_visual: str = Field(..., description="Візуал першого кадру - REQUIRED")
+    first_words: str = Field(..., description="Перші слова VO - REQUIRED")
+    complete_hook_vo: str = Field(..., description="Повний hook voiceover - REQUIRED")
+    scroll_stop_element: str = Field(..., description="Елемент що зупиняє скрол - REQUIRED")
+    opening_line: str = Field(..., description="Початкова фраза (legacy) - REQUIRED")
+    visual_hook: str = Field(..., description="Візуальний хук (legacy) - REQUIRED")
+    audio_hook: str = Field(..., description="Аудіо хук (legacy) - REQUIRED")
 
     @model_validator(mode='before')
     @classmethod
@@ -272,9 +272,9 @@ class HookStrategy(BaseModel):
 # ============================================================================
 
 class Psychology(BaseModel):
-    """Психологічні тригери."""
-    triggers: List[str] = Field(default_factory=list, description="Список тригерів")
-    reasoning: str = Field(default="", description="Обґрунтування")
+    """Психологічні тригери - ALL FIELDS REQUIRED."""
+    triggers: List[str] = Field(..., description="Список тригерів - REQUIRED")
+    reasoning: str = Field(..., description="Обґрунтування - REQUIRED")
 
 
 # ============================================================================
@@ -282,33 +282,30 @@ class Psychology(BaseModel):
 # ============================================================================
 
 class EasterEgg(BaseModel):
-    """Схований елемент для коментарів."""
-    object: str = Field(..., description="Об'єкт")
-    scene_number: int = Field(..., description="Номер сцени (2-5)")
-    placement: str = Field(default="", description="Розташування з координатами")
-    visibility: str = Field(default="FINDABLE", description="FINDABLE або HIDDEN")
-    comment_bait: str = Field(..., description="Фраза для коментарів")
-    validation_check: str = Field(default="", description="Опис для верифікації")
-    safe_zone_position: str = Field(default="", description="Позиція в Safe Zone (legacy)")
-    visibility_score: float = Field(default=0.7, ge=0.0, le=1.0, description="Видимість 0.0-1.0 (legacy)")
+    """Схований елемент для коментарів - ALL FIELDS REQUIRED."""
+    object: str = Field(..., description="Об'єкт - REQUIRED")
+    scene_number: int = Field(..., description="Номер сцени (2-5) - REQUIRED")
+    placement: str = Field(..., description="Розташування з координатами - REQUIRED")
+    visibility: str = Field(..., description="FINDABLE або HIDDEN - REQUIRED")
+    comment_bait: str = Field(..., description="Фраза для коментарів - REQUIRED")
+    validation_check: str = Field(..., description="Опис для верифікації - REQUIRED")
+    safe_zone_position: str = Field(..., description="Позиція в Safe Zone (legacy) - REQUIRED")
+    visibility_score: float = Field(..., ge=0.0, le=1.0, description="Видимість 0.0-1.0 (legacy) - REQUIRED")
 
     @model_validator(mode='before')
     @classmethod
     def validate_required_fields(cls, data: Any) -> Any:
-        """Validate easter egg has required content and set defaults."""
+        """Validate easter egg has all required fields per GEN1 OUTPUT CONTRACT."""
         if isinstance(data, dict):
             if not data.get('object'):
                 raise ValueError("easter_egg.object is REQUIRED per GEN1 OUTPUT CONTRACT")
             scene_num = data.get('scene_number', 0)
             if not scene_num or scene_num < 2 or scene_num > 5:
                 raise ValueError("easter_egg.scene_number must be 2-5 per GEN1 OUTPUT CONTRACT")
-            # Set default comment_bait if missing
             if not data.get('comment_bait'):
-                obj_name = data.get('object', 'something')
-                data['comment_bait'] = f"Did you spot the tiny {obj_name}? First to find it wins!"
-            # Set default placement if missing
+                raise ValueError("easter_egg.comment_bait is REQUIRED per GEN1 OUTPUT CONTRACT")
             if not data.get('placement'):
-                data['placement'] = "bottom-center, 5% of frame, near main subject"
+                raise ValueError("easter_egg.placement is REQUIRED per GEN1 OUTPUT CONTRACT")
         return data
 
 
@@ -317,10 +314,10 @@ class EasterEgg(BaseModel):
 # ============================================================================
 
 class LoopConfig(BaseModel):
-    """Налаштування циклу відео."""
-    last_line: str = Field(default="", description="Остання фраза")
-    first_line: str = Field(default="", description="Перша фраза")
-    connection: str = Field(default="", description="Опис з'єднання")
+    """Налаштування циклу відео - ALL FIELDS REQUIRED."""
+    last_line: str = Field(..., description="Остання фраза - REQUIRED")
+    first_line: str = Field(..., description="Перша фраза - REQUIRED")
+    connection: str = Field(..., description="Опис з'єднання - REQUIRED")
 
 
 # ============================================================================
@@ -328,40 +325,40 @@ class LoopConfig(BaseModel):
 # ============================================================================
 
 class GlazeScene(BaseModel):
-    """Повні дані однієї сцени."""
+    """Повні дані однієї сцени - ALL FIELDS REQUIRED."""
 
-    scene_number: int = Field(..., description="Номер сцени")
-    scene_name: str = Field(default="", description="Назва сцени")
-    timestamp: str = Field(default="0:00", description="Таймстемп (0:00 формат)")
-    duration_seconds: float = Field(default=2.0, description="Тривалість в секундах")
+    scene_number: int = Field(..., description="Номер сцени - REQUIRED")
+    scene_name: str = Field(..., description="Назва сцени - REQUIRED")
+    timestamp: str = Field(..., description="Таймстемп (0:00 формат) - REQUIRED")
+    duration_seconds: float = Field(..., description="Тривалість в секундах - REQUIRED")
 
-    # Script & Text
-    voiceover: str = Field(default="", description="Текст озвучки з маркерами")
-    voiceover_segment: str = Field(default="", description="Сегмент VO (alias)")
-    on_screen_text: Optional[str] = Field(default=None, description="Текст на екрані")
-    narrative_purpose: str = Field(default="", description="ESTABLISHING/STORY/LOOP_CLOSE")
-    energy_level: str = Field(default="MEDIUM", description="HIGH/MEDIUM/LOW/EXPLOSIVE")
+    # Script & Text - REQUIRED
+    voiceover: str = Field(..., description="Текст озвучки з маркерами - REQUIRED")
+    voiceover_segment: str = Field(..., description="Сегмент VO (alias) - REQUIRED")
+    on_screen_text: str = Field(..., description="Текст на екрані - REQUIRED")
+    narrative_purpose: str = Field(..., description="ESTABLISHING/STORY/LOOP_CLOSE - REQUIRED")
+    energy_level: str = Field(..., description="HIGH/MEDIUM/LOW/EXPLOSIVE - REQUIRED")
 
-    # Visual
-    visual_description: str = Field(default="", description="Опис візуалу")
-    camera_movement: str = Field(default="", description="Рух камери")
-    motion_elements: List[str] = Field(default_factory=list, description="3+ motion elements")
+    # Visual - REQUIRED
+    visual_description: str = Field(..., description="Опис візуалу - REQUIRED")
+    camera_movement: str = Field(..., description="Рух камери - REQUIRED")
+    motion_elements: List[str] = Field(..., description="3+ motion elements - REQUIRED")
 
-    # Audio
-    audio_sfx: str = Field(default="", description="Звукові ефекти")
-    audio_moment: str = Field(default="", description="Ключовий аудіо момент")
+    # Audio - REQUIRED
+    audio_sfx: str = Field(..., description="Звукові ефекти - REQUIRED")
+    audio_moment: str = Field(..., description="Ключовий аудіо момент - REQUIRED")
 
     # AI Prompts - REQUIRED per GEN2 OUTPUT CONTRACT
-    image_prompt: str = Field(default="", description="Промпт Nano Banana Pro")
-    video_prompt: str = Field(default="", description="Промпт Kling/Veo/Wan")
-    video_tool: str = Field(default="KLING", description="KLING/VEO/WAN")
-    reference_type: str = Field(default="INDEPENDENT", description="PRIMARY | REQUIRES_REF | INDEPENDENT")
-    reference_hint: str = Field(default="", description="Підказка для референсу (GEN1)")
+    image_prompt: str = Field(..., description="Промпт Nano Banana Pro - REQUIRED")
+    video_prompt: str = Field(..., description="Промпт Kling/Veo/Wan - REQUIRED")
+    video_tool: str = Field(..., description="KLING/VEO/WAN - REQUIRED")
+    reference_type: str = Field(..., description="PRIMARY | REQUIRES_REF | INDEPENDENT - REQUIRED")
+    reference_hint: str = Field(..., description="Підказка для референсу (GEN1) - REQUIRED")
 
     # Processing status (додаткові поля для автоматизації)
     image_path: Optional[Path] = Field(default=None, description="Шлях до зображення")
     video_path: Optional[Path] = Field(default=None, description="Шлях до відео")
-    status: str = Field(default="pending", description="Статус обробки")
+    status: str = Field(..., description="Статус обробки - REQUIRED")
 
     @model_validator(mode='before')
     @classmethod
@@ -394,21 +391,21 @@ class GlazeScene(BaseModel):
 # ============================================================================
 
 class VoiceoverSettings(BaseModel):
-    """Налаштування ElevenLabs."""
-    voice_id: str = Field(default="Adam")
-    stability: float = Field(default=0.50)
-    similarity_boost: float = Field(default=0.75)
-    style: float = Field(default=0.30)
-    speaker_boost: bool = Field(default=True)
+    """Налаштування ElevenLabs - ALL FIELDS REQUIRED."""
+    voice_id: str = Field(..., description="Voice ID - REQUIRED")
+    stability: float = Field(..., description="Stability - REQUIRED")
+    similarity_boost: float = Field(..., description="Similarity boost - REQUIRED")
+    style: float = Field(..., description="Style - REQUIRED")
+    speaker_boost: bool = Field(..., description="Speaker boost - REQUIRED")
 
 
 class VoiceoverConfig(BaseModel):
-    """Повна конфігурація озвучки."""
-    settings: VoiceoverSettings = Field(default_factory=VoiceoverSettings)
+    """Повна конфігурація озвучки - ALL FIELDS REQUIRED."""
+    settings: VoiceoverSettings = Field(..., description="Налаштування - REQUIRED")
     full_script: str = Field(..., description="Повний текст з маркерами - REQUIRED")
-    character: str = Field(default="broker", description="broker | announcer | guide")
-    model: str = Field(default="eleven_v3", description="ElevenLabs model")
-    total_duration_seconds: float = Field(default=0, description="Загальна тривалість")
+    character: str = Field(..., description="broker | announcer | guide - REQUIRED")
+    model: str = Field(..., description="ElevenLabs model - REQUIRED")
+    total_duration_seconds: float = Field(..., description="Загальна тривалість - REQUIRED")
 
     @model_validator(mode='before')
     @classmethod
@@ -438,20 +435,20 @@ class VoiceoverConfig(BaseModel):
 # ============================================================================
 
 class BackgroundMusic(BaseModel):
-    """Конфігурація фонової музики."""
-    genre: str = Field(default="")
-    style: str = Field(default="")
-    bpm: int = Field(default=120)
-    mood: str = Field(default="")
-    duration_seconds: int = Field(default=30)
-    reference: str = Field(default="")
+    """Конфігурація фонової музики - ALL FIELDS REQUIRED."""
+    genre: str = Field(..., description="Жанр - REQUIRED")
+    style: str = Field(..., description="Стиль - REQUIRED")
+    bpm: int = Field(..., description="BPM - REQUIRED")
+    mood: str = Field(..., description="Настрій - REQUIRED")
+    duration_seconds: int = Field(..., description="Тривалість - REQUIRED")
+    reference: str = Field(..., description="Референс - REQUIRED")
 
 
 class SFXItem(BaseModel):
-    """Один звуковий ефект."""
-    timestamp: str = Field(..., description="Час (0:02 формат)")
-    effect: str = Field(..., description="Назва ефекту")
-    description: str = Field(default="", description="Опис")
+    """Один звуковий ефект - ALL FIELDS REQUIRED."""
+    timestamp: str = Field(..., description="Час (0:02 формат) - REQUIRED")
+    effect: str = Field(..., description="Назва ефекту - REQUIRED")
+    description: str = Field(..., description="Опис - REQUIRED")
 
     # Alias for backward compatibility
     @property
@@ -460,9 +457,9 @@ class SFXItem(BaseModel):
 
 
 class AudioConfig(BaseModel):
-    """Повна аудіо конфігурація."""
-    background_music: BackgroundMusic = Field(default_factory=BackgroundMusic)
-    sfx: List[SFXItem] = Field(default_factory=list)
+    """Повна аудіо конфігурація - ALL FIELDS REQUIRED."""
+    background_music: BackgroundMusic = Field(..., description="Фонова музика - REQUIRED")
+    sfx: List[SFXItem] = Field(..., description="SFX - REQUIRED")
 
 
 # ============================================================================
@@ -470,21 +467,21 @@ class AudioConfig(BaseModel):
 # ============================================================================
 
 class PostingTime(BaseModel):
-    """Оптимальний час публікації."""
-    day: str = Field(default="")
-    time: str = Field(default="")
-    timezone: str = Field(default="EST")
+    """Оптимальний час публікації - ALL FIELDS REQUIRED."""
+    day: str = Field(..., description="День - REQUIRED")
+    time: str = Field(..., description="Час - REQUIRED")
+    timezone: str = Field(..., description="Timezone - REQUIRED")
 
 
 class ViralMetadata(BaseModel):
-    """Метадані для YouTube - NEVER NULL per GEN1 OUTPUT CONTRACT."""
-    title: str = Field(..., description="Заголовок (max 60 chars) - NEVER NULL")
-    description: str = Field(..., description="Опис (min 100 chars) - NEVER NULL")
-    pinned_comment: str = Field(default="", description="Закріплений коментар")
-    title_char_count: int = Field(default=0)
-    hashtags: List[str] = Field(default_factory=list, description="Хештеги")
-    tags: List[str] = Field(default_factory=list, description="SEO теги")
-    posting_time: Union[PostingTime, str] = Field(default="", description="Час публікації")
+    """Метадані для YouTube - NEVER NULL per GEN1 OUTPUT CONTRACT - ALL FIELDS REQUIRED."""
+    title: str = Field(..., description="Заголовок (max 60 chars) - NEVER NULL - REQUIRED")
+    description: str = Field(..., description="Опис (min 100 chars) - NEVER NULL - REQUIRED")
+    pinned_comment: str = Field(..., description="Закріплений коментар - REQUIRED")
+    title_char_count: int = Field(..., description="Кількість символів в заголовку - REQUIRED")
+    hashtags: List[str] = Field(..., description="Хештеги - REQUIRED")
+    tags: List[str] = Field(..., description="SEO теги - REQUIRED")
+    posting_time: Union[PostingTime, str] = Field(..., description="Час публікації - REQUIRED")
 
     @model_validator(mode='before')
     @classmethod
@@ -508,28 +505,28 @@ class ViralMetadata(BaseModel):
 # ============================================================================
 
 class AuditScore(BaseModel):
-    """Один показник аудиту."""
-    score: int = Field(default=0, ge=0, le=10)
-    reason: str = Field(default="")
+    """Один показник аудиту - ALL FIELDS REQUIRED."""
+    score: int = Field(..., ge=0, le=10, description="Оцінка - REQUIRED")
+    reason: str = Field(..., description="Причина - REQUIRED")
 
 
 class ViralAuditScores(BaseModel):
-    """Всі показники аудиту."""
-    hook_strength: AuditScore = Field(default_factory=AuditScore)
-    retention_architecture: AuditScore = Field(default_factory=AuditScore)
-    loop_quality: AuditScore = Field(default_factory=AuditScore)
-    psychological_triggers: AuditScore = Field(default_factory=AuditScore)
-    easter_egg_appeal: AuditScore = Field(default_factory=AuditScore)
-    brand_fit: AuditScore = Field(default_factory=AuditScore)
+    """Всі показники аудиту - ALL FIELDS REQUIRED."""
+    hook_strength: AuditScore = Field(..., description="Сила хуку - REQUIRED")
+    retention_architecture: AuditScore = Field(..., description="Архітектура утримання - REQUIRED")
+    loop_quality: AuditScore = Field(..., description="Якість циклу - REQUIRED")
+    psychological_triggers: AuditScore = Field(..., description="Психологічні тригери - REQUIRED")
+    easter_egg_appeal: AuditScore = Field(..., description="Привабливість Easter Egg - REQUIRED")
+    brand_fit: AuditScore = Field(..., description="Відповідність бренду - REQUIRED")
 
 
 class ViralAudit(BaseModel):
-    """Повний аудит вірусності."""
-    scores: ViralAuditScores = Field(default_factory=ViralAuditScores)
-    total_score: int = Field(default=0)
-    max_score: int = Field(default=60)
-    viral_probability: str = Field(default="", description="LOW/MEDIUM/HIGH")
-    viral_reasoning: str = Field(default="")
+    """Повний аудит вірусності - ALL FIELDS REQUIRED."""
+    scores: ViralAuditScores = Field(..., description="Оцінки - REQUIRED")
+    total_score: int = Field(..., description="Загальна оцінка - REQUIRED")
+    max_score: int = Field(..., description="Максимальна оцінка - REQUIRED")
+    viral_probability: str = Field(..., description="LOW/MEDIUM/HIGH - REQUIRED")
+    viral_reasoning: str = Field(..., description="Обґрунтування - REQUIRED")
 
     # Backward compatibility properties
     @property
@@ -550,9 +547,9 @@ class ViralAudit(BaseModel):
 # ============================================================================
 
 class SeriesInfo(BaseModel):
-    """Інформація про серію."""
-    category: str = Field(default="", description="Категорія (Mansions/Motors/etc)")
-    sequel_ideas: List[str] = Field(default_factory=list)
+    """Інформація про серію - ALL FIELDS REQUIRED."""
+    category: str = Field(..., description="Категорія (Mansions/Motors/etc) - REQUIRED")
+    sequel_ideas: List[str] = Field(..., description="Ідеї для сиквелів - REQUIRED")
 
 
 # ============================================================================
@@ -560,11 +557,11 @@ class SeriesInfo(BaseModel):
 # ============================================================================
 
 class ProjectMeta(BaseModel):
-    """Метаінформація проекту."""
-    total_scenes: int = Field(default=0)
-    total_duration_seconds: float = Field(default=0)
-    content_pillar: str = Field(default="")
-    generated_at: str = Field(default="auto")
+    """Метаінформація проекту - ALL FIELDS REQUIRED."""
+    total_scenes: int = Field(..., description="Кількість сцен - REQUIRED")
+    total_duration_seconds: float = Field(..., description="Загальна тривалість - REQUIRED")
+    content_pillar: str = Field(..., description="Контент категорія - REQUIRED")
+    generated_at: str = Field(..., description="Час генерації - REQUIRED")
 
 
 # ============================================================================
@@ -606,28 +603,28 @@ class GlazeCityProject(BaseModel):
         default=None, description="Елемент переднього плану v7.4"
     )
 
-    # v7.4: Atmosphere & Hook Matrix
+    # v7.4: Atmosphere & Hook Matrix - ALL REQUIRED
     atmosphere_mode: str = Field(
-        default="CINEMATIC", description="Режим атмосфери (CINEMATIC/VIBRANT/PLAYFUL)"
+        ..., description="Режим атмосфери (CINEMATIC/VIBRANT/PLAYFUL) - REQUIRED"
     )
-    hook_matrix: Optional[HookMatrix] = Field(
-        default=None, description="Матриця хуків v7.4"
+    hook_matrix: HookMatrix = Field(
+        ..., description="Матриця хуків v7.4 - REQUIRED"
     )
 
     # Hook & Psychology - REQUIRED
-    hook: HookStrategy = Field(default_factory=HookStrategy)
-    psychology: Psychology = Field(default_factory=Psychology)
+    hook: HookStrategy = Field(..., description="Стратегія хуку - REQUIRED")
+    psychology: Psychology = Field(..., description="Психологія - REQUIRED")
 
     # Easter Egg & Loop - REQUIRED
-    easter_egg: EasterEgg = Field(default_factory=EasterEgg)
-    loop: LoopConfig = Field(default_factory=LoopConfig)
+    easter_egg: EasterEgg = Field(..., description="Easter Egg - REQUIRED")
+    loop: LoopConfig = Field(..., description="Конфігурація циклу - REQUIRED")
 
     # Scenes - REQUIRED (6 scenes)
-    scenes: List[GlazeScene] = Field(default_factory=list)
+    scenes: List[GlazeScene] = Field(..., description="Сцени (6 штук) - REQUIRED")
 
     # Voiceover & Audio - REQUIRED
-    voiceover: VoiceoverConfig = Field(default_factory=VoiceoverConfig)
-    audio: AudioConfig = Field(default_factory=AudioConfig)
+    voiceover: VoiceoverConfig = Field(..., description="Озвучка - REQUIRED")
+    audio: AudioConfig = Field(..., description="Аудіо - REQUIRED")
 
     # YouTube - REQUIRED, NEVER NULL
     youtube: ViralMetadata
@@ -676,16 +673,16 @@ class GlazeCityProject(BaseModel):
 
         return data
 
-    # Audit
-    viral_audit: ViralAudit = Field(default_factory=ViralAudit)
+    # Audit - REQUIRED
+    viral_audit: ViralAudit = Field(..., description="Аудит вірусності - REQUIRED")
 
-    # Series
-    series: SeriesInfo = Field(default_factory=SeriesInfo)
+    # Series - REQUIRED
+    series: SeriesInfo = Field(..., description="Інформація про серію - REQUIRED")
 
-    # Meta
-    meta: ProjectMeta = Field(default_factory=ProjectMeta)
+    # Meta - REQUIRED
+    meta: ProjectMeta = Field(..., description="Метаінформація - REQUIRED")
 
-    # Processing fields (not from JSON)
+    # Processing fields (not from JSON) - Optional runtime fields
     project_id: str = Field(default="", description="Унікальний ID проекту")
     created_at: datetime = Field(default_factory=datetime.now)
     raw_output: str = Field(default="", description="Оригінальний JSON")

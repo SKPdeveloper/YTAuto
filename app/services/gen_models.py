@@ -324,13 +324,13 @@ class Gen1Hook(BaseModel):
 
 
 class Gen1ArchitecturalIdentity(BaseModel):
-    """Architectural identity for visual consistency."""
-    style_code: str = Field(..., description="MODERN_MIN | MID_CENTURY | BRUTALIST | etc.")
-    style_description: str = Field(..., description="2-3 sentence description")
-    stories: int = Field(default=2, description="Number of stories")
-    distinctive_features: List[str] = Field(default_factory=list, description="Key features")
-    silhouette_description: str = Field(..., description="One sentence describing shape")
-    interior_style: str = Field(..., description="How interiors should feel")
+    """Architectural identity for visual consistency - ALL FIELDS REQUIRED."""
+    style_code: str = Field(..., description="MODERN_MIN | MID_CENTURY | BRUTALIST | etc. - REQUIRED")
+    style_description: str = Field(..., description="2-3 sentence description - REQUIRED")
+    stories: int = Field(..., description="Number of stories - REQUIRED")
+    distinctive_features: List[str] = Field(..., description="Key features - REQUIRED")
+    silhouette_description: str = Field(..., description="One sentence describing shape - REQUIRED")
+    interior_style: str = Field(..., description="How interiors should feel - REQUIRED")
 
 
 class Gen1FoodDNA(BaseModel):
@@ -345,12 +345,12 @@ class Gen1FoodDNA(BaseModel):
 
 
 class Gen1FoodIdentity(BaseModel):
-    """Food identity for the project."""
-    primary_food: str = Field(..., description="Primary food material")
-    food_dna: Gen1FoodDNA = Field(..., description="Food-to-architecture mapping")
-    texture_keywords: List[str] = Field(default_factory=list, description="Texture words")
-    color_keywords: List[str] = Field(default_factory=list, description="Color words")
-    atmosphere: str = Field(..., description="Overall atmosphere")
+    """Food identity for the project - ALL FIELDS REQUIRED."""
+    primary_food: str = Field(..., description="Primary food material - REQUIRED")
+    food_dna: Gen1FoodDNA = Field(..., description="Food-to-architecture mapping - REQUIRED")
+    texture_keywords: List[str] = Field(..., description="Texture words - REQUIRED")
+    color_keywords: List[str] = Field(..., description="Color words - REQUIRED")
+    atmosphere: str = Field(..., description="Overall atmosphere - REQUIRED")
 
 
 class Gen1LightingMaster(BaseModel):
@@ -377,13 +377,13 @@ class Gen1EasterEgg(BaseModel):
 
 
 class Gen1VisualConcept(BaseModel):
-    """Visual concept for a scene (from GEN1)."""
-    subject: str = Field(..., description="Main subject of the scene")
-    environment: str = Field(default="", description="Environment/setting")
-    mood: str = Field(default="", description="Emotional quality")
-    key_elements: List[str] = Field(default_factory=list, description="Key visual elements")
-    lighting_note: str = Field(default="", description="Specific lighting for this scene")
-    motion_elements: List[str] = Field(default_factory=list, description="What should move")
+    """Visual concept for a scene (from GEN1) - ALL FIELDS REQUIRED."""
+    subject: str = Field(..., description="Main subject of the scene - REQUIRED")
+    environment: str = Field(..., description="Environment/setting - REQUIRED")
+    mood: str = Field(..., description="Emotional quality - REQUIRED")
+    key_elements: List[str] = Field(..., description="Key visual elements - REQUIRED")
+    lighting_note: str = Field(..., description="Specific lighting for this scene - REQUIRED")
+    motion_elements: List[str] = Field(..., description="What should move - REQUIRED")
 
 
 class Gen1CameraIntent(BaseModel):
@@ -405,18 +405,18 @@ class Gen1CameraIntent(BaseModel):
 
 
 class Gen1SceneConcept(BaseModel):
-    """Scene concept from GEN1 (story & structure, not visual prompts)."""
-    scene_number: int = Field(..., description="Scene number (1-based)")
-    scene_name: str = Field(..., description="Scene name")
-    duration_seconds: float = Field(default=2.0, description="Scene duration")
-    narrative_purpose: str = Field(..., description="ESTABLISHING | EXTERIOR_ANGLE | etc.")
-    reference_hint: str = Field(..., description="PRIMARY | REQUIRES_REF | INDEPENDENT")
-    energy_level: str = Field(default="HIGH", description="EXPLOSIVE | HIGH | MEDIUM | LOW")
-    visual_concept: Gen1VisualConcept = Field(..., description="Visual concept for GEN2")
-    camera_intent: Gen1CameraIntent = Field(..., description="Camera movement intent")
-    voiceover_segment: str = Field(default="", description="VO text with [tags]")
-    broker_script: str = Field(default="", description="Broker script for scenes 1-4")
-    audio_moment: str = Field(default="", description="Key audio event")
+    """Scene concept from GEN1 (story & structure, not visual prompts) - ALL FIELDS REQUIRED."""
+    scene_number: int = Field(..., description="Scene number (1-based) - REQUIRED")
+    scene_name: str = Field(..., description="Scene name - REQUIRED")
+    duration_seconds: float = Field(..., description="Scene duration - REQUIRED")
+    narrative_purpose: str = Field(..., description="ESTABLISHING | EXTERIOR_ANGLE | etc. - REQUIRED")
+    reference_hint: str = Field(..., description="PRIMARY | REQUIRES_REF | INDEPENDENT - REQUIRED")
+    energy_level: str = Field(..., description="EXPLOSIVE | HIGH | MEDIUM | LOW - REQUIRED")
+    visual_concept: Gen1VisualConcept = Field(..., description="Visual concept for GEN2 - REQUIRED")
+    camera_intent: Gen1CameraIntent = Field(..., description="Camera movement intent - REQUIRED")
+    voiceover_segment: str = Field(..., description="VO text with [tags] - REQUIRED")
+    broker_script: str = Field(..., description="Broker script for scenes 1-4 - REQUIRED")
+    audio_moment: str = Field(..., description="Key audio event - REQUIRED")
 
     @field_validator('narrative_purpose')
     @classmethod
@@ -450,31 +450,29 @@ class Gen1SceneConcept(BaseModel):
         """Validate all required scene fields are present and valid."""
         errors = []
 
-        # Check visual_concept.subject
+        # Check visual_concept.subject - REQUIRED
         if not self.visual_concept.subject:
             errors.append(f"Scene {self.scene_number}: missing visual_concept.subject")
 
-        # Check visual_concept.environment
+        # Check visual_concept.environment - REQUIRED
         if not self.visual_concept.environment:
-            # Set default
-            self.visual_concept.environment = "exterior setting"
+            errors.append(f"Scene {self.scene_number}: missing visual_concept.environment")
 
-        # Check visual_concept.motion_elements
+        # Check visual_concept.motion_elements - REQUIRED
         if not self.visual_concept.motion_elements:
-            # Set default motion elements
-            self.visual_concept.motion_elements = ["ambient movement"]
+            errors.append(f"Scene {self.scene_number}: missing visual_concept.motion_elements")
 
-        # Check camera_intent.movement is set (already validated)
+        # Check camera_intent.movement - REQUIRED
         if not self.camera_intent.movement:
             errors.append(f"Scene {self.scene_number}: missing camera_intent.movement")
+
+        # Check voiceover_segment - REQUIRED
+        if not self.voiceover_segment:
+            errors.append(f"Scene {self.scene_number}: missing voiceover_segment")
 
         # Scene 1 must be PRIMARY
         if self.scene_number == 1 and self.reference_hint != "PRIMARY":
             self.reference_hint = "PRIMARY"
-
-        # Auto-fill broker_script from voiceover_segment for scenes 1-4
-        if not self.broker_script and self.voiceover_segment and self.scene_number <= 4:
-            self.broker_script = self.voiceover_segment
 
         if errors:
             raise ValueError("; ".join(errors))
@@ -508,12 +506,9 @@ class Gen1FoleySound(BaseModel):
 
 
 class Gen1FoleyPalette(BaseModel):
-    """Foley sounds configuration."""
-    sounds: List[Gen1FoleySound] = Field(default_factory=list, description="Available sounds")
-    scene_assignments: Dict[str, List[str]] = Field(
-        default_factory=dict,
-        description="Mapping of scene_N to sound IDs"
-    )
+    """Foley sounds configuration - ALL FIELDS REQUIRED."""
+    sounds: List[Gen1FoleySound] = Field(..., description="Available sounds - REQUIRED")
+    scene_assignments: Dict[str, List[str]] = Field(..., description="Mapping of scene_N to sound IDs - REQUIRED")
 
 
 class Gen1SfxItem(BaseModel):
@@ -524,53 +519,50 @@ class Gen1SfxItem(BaseModel):
 
 
 class Gen1SfxScene(BaseModel):
-    """SFX configuration for a scene."""
-    scene: int = Field(..., description="Scene number")
-    sfx: List[Gen1SfxItem] = Field(default_factory=list, description="SFX items")
+    """SFX configuration for a scene - ALL FIELDS REQUIRED."""
+    scene: int = Field(..., description="Scene number - REQUIRED")
+    sfx: List[Gen1SfxItem] = Field(..., description="SFX items - REQUIRED")
 
 
 class Gen1AudioConfig(BaseModel):
-    """Audio configuration from GEN1."""
-    sonic_hook: Gen1SonicHook = Field(..., description="Sonic hook")
-    suno_prompt: str = Field(default="", description="SUNO music generation prompt")
-    foley_palette: Gen1FoleyPalette = Field(
-        default_factory=Gen1FoleyPalette,
-        description="Foley sounds"
-    )
-    sfx_per_scene: List[Gen1SfxScene] = Field(default_factory=list, description="SFX per scene")
+    """Audio configuration from GEN1 - ALL FIELDS REQUIRED."""
+    sonic_hook: Gen1SonicHook = Field(..., description="Sonic hook - REQUIRED")
+    suno_prompt: str = Field(..., description="SUNO music generation prompt - REQUIRED")
+    foley_palette: Gen1FoleyPalette = Field(..., description="Foley sounds - REQUIRED")
+    sfx_per_scene: List[Gen1SfxScene] = Field(..., description="SFX per scene - REQUIRED")
 
 
 class Gen1ShareTrigger(BaseModel):
-    """Share trigger for engagement."""
-    text: str = Field(..., description="Share trigger text")
-    placement: str = Field(default="description_end", description="Where to place")
+    """Share trigger for engagement - ALL FIELDS REQUIRED."""
+    text: str = Field(..., description="Share trigger text - REQUIRED")
+    placement: str = Field(..., description="Where to place - REQUIRED")
 
 
 class Gen1YouTube(BaseModel):
-    """YouTube metadata nested object (REQUIRED - NEVER NULL)."""
-    title: str = Field(..., description="YouTube title (max 60 chars with emoji)")
-    description: str = Field(..., description="YouTube description (min 100 chars)")
-    pinned_comment: str = Field(..., description="Pinned comment (easter egg mystery)")
-    tags: List[str] = Field(default_factory=list, description="YouTube tags")
+    """YouTube metadata nested object (REQUIRED - NEVER NULL) - ALL FIELDS REQUIRED."""
+    title: str = Field(..., description="YouTube title (max 60 chars with emoji) - REQUIRED")
+    description: str = Field(..., description="YouTube description (min 100 chars) - REQUIRED")
+    pinned_comment: str = Field(..., description="Pinned comment (easter egg mystery) - REQUIRED")
+    tags: List[str] = Field(..., description="YouTube tags - REQUIRED")
 
 
 class Gen1ViralAssessment(BaseModel):
-    """Viral assessment scores (REQUIRED)."""
-    hook_strength: float = Field(default=0.8, ge=0.0, le=1.0, description="Hook strength score")
-    humor_quotient: float = Field(default=0.7, ge=0.0, le=1.0, description="Humor quotient")
-    shareability: float = Field(default=0.8, ge=0.0, le=1.0, description="Shareability score")
-    comment_potential: float = Field(default=0.8, ge=0.0, le=1.0, description="Comment potential")
-    visual_uniqueness: float = Field(default=0.8, ge=0.0, le=1.0, description="Visual uniqueness")
-    overall_score: float = Field(default=0.8, ge=0.0, le=1.0, description="Overall viral score")
-    weak_points: List[str] = Field(default_factory=list, description="Weak points")
-    strength_points: List[str] = Field(default_factory=list, description="Strength points")
+    """Viral assessment scores (REQUIRED) - ALL FIELDS REQUIRED."""
+    hook_strength: float = Field(..., ge=0.0, le=1.0, description="Hook strength score - REQUIRED")
+    humor_quotient: float = Field(..., ge=0.0, le=1.0, description="Humor quotient - REQUIRED")
+    shareability: float = Field(..., ge=0.0, le=1.0, description="Shareability score - REQUIRED")
+    comment_potential: float = Field(..., ge=0.0, le=1.0, description="Comment potential - REQUIRED")
+    visual_uniqueness: float = Field(..., ge=0.0, le=1.0, description="Visual uniqueness - REQUIRED")
+    overall_score: float = Field(..., ge=0.0, le=1.0, description="Overall viral score - REQUIRED")
+    weak_points: List[str] = Field(..., description="Weak points - REQUIRED")
+    strength_points: List[str] = Field(..., description="Strength points - REQUIRED")
 
 
 class Gen1Engagement(BaseModel):
-    """Engagement elements."""
-    easter_egg: Gen1EasterEgg = Field(..., description="Easter egg")
-    share_trigger: Gen1ShareTrigger = Field(..., description="Share trigger")
-    hashtags: List[str] = Field(default_factory=list, description="3 hashtags")
+    """Engagement elements - ALL FIELDS REQUIRED."""
+    easter_egg: Gen1EasterEgg = Field(..., description="Easter egg - REQUIRED")
+    share_trigger: Gen1ShareTrigger = Field(..., description="Share trigger - REQUIRED")
+    hashtags: List[str] = Field(..., description="3 hashtags - REQUIRED")
 
 
 class Gen1Output(BaseModel):
@@ -593,18 +585,18 @@ class Gen1Output(BaseModel):
     audio: Gen1AudioConfig = Field(..., description="Audio config")
     engagement: Gen1Engagement = Field(..., description="Engagement elements")
 
-    # YouTube nested object (REQUIRED)
-    youtube: Optional[Gen1YouTube] = Field(default=None, description="YouTube metadata nested object")
+    # YouTube nested object (REQUIRED - NEVER NULL)
+    youtube: Gen1YouTube = Field(..., description="YouTube metadata nested object - REQUIRED")
 
-    # Flat YouTube fields for backwards compatibility (REQUIRED)
-    youtube_title: Optional[str] = Field(default=None, description="YouTube title")
-    youtube_description: Optional[str] = Field(default=None, description="YouTube description")
-    youtube_pinned_comment: Optional[str] = Field(default=None, description="YouTube pinned comment")
+    # Flat YouTube fields for backwards compatibility (REQUIRED - NEVER NULL)
+    youtube_title: str = Field(..., description="YouTube title - REQUIRED")
+    youtube_description: str = Field(..., description="YouTube description - REQUIRED")
+    youtube_pinned_comment: str = Field(..., description="YouTube pinned comment - REQUIRED")
     youtube_hashtags: List[str] = Field(default_factory=list, description="YouTube hashtags")
     youtube_tags: List[str] = Field(default_factory=list, description="YouTube tags")
 
-    # Viral assessment (REQUIRED)
-    viral_assessment: Optional[Gen1ViralAssessment] = Field(default=None, description="Viral assessment scores")
+    # Viral assessment (REQUIRED - NEVER NULL)
+    viral_assessment: Gen1ViralAssessment = Field(..., description="Viral assessment scores - REQUIRED")
 
     @model_validator(mode='after')
     def validate_gen1_contract(self) -> 'Gen1Output':
@@ -661,50 +653,21 @@ class Gen1Output(BaseModel):
 
         # ===== AUDIO VALIDATION =====
         if not self.audio.suno_prompt:
-            # Set default suno prompt
-            self.audio.suno_prompt = "epic cinematic orchestral, food commercial, lush"
+            errors.append("Missing audio.suno_prompt")
 
-        # ===== YOUTUBE VALIDATION (populate defaults if missing) =====
-        if self.youtube:
-            # Sync flat fields from nested object
-            if not self.youtube_title:
-                self.youtube_title = self.youtube.title
-            if not self.youtube_description:
-                self.youtube_description = self.youtube.description
-            if not self.youtube_pinned_comment:
-                self.youtube_pinned_comment = self.youtube.pinned_comment
-            if not self.youtube_tags:
-                self.youtube_tags = self.youtube.tags
-        else:
-            # Create default youtube object from flat fields or defaults
-            title = self.youtube_title or f"{self.metadata.title} 🍕"
-            desc = self.youtube_description or f"{self.property.name}: A {self.food_identity.primary_food} masterpiece in Glaze City. #foodart #shorts"
-            pinned = self.youtube_pinned_comment or "👀 Something tiny is hiding in this video... first to spot it wins!"
-            tags = self.youtube_tags or ["glaze city", self.food_identity.primary_food, "ai art", "shorts"]
-            self.youtube = Gen1YouTube(
-                title=title,
-                description=desc,
-                pinned_comment=pinned,
-                tags=tags
-            )
-            # Also set flat fields
-            self.youtube_title = title
-            self.youtube_description = desc
-            self.youtube_pinned_comment = pinned
-            self.youtube_tags = tags
+        # ===== YOUTUBE VALIDATION (sync flat fields from nested object) =====
+        # Sync flat fields from nested object for backwards compatibility
+        if self.youtube.title and not self.youtube_title:
+            self.youtube_title = self.youtube.title
+        if self.youtube.description and not self.youtube_description:
+            self.youtube_description = self.youtube.description
+        if self.youtube.pinned_comment and not self.youtube_pinned_comment:
+            self.youtube_pinned_comment = self.youtube.pinned_comment
+        if self.youtube.tags and not self.youtube_tags:
+            self.youtube_tags = self.youtube.tags
 
-        # ===== VIRAL ASSESSMENT (populate default if missing) =====
-        if not self.viral_assessment:
-            self.viral_assessment = Gen1ViralAssessment(
-                hook_strength=0.8,
-                humor_quotient=0.7,
-                shareability=0.8,
-                comment_potential=0.8,
-                visual_uniqueness=0.85,
-                overall_score=0.8,
-                weak_points=[],
-                strength_points=["Unique food-architecture combo", "Strong visual hook"]
-            )
+        # ===== VIRAL ASSESSMENT VALIDATION =====
+        # viral_assessment is now REQUIRED - no defaults needed
 
         # ===== ENGAGEMENT VALIDATION =====
         if not self.engagement.easter_egg.object:
@@ -795,16 +758,16 @@ class Gen2SceneInput(BaseModel):
 # ============================================================================
 
 class Gen2FirstFrameComposition(BaseModel):
-    """First frame composition for Scene 1."""
-    hook_type: Optional[str] = Field(default=None, alias="hook_element", description="THE_IMPOSSIBLE | SCALE_SHOCK | etc.")
-    focal_point: str = Field(..., description="Main attention grabber")
-    foreground: str = Field(..., description="What's blurred/atmospheric in front")
-    background: str = Field(..., description="Supporting environment")
-    color_anchor: str = Field(..., description="Dominant color 40%+ of frame")
-    safe_zone: str = Field(..., description="Subject in upper 60%")
-    motion_visible: str = Field(..., description="What's moving in first frame")
-    scroll_stop: str = Field(..., description="Why viewer stops scrolling")
-    scale_proof: Optional[str] = Field(default=None, description="Scale proof elements")
+    """First frame composition for Scene 1 - ALL FIELDS REQUIRED."""
+    hook_type: str = Field(..., alias="hook_element", description="THE_IMPOSSIBLE | SCALE_SHOCK | etc. - REQUIRED")
+    focal_point: str = Field(..., description="Main attention grabber - REQUIRED")
+    foreground: str = Field(..., description="What's blurred/atmospheric in front - REQUIRED")
+    background: str = Field(..., description="Supporting environment - REQUIRED")
+    color_anchor: str = Field(..., description="Dominant color 40%+ of frame - REQUIRED")
+    safe_zone: str = Field(..., description="Subject in upper 60% - REQUIRED")
+    motion_visible: str = Field(..., description="What's moving in first frame - REQUIRED")
+    scroll_stop: str = Field(..., description="Why viewer stops scrolling - REQUIRED")
+    scale_proof: str = Field(..., description="Scale proof elements - REQUIRED")
 
     model_config = {"populate_by_name": True}
 
@@ -818,29 +781,29 @@ class Gen2PostProductionNotes(BaseModel):
 
 
 class Gen2SceneOutput(BaseModel):
-    """Output from GEN2 - visual prompts for one scene."""
-    scene_number: int = Field(..., description="Scene number")
-    reference_type: str = Field(..., description="PRIMARY | REQUIRES_REF | INDEPENDENT | LOOP_CLOSE")
+    """Output from GEN2 - visual prompts for one scene - ALL FIELDS REQUIRED."""
+    scene_number: int = Field(..., description="Scene number - REQUIRED")
+    reference_type: str = Field(..., description="PRIMARY | REQUIRES_REF | INDEPENDENT | LOOP_CLOSE - REQUIRED")
 
-    # Generated prompts
-    image_prompt: str = Field(..., description="Full prompt for Nano Banana Pro")
-    video_prompt: str = Field(..., description="Animation prompt for Kling i2v - MUST end with 10s")
+    # Generated prompts - REQUIRED
+    image_prompt: str = Field(..., description="Full prompt for Nano Banana Pro - REQUIRED")
+    video_prompt: str = Field(..., description="Animation prompt for Kling i2v - MUST end with 10s - REQUIRED")
 
-    # Motion and dynamics
-    motion_elements: List[str] = Field(default_factory=list, description="Motion elements")
-    energy_level: str = Field(default="HIGH", description="Energy level")
-    visual_punctuation: Optional[str] = Field(default=None, description="Visual beat if any")
+    # Motion and dynamics - REQUIRED
+    motion_elements: List[str] = Field(..., description="Motion elements - REQUIRED")
+    energy_level: str = Field(..., description="Energy level - REQUIRED")
+    visual_punctuation: str = Field(..., description="Visual beat - REQUIRED")
 
-    # Scene 1 only
+    # Scene 1 only - Required for Scene 1, Optional for others
     first_frame_composition: Optional[Gen2FirstFrameComposition] = Field(
         default=None,
-        description="First frame composition (Scene 1 only)"
+        description="First frame composition (Scene 1 only) - REQUIRED for Scene 1"
     )
 
-    # Post-production
+    # Post-production - Optional
     post_production_notes: Optional[Gen2PostProductionNotes] = Field(
         default=None,
-        description="Post-production notes"
+        description="Post-production notes - OPTIONAL"
     )
 
     @field_validator('video_prompt')
@@ -855,27 +818,21 @@ class Gen2SceneOutput(BaseModel):
 
 
 class Gen2VisualSummary(BaseModel):
-    """Summary of GEN2 visual generation."""
-    total_scenes: int = Field(default=6, description="Total scenes")
-    reference_breakdown: Dict[str, int] = Field(
-        default_factory=dict,
-        description="Count by reference type"
-    )
-    lighting_continuity: str = Field(default="", description="Lighting consistency note")
-    foreground_scenes: List[int] = Field(default_factory=list, description="Scenes with foreground")
-    motion_summary: str = Field(default="", description="Motion elements summary")
-    energy_pattern: str = Field(default="", description="Energy pattern across scenes")
-    loop_verified: bool = Field(default=False, description="Whether loop is verified")
-    consistency_target: str = Field(default="80%", description="Target consistency")
+    """Summary of GEN2 visual generation - ALL FIELDS REQUIRED."""
+    total_scenes: int = Field(..., description="Total scenes - REQUIRED")
+    reference_breakdown: Dict[str, int] = Field(..., description="Count by reference type - REQUIRED")
+    lighting_continuity: str = Field(..., description="Lighting consistency note - REQUIRED")
+    foreground_scenes: List[int] = Field(..., description="Scenes with foreground - REQUIRED")
+    motion_summary: str = Field(..., description="Motion elements summary - REQUIRED")
+    energy_pattern: str = Field(..., description="Energy pattern across scenes - REQUIRED")
+    loop_verified: bool = Field(..., description="Whether loop is verified - REQUIRED")
+    consistency_target: str = Field(..., description="Target consistency - REQUIRED")
 
 
 class Gen2BatchOutput(BaseModel):
-    """Batch output from GEN2."""
-    scenes: List[Gen2SceneOutput] = Field(default_factory=list, description="Scene outputs")
-    visual_summary: Gen2VisualSummary = Field(
-        default_factory=Gen2VisualSummary,
-        description="Visual summary"
-    )
+    """Batch output from GEN2 - ALL FIELDS REQUIRED."""
+    scenes: List[Gen2SceneOutput] = Field(..., description="Scene outputs - REQUIRED")
+    visual_summary: Gen2VisualSummary = Field(..., description="Visual summary - REQUIRED")
 
 
 # ============================================================================
