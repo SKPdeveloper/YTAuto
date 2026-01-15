@@ -454,12 +454,16 @@ async def create_project_endpoint(
     topic: str = Form(...),
     selected_script: str = Form(...),
     project_name: Optional[str] = Form(None),
+    auto_approve: Optional[str] = Form(None),
 ):
     """Create and start a new project."""
     try:
         channel = await get_channel(channel_id)
         if not channel:
             raise HTTPException(status_code=404, detail="Channel not found")
+
+        # Convert checkbox value to boolean
+        auto_approve_bool = auto_approve == "on" or auto_approve == "true"
 
         # Generate project name if not provided
         if not project_name:
@@ -478,13 +482,16 @@ async def create_project_endpoint(
             duration_seconds=duration_seconds,
             engine=engine,
             selected_script=selected_script,
+            auto_approve=auto_approve_bool,
         )
 
         # Add initial log
         await add_log(project_id, f"Project created: {project_name}", "success")
         await add_log(project_id, f"Engine: {engine}, Format: {format}, Duration: {duration_seconds}s", "info")
+        if auto_approve_bool:
+            await add_log(project_id, "Auto-approve mode: ENABLED", "info")
 
-        logger.info(f"Created project '{project_name}' with ID {project_id}")
+        logger.info(f"Created project '{project_name}' with ID {project_id}, auto_approve={auto_approve_bool}")
 
         # Start orchestrator pipeline in background
         channel_service = get_channel_service()
@@ -496,6 +503,7 @@ async def create_project_endpoint(
             format=format,
             duration_seconds=duration_seconds,
             engine=engine,
+            auto_approve=auto_approve_bool,
         )
 
         if not pipeline_started:

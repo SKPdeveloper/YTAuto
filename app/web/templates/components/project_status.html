@@ -1,4 +1,5 @@
 <!-- Project Status Component (HTMX partial) -->
+<!-- Updated for new pipeline stages -->
 <div class="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
     <div class="flex items-center justify-between mb-4">
         <div class="flex items-center space-x-3">
@@ -7,15 +8,41 @@
         </div>
         <div class="text-sm text-gray-500">
             {% if project.status == 'generating' %}
-            Генерація контенту...
+                {% if project.stage == 'script_generation' %}
+                Генерація сценарію (GEN1/GEN2)...
+                {% elif project.stage == 'primary_image' %}
+                Генерація PRIMARY зображення...
+                {% elif project.stage == 'primary_video' %}
+                Генерація PRIMARY відео...
+                {% elif project.stage == 'remaining_scenes' %}
+                Генерація сцен 2-N...
+                {% elif project.stage == 'post_processing' %}
+                Постобробка (музика, озвучка)...
+                {% elif project.stage == 'topaz_fps' %}
+                Topaz FPS інтерполяція...
+                {% elif project.stage == 'topaz_upscale' %}
+                Topaz 4K апскейл...
+                {% elif project.stage == 'video_analysis' %}
+                GEN3a аналіз відео...
+                {% elif project.stage == 'manifest_generation' %}
+                GEN3b генерація маніфесту...
+                {% elif project.stage == 'assembly' %}
+                Збірка фінального відео...
+                {% else %}
+                Генерація контенту...
+                {% endif %}
             {% elif project.status == 'reviewing' %}
-            Очікує вашого затвердження в Telegram
+            Очікує вашого затвердження
             {% elif project.status == 'upscaling' %}
             Обробка в Topaz Video AI...
+            {% elif project.status == 'post_processing' %}
+            Постобробка (музика, озвучка, збірка)...
             {% elif project.status == 'ready' %}
             Проєкт завершено!
             {% elif project.status == 'failed' %}
             Помилка обробки
+            {% elif project.status == 'paused' %}
+            Призупинено
             {% endif %}
         </div>
     </div>
@@ -26,39 +53,90 @@
             {% if project.status == 'generating' %}bg-gradient-to-r from-blue-500 to-blue-400
             {% elif project.status == 'reviewing' %}bg-gradient-to-r from-orange-500 to-orange-400
             {% elif project.status == 'upscaling' %}bg-gradient-to-r from-purple-500 to-purple-400
+            {% elif project.status == 'post_processing' %}bg-gradient-to-r from-indigo-500 to-indigo-400
             {% elif project.status == 'ready' %}bg-gradient-to-r from-green-500 to-green-400
             {% elif project.status == 'failed' %}bg-gradient-to-r from-red-500 to-red-400
+            {% elif project.status == 'paused' %}bg-gradient-to-r from-yellow-500 to-yellow-400
             {% else %}bg-gray-400
             {% endif %}"
             style="width: {{ project.progress }}%"
         ></div>
     </div>
 
-    <!-- Stage Indicators -->
-    <div class="flex items-center justify-between mt-4">
-        <div class="flex items-center space-x-2 {% if project.progress >= 0 %}text-blue-600{% else %}text-gray-400{% endif %}">
-            <i data-lucide="{% if project.progress >= 20 %}check-circle{% else %}circle{% endif %}" class="w-4 h-4"></i>
-            <span class="text-xs">Сценарій</span>
+    <!-- Stage Indicators (updated for new pipeline) -->
+    <div class="flex items-center justify-between mt-4 text-xs">
+        <!-- Script -->
+        <div class="flex flex-col items-center space-y-1
+            {% if project.stage in ['script_generation'] and project.status == 'generating' %}text-blue-600 font-medium
+            {% elif project.progress >= 15 %}text-green-600
+            {% else %}text-gray-400
+            {% endif %}">
+            <i data-lucide="{% if project.progress >= 15 %}check-circle{% elif project.stage == 'script_generation' %}loader{% else %}circle{% endif %}"
+               class="w-5 h-5 {% if project.stage == 'script_generation' and project.status == 'generating' %}animate-spin{% endif %}"></i>
+            <span>Сценарій</span>
         </div>
-        <div class="flex items-center space-x-2 {% if project.progress >= 20 %}text-blue-600{% else %}text-gray-400{% endif %}">
-            <i data-lucide="{% if project.progress >= 40 %}check-circle{% else %}circle{% endif %}" class="w-4 h-4"></i>
-            <span class="text-xs">Зображення</span>
+
+        <!-- Images -->
+        <div class="flex flex-col items-center space-y-1
+            {% if project.stage in ['primary_image', 'remaining_scenes'] and project.status == 'generating' %}text-blue-600 font-medium
+            {% elif project.progress >= 40 %}text-green-600
+            {% else %}text-gray-400
+            {% endif %}">
+            <i data-lucide="{% if project.progress >= 40 %}check-circle{% elif project.stage in ['primary_image', 'remaining_scenes'] %}loader{% else %}circle{% endif %}"
+               class="w-5 h-5 {% if project.stage in ['primary_image', 'remaining_scenes'] and project.status == 'generating' %}animate-spin{% endif %}"></i>
+            <span>Зображення</span>
         </div>
-        <div class="flex items-center space-x-2 {% if project.progress >= 40 %}text-blue-600{% else %}text-gray-400{% endif %}">
-            <i data-lucide="{% if project.progress >= 60 %}check-circle{% else %}circle{% endif %}" class="w-4 h-4"></i>
-            <span class="text-xs">Відео</span>
+
+        <!-- Videos -->
+        <div class="flex flex-col items-center space-y-1
+            {% if project.stage in ['primary_video'] and project.status == 'generating' %}text-blue-600 font-medium
+            {% elif project.progress >= 60 %}text-green-600
+            {% else %}text-gray-400
+            {% endif %}">
+            <i data-lucide="{% if project.progress >= 60 %}check-circle{% elif project.stage == 'primary_video' %}loader{% else %}circle{% endif %}"
+               class="w-5 h-5 {% if project.stage == 'primary_video' and project.status == 'generating' %}animate-spin{% endif %}"></i>
+            <span>Відео</span>
         </div>
-        <div class="flex items-center space-x-2 {% if project.progress >= 60 %}text-orange-500{% else %}text-gray-400{% endif %}">
-            <i data-lucide="{% if project.progress >= 80 %}check-circle{% else %}circle{% endif %}" class="w-4 h-4"></i>
-            <span class="text-xs">Перегляд</span>
+
+        <!-- Post-processing -->
+        <div class="flex flex-col items-center space-y-1
+            {% if project.stage in ['post_processing', 'video_analysis', 'manifest_generation', 'assembly'] and project.status == 'generating' %}text-indigo-600 font-medium
+            {% elif project.progress >= 80 %}text-green-600
+            {% else %}text-gray-400
+            {% endif %}">
+            <i data-lucide="{% if project.progress >= 80 %}check-circle{% elif project.stage in ['post_processing', 'video_analysis', 'manifest_generation', 'assembly'] %}loader{% else %}circle{% endif %}"
+               class="w-5 h-5 {% if project.stage in ['post_processing', 'video_analysis', 'manifest_generation', 'assembly'] and project.status == 'generating' %}animate-spin{% endif %}"></i>
+            <span>Постобробка</span>
         </div>
-        <div class="flex items-center space-x-2 {% if project.progress >= 80 %}text-purple-600{% else %}text-gray-400{% endif %}">
-            <i data-lucide="{% if project.progress >= 100 %}check-circle{% else %}circle{% endif %}" class="w-4 h-4"></i>
-            <span class="text-xs">Upscale</span>
+
+        <!-- Topaz -->
+        <div class="flex flex-col items-center space-y-1
+            {% if project.stage in ['topaz_fps', 'topaz_upscale'] and project.status == 'generating' %}text-purple-600 font-medium
+            {% elif project.progress >= 95 %}text-green-600
+            {% else %}text-gray-400
+            {% endif %}">
+            <i data-lucide="{% if project.progress >= 95 %}check-circle{% elif project.stage in ['topaz_fps', 'topaz_upscale'] %}loader{% else %}circle{% endif %}"
+               class="w-5 h-5 {% if project.stage in ['topaz_fps', 'topaz_upscale'] and project.status == 'generating' %}animate-spin{% endif %}"></i>
+            <span>Topaz</span>
         </div>
-        <div class="flex items-center space-x-2 {% if project.progress >= 100 %}text-green-600{% else %}text-gray-400{% endif %}">
-            <i data-lucide="{% if project.status == 'ready' %}check-circle{% else %}circle{% endif %}" class="w-4 h-4"></i>
-            <span class="text-xs">Готово</span>
+
+        <!-- Ready -->
+        <div class="flex flex-col items-center space-y-1
+            {% if project.status == 'ready' %}text-green-600 font-medium
+            {% else %}text-gray-400
+            {% endif %}">
+            <i data-lucide="{% if project.status == 'ready' %}check-circle{% else %}circle{% endif %}" class="w-5 h-5"></i>
+            <span>Готово</span>
         </div>
     </div>
+
+    <!-- Current Stage Detail (if generating) -->
+    {% if project.status == 'generating' and project.stage %}
+    <div class="mt-4 pt-4 border-t border-gray-100">
+        <div class="flex items-center space-x-2 text-sm text-gray-600">
+            <i data-lucide="info" class="w-4 h-4"></i>
+            <span>Етап: <span class="font-medium">{{ project.stage | replace('_', ' ') | title }}</span></span>
+        </div>
+    </div>
+    {% endif %}
 </div>

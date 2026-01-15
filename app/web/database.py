@@ -54,12 +54,26 @@ async def init_database() -> None:
                 engine TEXT NOT NULL,
                 selected_script TEXT,
                 status TEXT DEFAULT 'generating',
+                stage TEXT DEFAULT 'script_generation',
                 progress INTEGER DEFAULT 0,
+                auto_approve INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 completed_at TIMESTAMP,
                 FOREIGN KEY (channel_id) REFERENCES channels(id)
             )
         """)
+
+        # Add stage column if not exists (migration)
+        try:
+            await db.execute("ALTER TABLE web_projects ADD COLUMN stage TEXT DEFAULT 'script_generation'")
+        except:
+            pass  # Column already exists
+
+        # Add auto_approve column if not exists (migration)
+        try:
+            await db.execute("ALTER TABLE web_projects ADD COLUMN auto_approve INTEGER DEFAULT 0")
+        except:
+            pass  # Column already exists
 
         # Scenes table (for UI display, synced with orchestrator)
         await db.execute("""
@@ -182,17 +196,18 @@ async def create_project(
     duration_seconds: int,
     engine: str,
     selected_script: str = None,
-    orchestrator_project_id: str = None
+    orchestrator_project_id: str = None,
+    auto_approve: bool = False
 ) -> int:
     """Create a new project and return its ID."""
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             """
             INSERT INTO web_projects
-            (channel_id, orchestrator_project_id, name, topic, format, duration_seconds, engine, selected_script, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'generating')
+            (channel_id, orchestrator_project_id, name, topic, format, duration_seconds, engine, selected_script, status, auto_approve)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'generating', ?)
             """,
-            (channel_id, orchestrator_project_id, name, topic, format, duration_seconds, engine, selected_script)
+            (channel_id, orchestrator_project_id, name, topic, format, duration_seconds, engine, selected_script, 1 if auto_approve else 0)
         )
         await db.commit()
         return cursor.lastrowid
@@ -261,6 +276,19 @@ async def update_project_status(
         await db.commit()
 
 
+async def update_project_stage(
+    project_id: int,
+    stage: str
+) -> None:
+    """Update project pipeline stage."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE web_projects SET stage = ? WHERE id = ?",
+            (stage, project_id)
+        )
+        await db.commit()
+
+
 # =============================================================================
 # Scene Operations
 # =============================================================================
@@ -300,9 +328,10 @@ async def update_scene_status(
     status: str,
     image_path: str = None,
     video_path: str = None,
-    upscaled_path: str = None
+    upscaled_path: str = None,
+    prompt: str = None
 ) -> None:
-    """Update scene status and paths."""
+    """Update scene status, paths, and prompt."""
     async with aiosqlite.connect(DB_PATH) as db:
         updates = ["status = ?"]
         params = [status]
@@ -316,6 +345,9 @@ async def update_scene_status(
         if upscaled_path:
             updates.append("upscaled_path = ?")
             params.append(upscaled_path)
+        if prompt:
+            updates.append("prompt = ?")
+            params.append(prompt)
 
         params.append(scene_id)
 
