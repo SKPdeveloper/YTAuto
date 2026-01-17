@@ -612,6 +612,45 @@ async def get_topaz_status():
         return HTMLResponse("Topaz: Idle")
 
 
+@app.get("/api/topaz/info")
+async def get_topaz_info():
+    """Get detailed Topaz queue info for control panel."""
+    try:
+        from app.modules.topaz_queue import get_topaz_queue
+        from app.modules.topaz_config import topaz_config
+
+        queue = get_topaz_queue()
+
+        current_task = None
+        if queue.current_task:
+            current_task = {
+                "task_id": queue.current_task.task_id,
+                "project_id": queue.current_task.project_id,
+                "scene_number": queue.current_task.scene_number,
+                "stage": queue.current_task.current_stage.value,
+                "status": queue.current_task.status.value,
+                "retry_count": queue.current_task.retry_count,
+            }
+
+        return {
+            "available": topaz_config.is_enabled,
+            "running": queue.is_running,
+            "queue_size": queue.get_queue_size(),
+            "current_task": current_task,
+            "stats": queue.get_stats(),
+            "ffmpeg_path": str(queue.ffmpeg_path) if queue.ffmpeg_path else None,
+        }
+    except Exception as e:
+        return {
+            "available": False,
+            "running": False,
+            "queue_size": 0,
+            "current_task": None,
+            "stats": {},
+            "error": str(e)
+        }
+
+
 # ============================================================================
 # SETTINGS API
 # ============================================================================

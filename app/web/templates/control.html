@@ -354,6 +354,75 @@
         </div>
     </div>
 
+    <!-- TOPAZ CONTROL PANEL -->
+    <div class="brutal-card p-6" x-show="finalVideoPath || topazInfo.available">
+        <div class="flex items-center justify-between mb-4">
+            <div>
+                <h2 class="text-xl font-black uppercase tracking-wide">TOPAZ VIDEO AI</h2>
+                <p class="text-xs text-gray-500 uppercase mt-1" x-text="topazInfo.available ? 'READY' : 'NOT AVAILABLE'"></p>
+            </div>
+            <div class="flex items-center space-x-2">
+                <span class="w-3 h-3 rounded-full" :class="topazInfo.running ? 'bg-green-500 animate-pulse' : 'bg-gray-500'"></span>
+                <span class="text-sm uppercase" x-text="topazInfo.running ? 'RUNNING' : 'IDLE'"></span>
+            </div>
+        </div>
+
+        <!-- Topaz Stats -->
+        <div class="grid grid-cols-4 gap-4 mb-4 text-center">
+            <div class="bg-black/50 p-3 border border-gray-700">
+                <div class="text-2xl font-black" x-text="topazInfo.queue_size || 0"></div>
+                <div class="text-xs text-gray-500 uppercase">Queue</div>
+            </div>
+            <div class="bg-black/50 p-3 border border-gray-700">
+                <div class="text-2xl font-black text-green-400" x-text="topazInfo.stats?.successful || 0"></div>
+                <div class="text-xs text-gray-500 uppercase">Success</div>
+            </div>
+            <div class="bg-black/50 p-3 border border-gray-700">
+                <div class="text-2xl font-black text-red-400" x-text="topazInfo.stats?.failed || 0"></div>
+                <div class="text-xs text-gray-500 uppercase">Failed</div>
+            </div>
+            <div class="bg-black/50 p-3 border border-gray-700">
+                <div class="text-2xl font-black" x-text="topazInfo.stats?.total_processed || 0"></div>
+                <div class="text-xs text-gray-500 uppercase">Total</div>
+            </div>
+        </div>
+
+        <!-- Current Task -->
+        <div x-show="topazInfo.current_task" class="bg-yellow-500/10 border border-yellow-500/50 p-3 mb-4">
+            <div class="flex justify-between items-center">
+                <div>
+                    <span class="text-yellow-400 uppercase text-sm font-bold">Processing:</span>
+                    <span class="text-white ml-2" x-text="topazInfo.current_task?.project_id"></span>
+                </div>
+                <div class="text-yellow-400 uppercase text-xs" x-text="topazInfo.current_task?.stage"></div>
+            </div>
+        </div>
+
+        <!-- Actions -->
+        <div class="flex space-x-3">
+            <button
+                @click="startTopazProcessing()"
+                :disabled="!finalVideoPath || topazProcessing || !topazInfo.available"
+                class="brutal-btn flex-1"
+                :class="{
+                    'bg-purple-600 hover:bg-purple-500': finalVideoPath && !topazProcessing && topazInfo.available,
+                    'bg-gray-600 cursor-not-allowed': !finalVideoPath || topazProcessing || !topazInfo.available
+                }"
+            >
+                <span x-text="topazProcessing ? 'PROCESSING...' : 'ENHANCE VIDEO'"></span>
+            </button>
+            <button
+                @click="refreshTopazInfo()"
+                class="brutal-btn bg-gray-700 hover:bg-gray-600"
+                title="Refresh status"
+            >
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+            </button>
+        </div>
+    </div>
+
     <!-- ACTIVITY LOG -->
     <div class="brutal-card p-6">
         <h2 class="text-xl font-black uppercase tracking-wide mb-4">LOG</h2>
@@ -409,34 +478,59 @@ function controlPanel() {
         finalVideoPath: '',
         topazVideoPath: '',
         topazProcessing: false,
+        topazInfo: {
+            available: false,
+            running: false,
+            queue_size: 0,
+            current_task: null,
+            stats: {}
+        },
 
         async init() {
             this.loadSchedule();
             this.connectWebSocket();
             this.requestNotificationPermission();
             await this.loadCurrentState();
+            await this.refreshTopazInfo();
             this.addLog('info', 'SYSTEM INITIALIZED');
+
+            // Auto-refresh Topaz info every 10 seconds
+            setInterval(() => this.refreshTopazInfo(), 10000);
         },
 
         async loadCurrentState() {
             try {
                 const res = await fetch('/api/control/current-state');
                 const data = await res.json();
-                
+
                 this.pipelineRunning = data.pipeline_running;
                 this.currentStage = data.current_stage;
                 this.progress = data.progress;
                 this.awaitingApproval = data.awaiting_approval;
-                
+
+                // Restore project and video paths
+                if (data.project_id) {
+                    this.currentProject = data.project_id;
+                }
+                if (data.final_video_path) {
+                    this.finalVideoPath = data.final_video_path;
+                }
+                if (data.topaz_video_path) {
+                    this.topazVideoPath = data.topaz_video_path;
+                }
+
                 if (data.approval_type === 'primary' && data.candidate_images.length > 0) {
                     this.candidateImages = data.candidate_images;
                 }
                 if (data.approval_type === 'scenes' && data.scene_images.length > 0) {
                     this.sceneImages = data.scene_images;
                 }
-                
+
                 if (data.awaiting_approval) {
                     this.addLog('info', 'RESTORED STATE: AWAITING ' + data.approval_type.toUpperCase() + ' APPROVAL');
+                }
+                if (data.project_id && data.final_video_path) {
+                    this.addLog('info', 'RESTORED PROJECT: ' + data.project_id);
                 }
             } catch(e) {
                 console.error('Failed to load state:', e);
@@ -663,6 +757,16 @@ function controlPanel() {
             } catch(e) {
                 this.topazProcessing = false;
                 this.addLog('error', 'TOPAZ FAILED: ' + e.message);
+            }
+        },
+
+        async refreshTopazInfo() {
+            try {
+                const res = await fetch('/api/topaz/info');
+                const data = await res.json();
+                this.topazInfo = data;
+            } catch(e) {
+                console.error('Failed to refresh Topaz info:', e);
             }
         },
 

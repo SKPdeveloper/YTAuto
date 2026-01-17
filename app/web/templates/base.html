@@ -133,7 +133,7 @@
                     <!-- Topaz/Queue Status -->
                     <div class="flex items-center space-x-2 text-gray-500">
                         <i data-lucide="layers" class="w-4 h-4"></i>
-                        <span id="topaz-status" hx-get="/api/topaz/status" hx-trigger="every 10s" hx-swap="innerHTML">
+                        <span id="topaz-status" hx-get="/api/topaz/status" hx-trigger="load, every 10s" hx-swap="innerHTML">
                             Queue: --
                         </span>
                     </div>

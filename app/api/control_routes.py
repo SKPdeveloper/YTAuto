@@ -57,6 +57,10 @@ class ControlState:
         # Scheduler task
         self.scheduler_task: Optional[asyncio.Task] = None
 
+        # Video paths for UI restoration
+        self.final_video_path: Optional[str] = None
+        self.topaz_video_path: Optional[str] = None
+
 # Global state instance
 state = ControlState()
 
@@ -181,7 +185,9 @@ async def get_current_state():
         "approval_type": state.approval_type,
         "candidate_images": state.candidate_images,
         "scene_images": state.scene_images,
-        "project_id": state.current_project_id
+        "project_id": state.current_project_id,
+        "final_video_path": state.final_video_path,
+        "topaz_video_path": state.topaz_video_path
     }
 
 
@@ -223,10 +229,11 @@ async def start_pipeline_internal():
         state.current_project_id = project_id
         state.pipeline_running = False
         state.progress = 100
+        state.final_video_path = f"/projects/{project_id}/final.mp4"
 
         await broadcast_event("pipeline_completed", {
             "project_id": project_id,
-            "video_path": f"projects/{project_id}/final_10s.mp4"
+            "video_path": f"/projects/{project_id}/final.mp4"
         })
 
     except Exception as e:
@@ -382,6 +389,7 @@ async def run_topaz_processing(project_id: str, input_path: Path, output_path: P
         final_4k = project_dir / "scene_0_4k.mp4"
         if completed and final_4k.exists():
             rel_path = f"/projects/{project_id}/scene_0_4k.mp4"
+            state.topaz_video_path = rel_path
             await broadcast_event("topaz_completed", {"video_path": rel_path})
             logger.success(f"Topaz processing completed: {final_4k}")
         else:

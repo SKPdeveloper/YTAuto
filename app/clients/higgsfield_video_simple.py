@@ -378,27 +378,34 @@ class SimpleVideoGenerator:
 
     async def _clear_preset_image(self) -> bool:
         """
-        Удалить текущее preset изображение кликом на X кнопку.
+        Удалить текущее preset/existing изображение кликом на X кнопку.
 
-        В новом UI Higgsfield по умолчанию показывается preset стиль.
+        В новом UI Higgsfield по умолчанию показывается preset стиль или
+        остаётся предыдущее загруженное изображение.
         Нужно кликнуть X чтобы очистить и получить возможность загрузить своё изображение.
 
         Returns:
-            True если preset был очищен, False если не найден
+            True если изображение было очищено, False если не найдено
         """
         try:
-            # Найти маленькую кнопку X на превью (примерно в позиции 160-170, 250-260)
+            # Метод 1: Найти маленькую кнопку X на превью по позиции
             x_btn = await asyncio.to_thread(
                 self.driver.execute_script,
                 """
                 var btns = document.querySelectorAll('button');
                 for (var btn of btns) {
                     var rect = btn.getBoundingClientRect();
-                    // X кнопка: маленькая (20x20), в левой части экрана (x < 200), в области превью (y < 400)
-                    if (rect.width > 15 && rect.width < 30 &&
-                        rect.height > 15 && rect.height < 30 &&
-                        rect.x < 200 && rect.y > 200 && rect.y < 400) {
-                        return btn;
+                    // X кнопка: маленькая (15-35px), в левой части экрана (x < 250), в области превью (y 150-450)
+                    if (rect.width > 12 && rect.width < 40 &&
+                        rect.height > 12 && rect.height < 40 &&
+                        rect.x < 250 && rect.x > 50 &&
+                        rect.y > 150 && rect.y < 450) {
+                        // Дополнительная проверка - кнопка должна содержать SVG или быть круглой
+                        var svg = btn.querySelector('svg');
+                        var hasRoundClass = btn.className.includes('rounded');
+                        if (svg || hasRoundClass || rect.width === rect.height) {
+                            return btn;
+                        }
                     }
                 }
                 return null;
@@ -406,13 +413,48 @@ class SimpleVideoGenerator:
             )
 
             if x_btn:
-                logger.debug(f"Found preset X button, clicking...")
+                logger.debug(f"Found X button via position, clicking...")
                 await asyncio.to_thread(x_btn.click)
                 await asyncio.sleep(2)
                 return True
-            else:
-                logger.debug("No preset X button found")
-                return False
+
+            # Метод 2: Найти кнопку по SVG с path для X
+            x_btn = await asyncio.to_thread(
+                self.driver.execute_script,
+                """
+                // Ищем SVG иконки закрытия (X)
+                var svgs = document.querySelectorAll('svg');
+                for (var svg of svgs) {
+                    var paths = svg.querySelectorAll('path');
+                    for (var path of paths) {
+                        var d = path.getAttribute('d') || '';
+                        // Типичные паттерны для X иконки
+                        if (d.includes('M6') && d.includes('18') ||
+                            d.toLowerCase().includes('close') ||
+                            d.includes('L12') && d.includes('L6')) {
+                            var btn = svg.closest('button');
+                            if (btn) {
+                                var rect = btn.getBoundingClientRect();
+                                // Кнопка должна быть в левой части экрана
+                                if (rect.x < 250 && rect.y < 450) {
+                                    return btn;
+                                }
+                            }
+                        }
+                    }
+                }
+                return null;
+                """
+            )
+
+            if x_btn:
+                logger.debug(f"Found X button via SVG, clicking...")
+                await asyncio.to_thread(x_btn.click)
+                await asyncio.sleep(2)
+                return True
+
+            logger.debug("No X button found to clear image")
+            return False
 
         except Exception as e:
             logger.warning(f"Failed to clear preset: {e}")
@@ -422,34 +464,36 @@ class SimpleVideoGenerator:
         """Загрузить изображение (с поддержкой нового Higgsfield UI)"""
         logger.debug(f"Uploading: {image_path}")
 
-        # 1. Сначала проверяем есть ли file input
+        # 1. ВСЕГДА сначала пробуем очистить существующее изображение
+        # Это критически важно, т.к. Higgsfield кэширует предыдущее изображение
+        logger.debug("Checking for existing image to clear...")
+        cleared = await self._clear_preset_image()
+        if cleared:
+            logger.debug("Cleared existing image, waiting for file input...")
+            await asyncio.sleep(2)
+
+        # 2. Проверяем есть ли file input
         file_inputs = await asyncio.to_thread(
             self.driver.find_elements,
             By.CSS_SELECTOR,
             'input[type="file"]'
         )
 
-        # 2. Если file input нет, пробуем очистить preset
+        # 3. Если file input нет, ждём его появления
         if not file_inputs:
-            logger.debug("No file input found, trying to clear preset...")
+            logger.debug("No file input found, waiting...")
+            for attempt in range(10):
+                file_inputs = await asyncio.to_thread(
+                    self.driver.find_elements,
+                    By.CSS_SELECTOR,
+                    'input[type="file"]'
+                )
+                if file_inputs:
+                    logger.debug(f"File input appeared after {attempt}s")
+                    break
+                await asyncio.sleep(1)
 
-            # Попробуем кликнуть X на preset изображении
-            cleared = await self._clear_preset_image()
-
-            if cleared:
-                # Ждем появления file input
-                for attempt in range(10):
-                    file_inputs = await asyncio.to_thread(
-                        self.driver.find_elements,
-                        By.CSS_SELECTOR,
-                        'input[type="file"]'
-                    )
-                    if file_inputs:
-                        logger.debug(f"File input appeared after clearing preset")
-                        break
-                    await asyncio.sleep(1)
-
-        # 3. Если всё ещё нет, пробуем кнопку "Change"
+        # 4. Если всё ещё нет, пробуем кнопку "Change"
         if not file_inputs:
             change_btns = await asyncio.to_thread(
                 self.driver.find_elements,
