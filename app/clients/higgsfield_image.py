@@ -1326,8 +1326,20 @@ class HiggsFieldImageGenerator:
             logger.info(f"[Scene {scene_num}]   Type: {ref_type}")
             logger.info(f"[Scene {scene_num}]   Prompt: {prompt[:50]}...")
 
-            # Reference уже загружен в начале, не трогаем
-            # Промпт заменяется автоматически (не очищаем)
+            # Handle reference based on type
+            if ref_type == 'INDEPENDENT':
+                # Clear reference for independent scenes
+                logger.info(f"[Scene {scene_num}] Clearing reference (INDEPENDENT)...")
+                await self._clear_reference_image()
+                reference_uploaded = False
+            elif not reference_uploaded and ref_type in ('REQUIRES_REF', 'LOOP_CLOSE'):
+                # Re-upload reference if needed
+                if reference_image and reference_image.exists():
+                    logger.info(f"[Scene {scene_num}] Re-uploading reference...")
+                    await self._upload_reference_image(reference_image, skip_if_exists=False)
+                    reference_uploaded = True
+
+            # Enter prompt
             await asyncio.to_thread(self._sync_enter_prompt, prompt)
 
             # Click Generate
