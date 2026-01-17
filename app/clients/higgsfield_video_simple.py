@@ -413,8 +413,13 @@ class SimpleVideoGenerator:
             )
 
             if x_btn:
-                logger.debug(f"Found X button via position, clicking...")
-                await asyncio.to_thread(x_btn.click)
+                logger.debug(f"Found X button via position, clicking via JavaScript...")
+                # Use JavaScript click - more reliable than Selenium click
+                await asyncio.to_thread(
+                    self.driver.execute_script,
+                    "arguments[0].click();",
+                    x_btn
+                )
                 await asyncio.sleep(2)
                 return True
 
@@ -448,8 +453,47 @@ class SimpleVideoGenerator:
             )
 
             if x_btn:
-                logger.debug(f"Found X button via SVG, clicking...")
-                await asyncio.to_thread(x_btn.click)
+                logger.debug(f"Found X button via SVG, clicking via JavaScript...")
+                await asyncio.to_thread(
+                    self.driver.execute_script,
+                    "arguments[0].click();",
+                    x_btn
+                )
+                await asyncio.sleep(2)
+                return True
+
+            # Метод 3: Найти любую кнопку с X-подобной иконкой в области превью
+            x_btn = await asyncio.to_thread(
+                self.driver.execute_script,
+                """
+                // Ищем кнопки с X в области превью (более агрессивный поиск)
+                var btns = document.querySelectorAll('button');
+                for (var btn of btns) {
+                    var rect = btn.getBoundingClientRect();
+                    // Любая маленькая кнопка в области превью
+                    if (rect.width < 50 && rect.height < 50 &&
+                        rect.x > 80 && rect.x < 200 &&
+                        rect.y > 100 && rect.y < 350) {
+                        // Проверяем что это кнопка удаления (имеет SVG или текст X)
+                        var hasX = btn.textContent.includes('×') ||
+                                   btn.textContent.includes('x') ||
+                                   btn.querySelector('svg') !== null;
+                        if (hasX) {
+                            return btn;
+                        }
+                    }
+                }
+                return null;
+                """
+            )
+
+            if x_btn:
+                logger.debug(f"Found X button via aggressive search, clicking...")
+                await asyncio.to_thread(
+                    self.driver.execute_script,
+                    "arguments[0].click();",
+                    x_btn
+                )
                 await asyncio.sleep(2)
                 return True
 
@@ -466,11 +510,29 @@ class SimpleVideoGenerator:
 
         # 1. ВСЕГДА сначала пробуем очистить существующее изображение
         # Это критически важно, т.к. Higgsfield кэширует предыдущее изображение
-        logger.debug("Checking for existing image to clear...")
-        cleared = await self._clear_preset_image()
-        if cleared:
-            logger.debug("Cleared existing image, waiting for file input...")
-            await asyncio.sleep(2)
+        logger.info("Step 1: Clearing any existing image...")
+
+        # Попробуем очистить несколько раз
+        for attempt in range(3):
+            cleared = await self._clear_preset_image()
+            if cleared:
+                logger.info(f"Cleared existing image (attempt {attempt + 1})")
+                await asyncio.sleep(2)
+                # Проверяем появился ли file input (признак что очистка сработала)
+                file_inputs = await asyncio.to_thread(
+                    self.driver.find_elements,
+                    By.CSS_SELECTOR,
+                    'input[type="file"]'
+                )
+                if file_inputs:
+                    logger.info("File input appeared - image cleared successfully!")
+                    break
+                else:
+                    logger.warning(f"File input not found after clear attempt {attempt + 1}, retrying...")
+            else:
+                # Может быть изображения не было - это ОК
+                logger.debug(f"No image to clear (attempt {attempt + 1})")
+                break
 
         # 2. Проверяем есть ли file input
         file_inputs = await asyncio.to_thread(
