@@ -95,13 +95,13 @@ class Settings(BaseSettings):
     )
 
     CONTENTBRAIN_MODEL: str = Field(
-        default="gemini-1.5-pro",
-        description="Модель для ContentBrain (gemini-1.5-pro або claude-3-5-sonnet-20241022)"
+        default="gemini-3-pro",
+        description="Модель для ContentBrain (gemini-3-pro або claude-3-5-sonnet-20241022)"
     )
 
     # Gemini Validator
     GEMINI_VALIDATOR_MODEL: str = Field(
-        default="gemini-1.5-pro",
+        default="gemini-3-pro",
         description="Модель Gemini для валідації зображень"
     )
 

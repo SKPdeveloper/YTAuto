@@ -133,7 +133,7 @@ class PromptRouter:
 
         # Initialize Gemini client
         self.client = genai.Client(api_key=settings.GOOGLE_GEMINI_API_KEY)
-        self.model = settings.CONTENTBRAIN_MODEL  # Should be gemini-2.5-pro or similar
+        self.model = settings.CONTENTBRAIN_MODEL  # gemini-3-pro
 
         # Ensure debug directory exists
         DEBUG_DIR.mkdir(parents=True, exist_ok=True)

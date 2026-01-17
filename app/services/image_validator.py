@@ -76,7 +76,7 @@ class ImageValidator:
         self.validation_prompt = self._load_validation_prompt()
 
         # Model configuration
-        self.model_name = settings.CONTENTBRAIN_MODEL  # gemini-3-pro-preview
+        self.model_name = settings.CONTENTBRAIN_MODEL  # gemini-3-pro
         self.max_retries = 2
 
         # Validation config (new SDK uses types.GenerateContentConfig)

@@ -6,7 +6,7 @@ Uses Google Gemini API for:
 2. Scene breakdown with detailed prompts
 3. Image validation with Gemini Vision
 
-Provider: Google Gemini (gemini-3-pro-preview)
+Provider: Google Gemini (gemini-3-pro)
 SDK: google-genai (new unified SDK)
 
 PROTECTED FILE WARNING:
@@ -58,8 +58,8 @@ class ContentBrain:
         # =================================================================
         self.system_prompt = self._load_system_prompt()
 
-        # Models - використовуємо одну модель для всього (Gemini 3 Pro Preview)
-        self.model_name = settings.CONTENTBRAIN_MODEL  # gemini-3-pro-preview
+        # Models - використовуємо одну модель для всього (Gemini 3 Pro)
+        self.model_name = settings.CONTENTBRAIN_MODEL  # gemini-3-pro
         self.temperature = settings.GEMINI_TEMPERATURE  # 0.3
 
         # Generation configs (new SDK uses types.GenerateContentConfig)
