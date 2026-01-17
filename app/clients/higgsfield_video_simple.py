@@ -335,22 +335,90 @@ class SimpleVideoGenerator:
 
         if force_refresh or "higgsfield.ai/create/video" not in current_url:
             logger.debug(f"Navigating to {HIGGSFIELD_VIDEO_URL}")
+
+            # Clear any cached state before navigating
+            try:
+                await asyncio.to_thread(
+                    self.driver.execute_script,
+                    """
+                    // Clear uploaded image from session
+                    if (window.sessionStorage) {
+                        sessionStorage.clear();
+                    }
+                    // Remove any preset image elements
+                    var presets = document.querySelectorAll('[data-preset], [data-uploaded]');
+                    presets.forEach(function(el) { el.remove(); });
+                    """
+                )
+            except Exception:
+                pass
+
             await asyncio.to_thread(self.driver.get, HIGGSFIELD_VIDEO_URL)
             await asyncio.sleep(4)
 
-            # Ждем пока появится file input
-            for attempt in range(15):
+            # CRITICAL: After navigation, always try to clear any existing image
+            # Higgsfield may show previous session's image
+            logger.info("Checking for cached image after page load...")
+            for clear_attempt in range(3):
+                # Check if there's an image preview (no file input visible)
                 file_inputs = await asyncio.to_thread(
                     self.driver.find_elements,
                     By.CSS_SELECTOR,
                     'input[type="file"]'
                 )
                 if file_inputs:
-                    logger.debug(f"Video page ready (file input found after {attempt}s)")
+                    logger.debug(f"Video page ready - clean state (file input visible)")
                     return
-                await asyncio.sleep(1)
 
-            logger.warning("Video page loaded but file input not found yet")
+                # No file input = there's a preset image, try to clear it
+                logger.warning(f"No file input found - cached image present, clearing (attempt {clear_attempt + 1})...")
+                cleared = await self._clear_preset_image()
+                if cleared:
+                    await asyncio.sleep(2)
+                else:
+                    # Can't find X button, try clicking Change button
+                    await self._click_change_button()
+                    await asyncio.sleep(2)
+
+            # Final check
+            file_inputs = await asyncio.to_thread(
+                self.driver.find_elements,
+                By.CSS_SELECTOR,
+                'input[type="file"]'
+            )
+            if file_inputs:
+                logger.debug("Video page ready after clearing cached image")
+            else:
+                logger.warning("Video page loaded but file input still not found")
+
+    async def _click_change_button(self) -> bool:
+        """Кликнуть кнопку Change чтобы заменить изображение"""
+        try:
+            change_btn = await asyncio.to_thread(
+                self.driver.execute_script,
+                """
+                var btns = document.querySelectorAll('button');
+                for (var btn of btns) {
+                    if (btn.textContent.toLowerCase().includes('change')) {
+                        return btn;
+                    }
+                }
+                return null;
+                """
+            )
+            if change_btn:
+                logger.debug("Found Change button, clicking...")
+                await asyncio.to_thread(
+                    self.driver.execute_script,
+                    "arguments[0].click();",
+                    change_btn
+                )
+                await asyncio.sleep(2)
+                return True
+            return False
+        except Exception as e:
+            logger.debug(f"Failed to click Change button: {e}")
+            return False
 
     async def _remove_current_image(self) -> None:
         """Удалить текущее изображение (кликнуть X)"""

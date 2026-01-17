@@ -364,6 +364,9 @@ class ControlPipeline:
                     logger.warning(f"[Scene {scene.scene_number}] No image, skipping video")
                     continue
 
+                # DEBUG: Log image path for each scene
+                logger.info(f"[DEBUG] Scene {scene.scene_number}: image_path = {scene.image_path}")
+
                 scenes_data.append({
                     'scene_number': scene.scene_number,
                     'image_path': scene.image_path,

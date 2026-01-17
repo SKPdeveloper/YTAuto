@@ -575,6 +575,11 @@ class HiggsFieldWebAdapter:
             image_path = Path(scene['image_path'])
             video_prompt = scene.get('video_prompt', '')
 
+            # DEBUG: Log which image is used for each scene
+            logger.info(f"[Scene {scene_num}] Using image: {image_path}")
+            if not image_path.exists():
+                logger.error(f"[Scene {scene_num}] IMAGE NOT FOUND: {image_path}")
+
             scene_dir = settings.get_scene_dir(project_id, scene_num)
             scene_dir.mkdir(parents=True, exist_ok=True)
 
