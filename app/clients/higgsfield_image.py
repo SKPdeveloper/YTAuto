@@ -960,7 +960,11 @@ class HiggsFieldImageGenerator:
                 return downloaded
 
         urls_to_download = image_urls[:count]
-        logger.info(f"Downloading {len(urls_to_download)} images (requested: {count})")
+        # CRITICAL: Reverse order! Higgsfield shows newest first in History,
+        # but we queue scenes in order 2,3,4,5,6 so we need to reverse
+        # to match the original scene order
+        urls_to_download = list(reversed(urls_to_download))
+        logger.info(f"Downloading {len(urls_to_download)} images (requested: {count}, reversed for correct order)")
 
         for i, url in enumerate(urls_to_download):
             try:
