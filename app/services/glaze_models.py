@@ -278,6 +278,28 @@ class Psychology(BaseModel):
 
 
 # ============================================================================
+# SHARE TRIGGER - Тригер для шерингу
+# ============================================================================
+
+class ShareTrigger(BaseModel):
+    """Тригер для шерингу з GEN1."""
+    text: str = Field(..., description="Текст для шерингу")
+    placement: str = Field(default="description_end", description="Місце розміщення")
+
+
+# ============================================================================
+# EASTER EGG INTEGRATION - Інтеграція пасхалки з GEN2
+# ============================================================================
+
+class EasterEggIntegration(BaseModel):
+    """Інтеграція Easter Egg в промпт з GEN2."""
+    object: str = Field(..., description="Об'єкт")
+    placement_in_prompt: str = Field(..., description="Позиція в промпті - ВАЖЛИВО для safe_zone!")
+    visibility_check: str = Field(..., description="Перевірка видимості")
+    integrated_in_image_prompt: bool = Field(default=True, description="Чи інтегровано в промпт")
+
+
+# ============================================================================
 # EASTER EGG - Схований елемент
 # ============================================================================
 
@@ -321,6 +343,80 @@ class LoopConfig(BaseModel):
 
 
 # ============================================================================
+# GEN2 SCENE METADATA - Метадані сцени з GEN2
+# ============================================================================
+
+class SceneInheritance(BaseModel):
+    """Наслідування від батьківської сцени (GEN2)."""
+    parent_scene: int = Field(..., description="Номер батьківської сцени")
+    inherited_elements: List[str] = Field(default_factory=list, description="Успадковані елементи")
+    modified_elements: List[str] = Field(default_factory=list, description="Змінені елементи")
+
+
+class PostProductionNotes(BaseModel):
+    """Нотатки для постпродакшну (GEN2)."""
+    speed_ramp: str = Field(default="None", description="Speed ramp")
+    color_grade: str = Field(default="Match Scene 1", description="Корекція кольору")
+    loop_match: str = Field(default="N/A", description="Відповідність циклу")
+
+
+class FirstFrameCompositionGEN2(BaseModel):
+    """Композиція першого кадру з GEN2 (більш детальна)."""
+    hook_element: str = Field(..., description="Hook елемент")
+    focal_point: str = Field(..., description="Фокусна точка")
+    foreground: str = Field(..., description="Передній план")
+    background: str = Field(..., description="Задній план")
+    scale_proof: str = Field(..., description="Доказ масштабу")
+    color_anchor: str = Field(..., description="Кольоровий якір")
+    safe_zone: str = Field(..., description="Safe zone")
+    motion_visible: str = Field(..., description="Видимий рух")
+    scroll_stop: str = Field(..., description="Scroll stop елемент")
+
+
+class ScalesTechniques(BaseModel):
+    """Техніки масштабу з GEN2."""
+    camera_angle: str = Field(default="", description="Кут камери")
+    atmospheric_depth: str = Field(default="", description="Атмосферна глибина")
+    scale_indicators: str = Field(default="", description="Індикатори масштабу")
+
+
+# ============================================================================
+# GEN2 VISUAL SUMMARY - Загальний огляд візуалів
+# ============================================================================
+
+class LoopVerification(BaseModel):
+    """Верифікація циклу з GEN2."""
+    scene1_camera_movement: str = Field(default="", description="Рух камери Scene 1")
+    scene6_camera_movement: str = Field(default="", description="Рух камери Scene 6")
+    movements_are_different: bool = Field(default=True, description="Рухи різні")
+    scene6_after_reverse: str = Field(default="", description="Scene 6 після реверсу")
+    scene1_foreground: str = Field(default="", description="Передній план Scene 1")
+    scene6_foreground: str = Field(default="", description="Передній план Scene 6")
+    foreground_match: bool = Field(default=True, description="Передній план співпадає")
+    scene1_lighting: str = Field(default="", description="Освітлення Scene 1")
+    scene6_lighting: str = Field(default="", description="Освітлення Scene 6")
+    lighting_match: bool = Field(default=True, description="Освітлення співпадає")
+    same_reference_image: bool = Field(default=True, description="Той самий reference image")
+    loop_ready: bool = Field(default=True, description="Готовий до циклу")
+
+
+class VisualSummary(BaseModel):
+    """Загальний огляд візуалів з GEN2."""
+    total_scenes: int = Field(default=6, description="Кількість сцен")
+    gigantism_protocol: str = Field(default="APPLIED", description="Протокол гігантизму")
+    reference_breakdown: Dict[str, int] = Field(default_factory=dict, description="Розбивка референсів")
+    scale_techniques_used: List[str] = Field(default_factory=list, description="Використані техніки масштабу")
+    lighting_continuity: str = Field(default="", description="Безперервність освітлення")
+    foreground_scenes: List[int] = Field(default_factory=list, description="Сцени з переднім планом")
+    motion_summary: str = Field(default="", description="Резюме руху")
+    energy_pattern: str = Field(default="", description="Патерн енергії")
+    motion_enforcement: str = Field(default="", description="Застосування руху")
+    loop_verified: bool = Field(default=True, description="Цикл верифіковано")
+    banned_words_checked: bool = Field(default=True, description="Заборонені слова перевірено")
+    loop_verification: Optional[LoopVerification] = Field(default=None, description="Деталі верифікації циклу")
+
+
+# ============================================================================
 # SCENE - Дані сцени
 # ============================================================================
 
@@ -359,6 +455,14 @@ class GlazeScene(BaseModel):
     image_path: Optional[Path] = Field(default=None, description="Шлях до зображення")
     video_path: Optional[Path] = Field(default=None, description="Шлях до відео")
     status: str = Field(..., description="Статус обробки - REQUIRED")
+
+    # GEN2 metadata fields
+    inheritance: Optional[SceneInheritance] = Field(default=None, description="Наслідування від батьківської сцени")
+    post_production_notes: Optional[PostProductionNotes] = Field(default=None, description="Нотатки для постпродакшну")
+    first_frame_composition: Optional[FirstFrameCompositionGEN2] = Field(default=None, description="Композиція першого кадру (Scene 1)")
+    scale_techniques: Optional[ScalesTechniques] = Field(default=None, description="Техніки масштабу")
+    visual_punctuation: Optional[str] = Field(default=None, description="Візуальна пунктуація")
+    easter_egg_integration: Optional[EasterEggIntegration] = Field(default=None, description="Інтеграція Easter Egg (якщо є)")
 
     @model_validator(mode='before')
     @classmethod
@@ -434,6 +538,35 @@ class VoiceoverConfig(BaseModel):
 # AUDIO - Фонова музика та SFX
 # ============================================================================
 
+class SonicHook(BaseModel):
+    """Звуковий хук - ALL FIELDS from GEN1."""
+    type: str = Field(..., description="Тип (THE_BOOM, THE_SIZZLE, etc) - REQUIRED")
+    timing: str = Field(default="0.0s", description="Час запуску")
+    description: str = Field(..., description="Опис звуку - REQUIRED")
+    volume: str = Field(default="LOUD", description="Гучність (LOUD, CRISP, MEDIUM)")
+
+
+class FoleyPalette(BaseModel):
+    """Палітра Foley звуків з GEN1."""
+    primary_sounds: List[str] = Field(default_factory=list, description="Основні звуки")
+    search_terms: List[str] = Field(default_factory=list, description="Терміни для пошуку")
+    scene_assignments: Dict[str, List[str]] = Field(default_factory=dict, description="Призначення по сценах")
+
+
+class SceneSFX(BaseModel):
+    """SFX для однієї сцени."""
+    type: str = Field(..., description="Тип (IMPACT, TEXTURE, AMBIENCE)")
+    timing: str = Field(default="0.0s", description="Час")
+    description: str = Field(..., description="Опис")
+    volume: str = Field(default="MEDIUM", description="Гучність")
+
+
+class SceneSFXAssignment(BaseModel):
+    """Призначення SFX для сцени."""
+    scene: int = Field(..., description="Номер сцени")
+    sfx: List[SceneSFX] = Field(default_factory=list, description="Список SFX")
+
+
 class BackgroundMusic(BaseModel):
     """Конфігурація фонової музики - ALL FIELDS REQUIRED."""
     genre: str = Field(..., description="Жанр - REQUIRED")
@@ -459,7 +592,11 @@ class SFXItem(BaseModel):
 class AudioConfig(BaseModel):
     """Повна аудіо конфігурація - ALL FIELDS REQUIRED."""
     background_music: BackgroundMusic = Field(..., description="Фонова музика - REQUIRED")
-    sfx: List[SFXItem] = Field(..., description="SFX - REQUIRED")
+    sfx: List[SFXItem] = Field(default_factory=list, description="SFX legacy format")
+    # New fields from GEN1
+    sonic_hook: Optional[SonicHook] = Field(default=None, description="Звуковий хук з GEN1")
+    foley_palette: Optional[FoleyPalette] = Field(default=None, description="Foley палітра з GEN1")
+    sfx_per_scene: List[SceneSFXAssignment] = Field(default_factory=list, description="SFX по сценах з GEN1")
 
 
 # ============================================================================
@@ -618,6 +755,12 @@ class GlazeCityProject(BaseModel):
     # Easter Egg & Loop - REQUIRED
     easter_egg: EasterEgg = Field(..., description="Easter Egg - REQUIRED")
     loop: LoopConfig = Field(..., description="Конфігурація циклу - REQUIRED")
+
+    # Share Trigger - from GEN1
+    share_trigger: Optional[ShareTrigger] = Field(default=None, description="Тригер для шерингу з GEN1")
+
+    # Visual Summary - from GEN2
+    visual_summary: Optional[VisualSummary] = Field(default=None, description="Огляд візуалів з GEN2")
 
     # Scenes - REQUIRED (6 scenes)
     scenes: List[GlazeScene] = Field(..., description="Сцени (6 штук) - REQUIRED")
@@ -781,20 +924,42 @@ __all__ = [
     "PropertyBrief",
     "HookStrategy",
     "Psychology",
+    # Share Trigger
+    "ShareTrigger",
+    # Easter Egg
+    "EasterEggIntegration",
     "EasterEgg",
     "LoopConfig",
+    # GEN2 Scene Metadata
+    "SceneInheritance",
+    "PostProductionNotes",
+    "FirstFrameCompositionGEN2",
+    "ScalesTechniques",
+    "LoopVerification",
+    "VisualSummary",
+    # Scene
     "GlazeScene",
+    # Voiceover
     "VoiceoverSettings",
     "VoiceoverConfig",
+    # Audio
+    "SonicHook",
+    "FoleyPalette",
+    "SceneSFX",
+    "SceneSFXAssignment",
     "BackgroundMusic",
     "SFXItem",
     "AudioConfig",
+    # YouTube
     "PostingTime",
     "ViralMetadata",
+    # Viral Audit
     "AuditScore",
     "ViralAuditScores",
     "ViralAudit",
+    # Series & Meta
     "SeriesInfo",
     "ProjectMeta",
+    # Main
     "GlazeCityProject",
 ]
