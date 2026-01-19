@@ -759,7 +759,7 @@ class Gen2SceneInput(BaseModel):
 
 class Gen2FirstFrameComposition(BaseModel):
     """First frame composition for Scene 1 - ALL FIELDS REQUIRED."""
-    hook_type: str = Field(..., alias="hook_element", description="THE_IMPOSSIBLE | SCALE_SHOCK | etc. - REQUIRED")
+    hook_element: str = Field(..., description="THE_IMPOSSIBLE | SCALE_SHOCK | etc. - REQUIRED")
     focal_point: str = Field(..., description="Main attention grabber - REQUIRED")
     foreground: str = Field(..., description="What's blurred/atmospheric in front - REQUIRED")
     background: str = Field(..., description="Supporting environment - REQUIRED")
@@ -768,8 +768,6 @@ class Gen2FirstFrameComposition(BaseModel):
     motion_visible: str = Field(..., description="What's moving in first frame - REQUIRED")
     scroll_stop: str = Field(..., description="Why viewer stops scrolling - REQUIRED")
     scale_proof: str = Field(..., description="Scale proof elements - REQUIRED")
-
-    model_config = {"populate_by_name": True}
 
 
 class Gen2PostProductionNotes(BaseModel):
