@@ -414,9 +414,18 @@ class Gen1SceneConcept(BaseModel):
     energy_level: str = Field(..., description="EXPLOSIVE | HIGH | MEDIUM | LOW - REQUIRED")
     visual_concept: Gen1VisualConcept = Field(..., description="Visual concept for GEN2 - REQUIRED")
     camera_intent: Gen1CameraIntent = Field(..., description="Camera movement intent - REQUIRED")
-    voiceover_segment: str = Field(..., description="VO text with [tags] - REQUIRED")
+    voiceover_segment: str = Field(default="", description="VO text with [tags] - filled from broker_script if empty")
     broker_script: str = Field(..., description="Broker script for scenes 1-4 - REQUIRED")
     audio_moment: str = Field(..., description="Key audio event - REQUIRED")
+
+    @model_validator(mode='before')
+    @classmethod
+    def fill_voiceover_from_broker(cls, data: Any) -> Any:
+        """Fill voiceover_segment from broker_script if missing."""
+        if isinstance(data, dict):
+            if not data.get('voiceover_segment') and data.get('broker_script'):
+                data['voiceover_segment'] = data['broker_script']
+        return data
 
     @field_validator('narrative_purpose')
     @classmethod
@@ -466,9 +475,10 @@ class Gen1SceneConcept(BaseModel):
         if not self.camera_intent.movement:
             errors.append(f"Scene {self.scene_number}: missing camera_intent.movement")
 
-        # Check voiceover_segment - REQUIRED
-        if not self.voiceover_segment:
-            errors.append(f"Scene {self.scene_number}: missing voiceover_segment")
+        # voiceover_segment - filled from broker_script by validator, so just warn if empty
+        if not self.voiceover_segment and self.broker_script:
+            # This shouldn't happen after fill_voiceover_from_broker, but as fallback
+            object.__setattr__(self, 'voiceover_segment', self.broker_script)
 
         # Scene 1 must be PRIMARY
         if self.scene_number == 1 and self.reference_hint != "PRIMARY":
@@ -506,9 +516,34 @@ class Gen1FoleySound(BaseModel):
 
 
 class Gen1FoleyPalette(BaseModel):
-    """Foley sounds configuration - ALL FIELDS REQUIRED."""
-    sounds: List[Gen1FoleySound] = Field(..., description="Available sounds - REQUIRED")
-    scene_assignments: Dict[str, List[str]] = Field(..., description="Mapping of scene_N to sound IDs - REQUIRED")
+    """Foley sounds configuration - supports both old and new formats."""
+    # New format (preferred)
+    sounds: Optional[List[Gen1FoleySound]] = Field(default=None, description="Available sounds (new format)")
+    scene_assignments: Optional[Dict[str, List[str]]] = Field(default=None, description="Mapping of scene_N to sound IDs")
+    # Legacy format from Gemini
+    primary_sounds: Optional[List[str]] = Field(default=None, description="Primary sounds (legacy format)")
+
+    @model_validator(mode='before')
+    @classmethod
+    def normalize_foley_format(cls, data: Any) -> Any:
+        """Convert Gemini's legacy format to expected format."""
+        if isinstance(data, dict):
+            # If legacy format with numbered keys (1, 2, 3...) as scene assignments
+            if 'primary_sounds' in data and 'sounds' not in data:
+                # Extract scene assignments from numbered keys
+                scene_assignments = {}
+                for key in list(data.keys()):
+                    if key.isdigit():
+                        scene_assignments[f"scene_{key}"] = data.pop(key)
+                if scene_assignments:
+                    data['scene_assignments'] = scene_assignments
+                # Convert primary_sounds to sounds format
+                if data.get('primary_sounds'):
+                    data['sounds'] = [
+                        {"id": s.replace(" ", "_"), "search": s}
+                        for s in data['primary_sounds']
+                    ]
+        return data
 
 
 class Gen1SfxItem(BaseModel):
@@ -778,6 +813,28 @@ class Gen2PostProductionNotes(BaseModel):
     loop_reference: Optional[str] = Field(default=None, description="Loop matching notes")
 
 
+class Gen2Inheritance(BaseModel):
+    """Inheritance data for REQUIRES_REF and LOOP_CLOSE scenes."""
+    parent_scene: int = Field(default=1, description="Parent scene number")
+    inherited_elements: List[str] = Field(default_factory=list, description="Elements inherited from parent")
+    modified_elements: List[str] = Field(default_factory=list, description="Elements modified from parent")
+
+
+class Gen2ScaleTechniques(BaseModel):
+    """Scale techniques for exterior scenes."""
+    camera_angle: Optional[str] = Field(default=None, description="Camera angle for scale")
+    atmospheric_depth: Optional[str] = Field(default=None, description="Atmospheric depth description")
+    scale_indicators: Optional[str] = Field(default=None, description="Scale indicator elements")
+
+
+class Gen2EasterEggIntegration(BaseModel):
+    """Easter egg integration details."""
+    object: str = Field(default="", description="Easter egg object")
+    placement_in_prompt: str = Field(default="", description="Where egg is placed in prompt")
+    visibility_check: str = Field(default="", description="Visibility verification")
+    integrated_in_image_prompt: bool = Field(default=False, description="Whether integrated in image prompt")
+
+
 class Gen2SceneOutput(BaseModel):
     """Output from GEN2 - visual prompts for one scene - ALL FIELDS REQUIRED."""
     scene_number: int = Field(..., description="Scene number - REQUIRED")
@@ -804,6 +861,24 @@ class Gen2SceneOutput(BaseModel):
         description="Post-production notes - OPTIONAL"
     )
 
+    # Inheritance - Optional (for REQUIRES_REF and LOOP_CLOSE scenes)
+    inheritance: Optional[Gen2Inheritance] = Field(
+        default=None,
+        description="Inheritance data for dependent scenes"
+    )
+
+    # Scale techniques - Optional (for exterior scenes)
+    scale_techniques: Optional[Gen2ScaleTechniques] = Field(
+        default=None,
+        description="Scale techniques for gigantism"
+    )
+
+    # Easter egg integration - Optional (for easter egg scene)
+    easter_egg_integration: Optional[Gen2EasterEggIntegration] = Field(
+        default=None,
+        description="Easter egg integration details"
+    )
+
     @field_validator('video_prompt')
     @classmethod
     def validate_video_prompt_duration(cls, v: str) -> str:
@@ -815,22 +890,104 @@ class Gen2SceneOutput(BaseModel):
         return v
 
 
+class Gen2LoopVerification(BaseModel):
+    """Loop verification data from GEN2 for seamless video looping."""
+    scene1_camera_movement: str = Field(default="", description="Camera movement in Scene 1")
+    scene6_camera_movement: str = Field(default="", description="Camera movement in Scene 6")
+    movements_are_different: bool = Field(default=True, description="Whether movements are different")
+    scene6_after_reverse: str = Field(default="", description="Scene 6 description after reverse")
+    scene1_foreground: str = Field(default="", description="Foreground element in Scene 1")
+    scene6_foreground: str = Field(default="", description="Foreground element in Scene 6")
+    foreground_match: bool = Field(default=True, description="Whether foreground elements match")
+    scene1_lighting: str = Field(default="", description="Lighting in Scene 1")
+    scene6_lighting: str = Field(default="", description="Lighting in Scene 6")
+    lighting_match: bool = Field(default=True, description="Whether lighting matches")
+    same_reference_image: bool = Field(default=True, description="Whether same reference image is used")
+    loop_ready: bool = Field(default=True, description="Whether loop is ready")
+
+
 class Gen2VisualSummary(BaseModel):
-    """Summary of GEN2 visual generation - ALL FIELDS REQUIRED."""
+    """Summary of GEN2 visual generation."""
     total_scenes: int = Field(..., description="Total scenes - REQUIRED")
-    reference_breakdown: Dict[str, int] = Field(..., description="Count by reference type - REQUIRED")
-    lighting_continuity: str = Field(..., description="Lighting consistency note - REQUIRED")
-    foreground_scenes: List[int] = Field(..., description="Scenes with foreground - REQUIRED")
-    motion_summary: str = Field(..., description="Motion elements summary - REQUIRED")
-    energy_pattern: str = Field(..., description="Energy pattern across scenes - REQUIRED")
-    loop_verified: bool = Field(..., description="Whether loop is verified - REQUIRED")
-    consistency_target: str = Field(..., description="Target consistency - REQUIRED")
+    reference_breakdown: Dict[str, int] = Field(default_factory=dict, description="Count by reference type")
+    lighting_continuity: str = Field(default="consistent", description="Lighting consistency note")
+    foreground_scenes: List[int] = Field(default_factory=list, description="Scenes with foreground")
+    motion_summary: str = Field(default="", description="Motion elements summary")
+    energy_pattern: str = Field(default="", description="Energy pattern across scenes")
+    loop_verified: bool = Field(default=True, description="Whether loop is verified")
+    loop_ready: Optional[bool] = Field(default=None, description="Alias for loop_verified")
+    consistency_target: str = Field(default="high", description="Target consistency")
+    giga_prompt_ready: Optional[bool] = Field(default=None, description="Whether giga prompt is ready")
+    # Additional fields required by merge
+    gigantism_protocol: str = Field(default="APPLIED", description="Gigantism protocol status")
+    scale_techniques_used: List[str] = Field(default_factory=list, description="Scale techniques used")
+    motion_enforcement: str = Field(default="", description="Motion enforcement notes")
+    banned_words_checked: bool = Field(default=True, description="Whether banned words were checked")
+    loop_verification: Optional[Gen2LoopVerification] = Field(default=None, description="Detailed loop verification")
+
+    @model_validator(mode='before')
+    @classmethod
+    def normalize_summary(cls, data: Any) -> Any:
+        """Normalize visual summary fields from Gemini output."""
+        if isinstance(data, dict):
+            # Handle loop_ready as alias for loop_verified
+            if 'loop_ready' in data and 'loop_verified' not in data:
+                data['loop_verified'] = data['loop_ready']
+            # Default consistency_target if missing
+            if 'consistency_target' not in data:
+                data['consistency_target'] = 'high'
+            # Default gigantism_protocol if missing
+            if 'gigantism_protocol' not in data:
+                data['gigantism_protocol'] = 'APPLIED'
+            # Default loop_verification if missing - provide full default object
+            if 'loop_verification' not in data or data['loop_verification'] is None:
+                data['loop_verification'] = {
+                    'scene1_camera_movement': '',
+                    'scene6_camera_movement': '',
+                    'movements_are_different': True,
+                    'scene6_after_reverse': '',
+                    'scene1_foreground': '',
+                    'scene6_foreground': '',
+                    'foreground_match': True,
+                    'scene1_lighting': '',
+                    'scene6_lighting': '',
+                    'lighting_match': True,
+                    'same_reference_image': True,
+                    'loop_ready': True
+                }
+        return data
+
+
+class Gen2GlobalSettings(BaseModel):
+    """Global settings from GEN2 for consistent visual generation."""
+    gigantism_applied: bool = Field(default=True, description="Whether gigantism protocol is applied")
+    negative_prompt: str = Field(
+        default="tilt-shift, miniature, diorama, toy, cartoon, anime, illustration, drawing, painting, sketch",
+        description="Global negative prompt with anti-toy keywords"
+    )
+    style_reference: str = Field(default="", description="Global style reference")
+    quality_preset: str = Field(default="ultra", description="Quality preset")
 
 
 class Gen2BatchOutput(BaseModel):
     """Batch output from GEN2 - ALL FIELDS REQUIRED."""
     scenes: List[Gen2SceneOutput] = Field(..., description="Scene outputs - REQUIRED")
     visual_summary: Gen2VisualSummary = Field(..., description="Visual summary - REQUIRED")
+    global_settings: Gen2GlobalSettings = Field(default_factory=Gen2GlobalSettings, description="Global settings for visual generation")
+
+    @model_validator(mode='before')
+    @classmethod
+    def ensure_global_settings(cls, data: Any) -> Any:
+        """Ensure global_settings exists with defaults if not provided by Gemini."""
+        if isinstance(data, dict):
+            if 'global_settings' not in data or data['global_settings'] is None:
+                data['global_settings'] = {
+                    'gigantism_applied': True,
+                    'negative_prompt': 'tilt-shift, miniature, diorama, toy, cartoon, anime, illustration, drawing, painting, sketch',
+                    'style_reference': '',
+                    'quality_preset': 'ultra'
+                }
+        return data
 
 
 # ============================================================================

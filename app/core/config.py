@@ -506,7 +506,7 @@ class Settings(BaseSettings):
     # ========================================================================
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file="config/.env",
         env_file_encoding="utf-8",
         case_sensitive=True,
         extra="ignore"  # Ігнорує зайві поля в .env

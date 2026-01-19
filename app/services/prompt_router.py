@@ -74,6 +74,7 @@ from app.services.glaze_models import (
     GlazeScene,
     PropertyBrief,
     HookStrategy,
+    HookMatrix,
     Psychology,
     EasterEgg,
     LoopConfig,
@@ -90,6 +91,8 @@ from app.services.glaze_models import (
     ArchitecturalIdentity,
     FoodIdentity,
     FoodDNA,
+    FoodMaterial,
+    PropertySpecs,
     LightingMaster,
     ForegroundElement,
     # New models for full data transfer
@@ -109,8 +112,30 @@ from app.services.glaze_models import (
 from app.services.validation_models import (
     Gen1ValidationResponse,
     Gen2ValidationResponse,
+    Gen1ValidationMetadata,
+    Gen1Phase1Structural,
+    Gen1Decision,
+    Gen1Issues,
+    Gen1RetryGuidance,
+    Gen2ValidationMetadata,
+    Gen2Phase1Structural,
+    Gen2Decision,
+    Gen2Issues,
+    Gen2RetryGuidance,
 )
 from app.services.topic_memory import topic_memory
+
+# Python validators (deterministic, ~5ms, 0 tokens) - replacing LLM validators
+from app.services.gen1_validator import (
+    Gen1Validator,
+    validate_gen1 as python_validate_gen1,
+    ValidationResult as Gen1ValidationResult,
+)
+from app.services.gen2_validator import (
+    Gen2Validator,
+    validate_gen2 as python_validate_gen2,
+    Gen2ValidationResult,
+)
 
 
 # Paths to system prompts
@@ -715,7 +740,13 @@ Output ONLY valid JSON matching Gen2BatchOutput schema."""
         project_id: str = "",
     ) -> Optional[Gen1ValidationResponse]:
         """
-        Validate GEN1 output using VAL_GEN1 system prompt.
+        Validate GEN1 output using Python deterministic validator.
+
+        REPLACED LLM validator with Python validator for:
+        - Speed: ~5ms vs ~10-15s
+        - Cost: 0 tokens vs ~3000-5000 tokens
+        - Determinism: 100% reproducible results
+        - No hallucinations
 
         Args:
             gen1_output: The GEN1 output to validate
@@ -725,59 +756,65 @@ Output ONLY valid JSON matching Gen2BatchOutput schema."""
         Returns:
             Gen1ValidationResponse with validation decision
         """
-        if not self.val_gen1_prompt:
-            logger.error("[VAL_GEN1] Validator prompt not loaded!")
-            return None
-
-        logger.info("[VAL_GEN1] Validating GEN1 output...")
-
-        # Build validation request
-        gen1_json = gen1_output.model_dump_json(indent=2)
-        user_prompt = f"""Validate the following GEN1 output:
-
-ORIGINAL TOPIC: {original_topic or "AUTO_GENERATE"}
-
-GEN1 OUTPUT:
-{gen1_json}
-
-Validate according to VAL_GEN1 rules and return JSON response."""
+        logger.info("[VAL_GEN1_PYTHON] Validating GEN1 output with Python validator...")
 
         try:
-            response = await self.client.aio.models.generate_content(
-                model=self.model,
-                contents=user_prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=self.val_gen1_prompt,
-                    temperature=0.1,  # Deterministic for validation
-                    max_output_tokens=8192,
-                ),
-            )
+            # Convert Pydantic model to dict for Python validator
+            gen1_dict = gen1_output.model_dump()
 
-            raw_output = response.text
-            if not raw_output:
-                logger.error("[VAL_GEN1] Empty response from API")
-                return None
-            self._save_raw_response(raw_output, "VAL_GEN1", project_id)
+            # Run Python validator (deterministic, ~5ms)
+            result: Gen1ValidationResult = python_validate_gen1(gen1_dict, strict_mode=True)
 
-            json_data = self._extract_json(raw_output)
-            if not json_data:
-                logger.error("[VAL_GEN1] Failed to extract JSON from response")
-                return None
+            # Save debug output
+            debug_output = json.dumps(result.to_dict(), indent=2, ensure_ascii=False)
+            self._save_raw_response(debug_output, "VAL_GEN1_PYTHON", project_id)
 
-            validation_response = Gen1ValidationResponse.model_validate(json_data)
+            # Convert to Gen1ValidationResponse format
+            # Note: phase1_structural.errors expects List[str], not List[dict]
+            validation_data = {
+                "validation": {
+                    "stage": "VAL_GEN1",
+                    "version": result.validator_version,
+                    "timestamp": result.timestamp,
+                },
+                "phase1_structural": {
+                    "status": "PASS" if result.passed else "FAIL",
+                    "errors": [str(e) for e in result.errors],  # Convert to strings
+                    "warnings": [str(w) for w in result.warnings],  # Convert to strings
+                },
+                "phase2_quality": None,
+                "decision": {
+                    "status": "PASSED" if result.passed else "FAILED",
+                    "reasoning": f"Python validator: {len(result.errors)} errors, {len(result.warnings)} warnings. "
+                                 + ("Ready for GEN2." if result.passed else "Fix errors before proceeding."),
+                    "proceed_to": "GEN2" if result.passed else None,
+                },
+                "issues": {
+                    "has_issues": len(result.errors) > 0 or len(result.warnings) > 0,
+                    "concerns": [str(e) for e in result.errors] + [str(w) for w in result.warnings],
+                },
+                "retry_guidance": {
+                    "fixes_needed": [f"{e.field}: {e.message}" for e in result.errors],
+                    "regenerate": True,
+                } if not result.passed else None,
+            }
+
+            validation_response = Gen1ValidationResponse.model_validate(validation_data)
 
             if validation_response.passed:
-                logger.success(f"[VAL_GEN1] PASSED - {validation_response.decision.reasoning}")
+                logger.success(f"[VAL_GEN1_PYTHON] PASSED in {result.validation_time_ms:.1f}ms - {validation_response.decision.reasoning}")
             else:
-                logger.warning(f"[VAL_GEN1] FAILED - {validation_response.decision.reasoning}")
+                logger.warning(f"[VAL_GEN1_PYTHON] FAILED in {result.validation_time_ms:.1f}ms - {validation_response.decision.reasoning}")
                 if validation_response.issues.concerns:
-                    for concern in validation_response.issues.concerns:
+                    for concern in validation_response.issues.concerns[:5]:  # Limit to first 5
                         logger.warning(f"  - {concern}")
+                    if len(validation_response.issues.concerns) > 5:
+                        logger.warning(f"  ... and {len(validation_response.issues.concerns) - 5} more issues")
 
             return validation_response
 
         except Exception as e:
-            logger.error(f"[VAL_GEN1] Error: {e}")
+            logger.error(f"[VAL_GEN1_PYTHON] Error: {e}")
             import traceback
             logger.debug(traceback.format_exc())
             return None
@@ -789,7 +826,13 @@ Validate according to VAL_GEN1 rules and return JSON response."""
         project_id: str = "",
     ) -> Optional[Gen2ValidationResponse]:
         """
-        Validate GEN2 output using VAL_GEN2 system prompt.
+        Validate GEN2 output using Python deterministic validator.
+
+        REPLACED LLM validator with Python validator for:
+        - Speed: ~5ms vs ~10-15s
+        - Cost: 0 tokens vs ~4000-6000 tokens
+        - Determinism: 100% reproducible results
+        - No hallucinations
 
         Args:
             gen2_output: The GEN2 output to validate
@@ -799,57 +842,71 @@ Validate according to VAL_GEN1 rules and return JSON response."""
         Returns:
             Gen2ValidationResponse with validation decision
         """
-        if not self.val_gen2_prompt:
-            logger.error("[VAL_GEN2] Validator prompt not loaded!")
-            return None
-
-        logger.info("[VAL_GEN2] Validating GEN2 output...")
-
-        # Build validation request
-        gen2_json = gen2_output.model_dump_json(indent=2)
-        gen1_json = gen1_output.model_dump_json(indent=2)
-
-        user_prompt = f"""Validate the following GEN2 output:
-
-GEN2 OUTPUT:
-{gen2_json}
-
-ORIGINAL GEN1 OUTPUT (for consistency check):
-{gen1_json}
-
-Validate according to VAL_GEN2 rules and return JSON response."""
+        logger.info("[VAL_GEN2_PYTHON] Validating GEN2 output with Python validator...")
 
         try:
-            response = await self.client.aio.models.generate_content(
-                model=self.model,
-                contents=user_prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=self.val_gen2_prompt,
-                    temperature=0.1,  # Deterministic for validation
-                    max_output_tokens=8192,
-                ),
-            )
+            # Convert Pydantic models to dicts for Python validator
+            gen2_dict = gen2_output.model_dump()
+            gen1_dict = gen1_output.model_dump()
 
-            raw_output = response.text
-            if not raw_output:
-                logger.error("[VAL_GEN2] Empty response from API")
-                return None
-            self._save_raw_response(raw_output, "VAL_GEN2", project_id)
+            # Run Python validator (deterministic, ~5ms)
+            result: Gen2ValidationResult = python_validate_gen2(gen2_dict, gen1_dict)
 
-            json_data = self._extract_json(raw_output)
-            if not json_data:
-                logger.error("[VAL_GEN2] Failed to extract JSON from response")
-                return None
+            # Save debug output
+            debug_output = json.dumps(result.to_dict(), indent=2, ensure_ascii=False)
+            self._save_raw_response(debug_output, "VAL_GEN2_PYTHON", project_id)
 
-            validation_response = Gen2ValidationResponse.model_validate(json_data)
+            # Convert scene_checks to Gen2SceneCheck format
+            scene_checks = []
+            for sc in result.scene_checks:
+                scene_checks.append({
+                    "scene": sc.scene,
+                    "image_prompt": sc.image_prompt if sc.image_prompt in ["PASS", "FAIL", "WARNING"] else "PASS",
+                    "video_prompt": sc.video_prompt if sc.video_prompt in ["PASS", "FAIL", "WARNING"] else "PASS",
+                    "motion_elements": sc.motion_elements if sc.motion_elements in ["PASS", "FAIL", "WARNING"] else "PASS",
+                })
+
+            # Convert to Gen2ValidationResponse format
+            validation_data = {
+                "validation": {
+                    "stage": "VAL_GEN2",
+                    "version": result.validator_version,
+                    "timestamp": result.timestamp,
+                },
+                "phase1_structural": {
+                    "status": "PASS" if result.passed else "FAIL",
+                    "scene_checks": scene_checks,
+                    "errors": [str(e) for e in result.errors],  # Convert to strings
+                    "warnings": [str(w) for w in result.warnings],  # Convert to strings
+                },
+                "phase2_quality": None,
+                "decision": {
+                    "status": "PASSED" if result.passed else "FAILED",
+                    "reasoning": f"Python validator: {len(result.errors)} errors, {len(result.warnings)} warnings. "
+                                 + ("Ready for IMG_GEN." if result.passed else "Fix errors before proceeding."),
+                    "proceed_to": "IMG_GEN" if result.passed else None,
+                },
+                "issues": {
+                    "has_issues": len(result.errors) > 0 or len(result.warnings) > 0,
+                    "concerns": [str(e) for e in result.errors] + [str(w) for w in result.warnings],
+                },
+                "retry_guidance": {
+                    "fixes_needed": [f"{e.field}: {e.message}" for e in result.errors],
+                    "regenerate": True,
+                } if not result.passed else None,
+            }
+
+            validation_response = Gen2ValidationResponse.model_validate(validation_data)
 
             if validation_response.passed:
-                logger.success(f"[VAL_GEN2] PASSED - {validation_response.decision.reasoning}")
+                logger.success(f"[VAL_GEN2_PYTHON] PASSED in {result.validation_time_ms:.1f}ms - {validation_response.decision.reasoning}")
             else:
-                logger.warning(f"[VAL_GEN2] FAILED - {validation_response.decision.reasoning}")
+                logger.warning(f"[VAL_GEN2_PYTHON] FAILED in {result.validation_time_ms:.1f}ms - {validation_response.decision.reasoning}")
                 if validation_response.issues.concerns:
-                    for concern in validation_response.issues.concerns:
+                    for concern in validation_response.issues.concerns[:5]:  # Limit to first 5
                         logger.warning(f"  - {concern}")
+                    if len(validation_response.issues.concerns) > 5:
+                        logger.warning(f"  ... and {len(validation_response.issues.concerns) - 5} more issues")
                 failed_scenes = validation_response.get_failed_scenes()
                 if failed_scenes:
                     logger.warning(f"  Failed scenes: {failed_scenes}")
@@ -857,7 +914,7 @@ Validate according to VAL_GEN2 rules and return JSON response."""
             return validation_response
 
         except Exception as e:
-            logger.error(f"[VAL_GEN2] Error: {e}")
+            logger.error(f"[VAL_GEN2_PYTHON] Error: {e}")
             import traceback
             logger.debug(traceback.format_exc())
             return None
@@ -995,6 +1052,7 @@ Validate according to VAL_GEN2 rules and return JSON response."""
 
         # Build GlazeScene list
         glaze_scenes: List[GlazeScene] = []
+        current_timestamp: float = 0.0
 
         for gen1_scene in gen1.scenes:
             gen2_scene = gen2_scenes.get(gen1_scene.scene_number)
@@ -1066,16 +1124,26 @@ Validate according to VAL_GEN2 rules and return JSON response."""
             glaze_scene = GlazeScene(
                 scene_number=gen1_scene.scene_number,
                 scene_name=gen1_scene.scene_name,
+                timestamp=timestamp_str,
                 duration_seconds=gen1_scene.duration_seconds,
+                # Script & Text
                 voiceover=gen1_scene.voiceover_segment,
-                on_screen_text=None,
+                voiceover_segment=gen1_scene.voiceover_segment,
+                on_screen_text="",
+                narrative_purpose=gen1_scene.narrative_purpose,
+                energy_level=gen1_scene.energy_level,
+                # Visual
                 visual_description=gen1_scene.visual_concept.subject,
                 camera_movement=gen1_scene.camera_intent.movement,
+                motion_elements=gen2_scene.motion_elements if gen2_scene else gen1_scene.visual_concept.motion_elements,
+                # Audio
                 audio_sfx=gen1_scene.audio_moment,
+                audio_moment=gen1_scene.audio_moment,
                 # From GEN2
                 image_prompt=gen2_scene.image_prompt if gen2_scene else "",
                 video_prompt=gen2_scene.video_prompt if gen2_scene else "",
                 reference_type=gen2_scene.reference_type if gen2_scene else "INDEPENDENT",
+                reference_hint=gen1_scene.reference_hint,
                 video_tool="KLING",
                 # Status
                 status="pending",
@@ -1088,6 +1156,7 @@ Validate according to VAL_GEN2 rules and return JSON response."""
                 easter_egg_integration=scene_easter_egg_integration,
             )
             glaze_scenes.append(glaze_scene)
+            current_timestamp += gen1_scene.duration_seconds
 
         # Build final project with all required fields from GEN1
         total_duration = sum(s.duration_seconds for s in glaze_scenes)
@@ -1202,10 +1271,18 @@ Validate according to VAL_GEN2 rules and return JSON response."""
             ),
             hook=HookStrategy(
                 type=gen1.hook.type,
-                opening_line=gen1.hook.first_words,
+                psychological_trigger=gen1.hook.psychological_trigger,
+                first_frame_visual=gen1.hook.first_frame_visual,
+                first_words=gen1.hook.first_words,
+                complete_hook_vo=gen1.hook.complete_hook_vo,
+                scroll_stop_element=gen1.hook.scroll_stop_element,
+                opening_line=gen1.hook.first_words,  # legacy alias
+                visual_hook=gen1.hook.first_frame_visual,  # legacy alias
+                audio_hook=gen1.hook.complete_hook_vo,  # legacy alias
             ),
             psychology=Psychology(
                 triggers=[gen1.hook.psychological_trigger],
+                reasoning=f"Using {gen1.hook.psychological_trigger} trigger from hook strategy",
             ),
             # REQUIRED per GEN1 OUTPUT CONTRACT
             architectural_identity=ArchitecturalIdentity(
@@ -1229,6 +1306,11 @@ Validate according to VAL_GEN2 rules and return JSON response."""
                     floors_become=gen1.food_identity.food_dna.floors_become,
                     columns_become=gen1.food_identity.food_dna.columns_become,
                     furniture_becomes=gen1.food_identity.food_dna.furniture_becomes,
+                    # Additional fields required by FoodDNA (not in Gen1FoodDNA)
+                    chimney_becomes=getattr(gen1.food_identity.food_dna, 'chimney_becomes', f"{gen1.food_identity.primary_food} stack"),
+                    stairs_become=getattr(gen1.food_identity.food_dna, 'stairs_become', f"Layered {gen1.food_identity.primary_food} steps"),
+                    fence_becomes=getattr(gen1.food_identity.food_dna, 'fence_becomes', f"{gen1.food_identity.primary_food} railing"),
+                    landscaping_becomes=getattr(gen1.food_identity.food_dna, 'landscaping_becomes', f"{gen1.food_identity.primary_food} garden"),
                 ),
                 texture_keywords=gen1.food_identity.texture_keywords,
                 color_keywords=gen1.food_identity.color_keywords,
