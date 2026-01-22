@@ -712,6 +712,12 @@ class HiggsFieldWebAdapter:
                 download_dir=self._download_dir
             )
 
+            # FIX: Swap scenes 2 and 6 (indices 0 and 4 in remaining scenes array)
+            # Higgsfield returns them in wrong order
+            if len(generated_images) == 5:
+                generated_images[0], generated_images[4] = generated_images[4], generated_images[0]
+                logger.info("[FIX] Swapped scenes 2 and 6 images")
+
             # Copy images to project directories and save URLs to metadata
             final_paths = []
             for i, gen_img in enumerate(generated_images):
