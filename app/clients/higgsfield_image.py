@@ -104,7 +104,7 @@ class HiggsFieldImageGenerator:
         # РџРµСЂРµРІС–СЂРёС‚Рё С‡Рё РІР¶Рµ РЅР° СЃС‚РѕСЂС–РЅС†С–
         if not force:
             current_url = await asyncio.to_thread(lambda: self.browser.driver.current_url)
-            if HIGGSFIELD_IMAGE_URL in current_url:
+            if current_url and HIGGSFIELD_IMAGE_URL in current_url:
                 logger.debug("Already on image page, skipping navigation")
                 return
 
