@@ -750,18 +750,31 @@ class SeedanceVideoGenerator:
         """Метод 5: PyAutoGUI click по координатах"""
         import pyautogui
 
-        # Отримати координати кнопки
-        location = btn.location
-        size = btn.size
+        driver = self.browser.driver
+
+        # Отримати точні координати кнопки через JavaScript
+        # getBoundingClientRect() дає координати відносно viewport
+        rect = driver.execute_script("""
+            var rect = arguments[0].getBoundingClientRect();
+            return {
+                x: rect.left + rect.width / 2,
+                y: rect.top + rect.height / 2
+            };
+        """, btn)
 
         # Позиція вікна браузера
-        window_rect = self.browser.driver.get_window_rect()
+        window_rect = driver.get_window_rect()
 
-        # Координати центру кнопки на екрані
-        x = window_rect['x'] + location['x'] + size['width'] // 2
-        y = window_rect['y'] + location['y'] + size['height'] // 2 + 80  # +80 для toolbar
+        # Динамічно обчислити висоту toolbar (різниця між зовнішньою і внутрішньою висотою)
+        toolbar_height = driver.execute_script(
+            "return window.outerHeight - window.innerHeight;"
+        )
 
-        logger.debug(f"  PyAutoGUI clicking at ({x}, {y})")
+        # Координати на екрані = позиція вікна + координати у viewport + toolbar
+        x = int(window_rect['x'] + rect['x'])
+        y = int(window_rect['y'] + rect['y'] + toolbar_height)
+
+        logger.debug(f"  PyAutoGUI clicking at ({x}, {y}), toolbar_height={toolbar_height}")
         pyautogui.click(x, y)
         logger.debug("  PyAutoGUI click executed")
 
