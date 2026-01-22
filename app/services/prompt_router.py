@@ -84,6 +84,8 @@ from app.services.glaze_models import (
     SFXItem,
     ViralMetadata,
     ViralAudit,
+    ViralAuditScores,
+    AuditScore,
     SeriesInfo,
     ProjectMeta,
     # Required by GEN1 OUTPUT CONTRACT
