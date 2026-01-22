@@ -668,6 +668,8 @@ class ViralAudit(BaseModel):
     max_score: int = Field(default=100, description="Максимальна оцінка")
     viral_probability: str = Field(default="MEDIUM", description="LOW/MEDIUM/HIGH")
     viral_reasoning: str = Field(default="", description="Обґрунтування")
+    weak_points: List[str] = Field(default_factory=list, description="Слабкі сторони з GEN1")
+    strength_points: List[str] = Field(default_factory=list, description="Сильні сторони з GEN1")
 
     # Backward compatibility properties
     @property

@@ -84,6 +84,8 @@ from app.services.glaze_models import (
     SFXItem,
     ViralMetadata,
     ViralAudit,
+    ViralAuditScores,
+    AuditScore,
     SeriesInfo,
     ProjectMeta,
     # Required by GEN1 OUTPUT CONTRACT
@@ -1185,9 +1187,17 @@ Output ONLY valid JSON matching Gen2BatchOutput schema."""
 
             # Foley palette
             if gen1.audio.foley_palette:
+                # Get primary_sounds: prefer sounds[].id, fallback to primary_sounds
+                if gen1.audio.foley_palette.sounds:
+                    primary = [s.id for s in gen1.audio.foley_palette.sounds]
+                    search = [s.search for s in gen1.audio.foley_palette.sounds]
+                else:
+                    primary = gen1.audio.foley_palette.primary_sounds or []
+                    search = gen1.audio.foley_palette.search_terms or primary  # fallback to primary if no search_terms
+
                 foley_palette_data = FoleyPalette(
-                    primary_sounds=[s.id for s in gen1.audio.foley_palette.sounds] if gen1.audio.foley_palette.sounds else (gen1.audio.foley_palette.primary_sounds or []),
-                    search_terms=[s.search for s in gen1.audio.foley_palette.sounds] if gen1.audio.foley_palette.sounds else [],
+                    primary_sounds=primary,
+                    search_terms=search,
                     scene_assignments=gen1.audio.foley_palette.scene_assignments or {},
                 )
 
@@ -1199,7 +1209,7 @@ Output ONLY valid JSON matching Gen2BatchOutput schema."""
                             type=item.type,
                             timing=item.timing,
                             description=item.description,
-                            volume="MEDIUM",  # Default, not in Gen1SfxItem
+                            volume=item.volume if hasattr(item, 'volume') else "MEDIUM",
                         )
                         for item in sfx_scene.sfx
                     ]
@@ -1358,8 +1368,11 @@ Output ONLY valid JSON matching Gen2BatchOutput schema."""
                     voice_id=gen1.voiceover.voice_id,
                     stability=gen1.voiceover.stability,
                     similarity_boost=gen1.voiceover.similarity_boost,
+                    style=gen1.voiceover.style if hasattr(gen1.voiceover, 'style') else 0.0,
                 ),
                 full_script=gen1.voiceover.full_script,
+                character=gen1.voiceover.character if hasattr(gen1.voiceover, 'character') else "broker",
+                model=gen1.voiceover.model if hasattr(gen1.voiceover, 'model') else "eleven_multilingual_v2",
                 total_duration_seconds=gen1.metadata.target_duration_seconds,
             ),
             # Audio with all required fields (including full GEN1 audio data)
@@ -1380,6 +1393,7 @@ Output ONLY valid JSON matching Gen2BatchOutput schema."""
             youtube=ViralMetadata(
                 title=gen1.youtube_title or gen1.metadata.title,
                 description=gen1.youtube_description or "",
+                pinned_comment=gen1.youtube_pinned_comment or gen1.engagement.easter_egg.comment_bait or "",
                 hashtags=gen1.engagement.hashtags,
                 tags=gen1.youtube_tags,
             ),
@@ -1415,6 +1429,8 @@ Output ONLY valid JSON matching Gen2BatchOutput schema."""
                 max_score=60,
                 viral_probability=self._get_viral_probability(gen1.viral_assessment.overall_score),
                 viral_reasoning="; ".join(gen1.viral_assessment.strength_points[:2]) if gen1.viral_assessment.strength_points else "Strong hook combined with engaging visuals",
+                weak_points=gen1.viral_assessment.weak_points or [],
+                strength_points=gen1.viral_assessment.strength_points or [],
             ),
             # Series info with all required fields
             series=SeriesInfo(

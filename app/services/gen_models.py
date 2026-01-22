@@ -560,6 +560,7 @@ class Gen1SfxItem(BaseModel):
     type: str = Field(..., description="IMPACT | WHOOSH | STING | etc.")
     timing: str = Field(..., description="When it plays (seconds or 'cut'/'end')")
     description: str = Field(..., description="Description")
+    volume: str = Field(default="MEDIUM", description="Volume: LOUD | MEDIUM | SOFT")
 
 
 class Gen1SfxScene(BaseModel):
