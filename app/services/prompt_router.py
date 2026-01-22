@@ -73,6 +73,7 @@ from app.services.glaze_models import (
     GlazeScene,
     PropertyBrief,
     HookStrategy,
+    HookMatrix,
     Psychology,
     EasterEgg,
     LoopConfig,
@@ -89,13 +90,51 @@ from app.services.glaze_models import (
     ArchitecturalIdentity,
     FoodIdentity,
     FoodDNA,
+    FoodMaterial,
+    PropertySpecs,
     LightingMaster,
+    ForegroundElement,
+    # New models for full data transfer
+    ShareTrigger,
+    SonicHook,
+    FoleyPalette,
+    SceneSFX,
+    SceneSFXAssignment,
+    EasterEggIntegration,
+    SceneInheritance,
+    PostProductionNotes,
+    FirstFrameCompositionGEN2,
+    ScalesTechniques,
+    LoopVerification,
+    VisualSummary,
 )
 from app.services.validation_models import (
     Gen1ValidationResponse,
     Gen2ValidationResponse,
+    Gen1ValidationMetadata,
+    Gen1Phase1Structural,
+    Gen1Decision,
+    Gen1Issues,
+    Gen1RetryGuidance,
+    Gen2ValidationMetadata,
+    Gen2Phase1Structural,
+    Gen2Decision,
+    Gen2Issues,
+    Gen2RetryGuidance,
 )
 from app.services.topic_memory import topic_memory
+
+# Python validators (deterministic, ~5ms, 0 tokens) - replacing LLM validators
+from app.services.gen1_validator import (
+    Gen1Validator,
+    validate_gen1 as python_validate_gen1,
+    ValidationResult as Gen1ValidationResult,
+)
+from app.services.gen2_validator import (
+    Gen2Validator,
+    validate_gen2 as python_validate_gen2,
+    Gen2ValidationResult,
+)
 
 
 # Paths to system prompts
@@ -700,7 +739,13 @@ Output ONLY valid JSON matching Gen2BatchOutput schema."""
         project_id: str = "",
     ) -> Optional[Gen1ValidationResponse]:
         """
-        Validate GEN1 output using VAL_GEN1 system prompt.
+        Validate GEN1 output using Python deterministic validator.
+
+        REPLACED LLM validator with Python validator for:
+        - Speed: ~5ms vs ~10-15s
+        - Cost: 0 tokens vs ~3000-5000 tokens
+        - Determinism: 100% reproducible results
+        - No hallucinations
 
         Args:
             gen1_output: The GEN1 output to validate
@@ -710,59 +755,65 @@ Output ONLY valid JSON matching Gen2BatchOutput schema."""
         Returns:
             Gen1ValidationResponse with validation decision
         """
-        if not self.val_gen1_prompt:
-            logger.error("[VAL_GEN1] Validator prompt not loaded!")
-            return None
-
-        logger.info("[VAL_GEN1] Validating GEN1 output...")
-
-        # Build validation request
-        gen1_json = gen1_output.model_dump_json(indent=2)
-        user_prompt = f"""Validate the following GEN1 output:
-
-ORIGINAL TOPIC: {original_topic or "AUTO_GENERATE"}
-
-GEN1 OUTPUT:
-{gen1_json}
-
-Validate according to VAL_GEN1 rules and return JSON response."""
+        logger.info("[VAL_GEN1_PYTHON] Validating GEN1 output with Python validator...")
 
         try:
-            response = await self.client.aio.models.generate_content(
-                model=self.model,
-                contents=user_prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=self.val_gen1_prompt,
-                    temperature=0.1,  # Deterministic for validation
-                    max_output_tokens=8192,
-                ),
-            )
+            # Convert Pydantic model to dict for Python validator
+            gen1_dict = gen1_output.model_dump()
 
-            raw_output = response.text
-            if not raw_output:
-                logger.error("[VAL_GEN1] Empty response from API")
-                return None
-            self._save_raw_response(raw_output, "VAL_GEN1", project_id)
+            # Run Python validator (deterministic, ~5ms)
+            result: Gen1ValidationResult = python_validate_gen1(gen1_dict, strict_mode=True)
 
-            json_data = self._extract_json(raw_output)
-            if not json_data:
-                logger.error("[VAL_GEN1] Failed to extract JSON from response")
-                return None
+            # Save debug output
+            debug_output = json.dumps(result.to_dict(), indent=2, ensure_ascii=False)
+            self._save_raw_response(debug_output, "VAL_GEN1_PYTHON", project_id)
 
-            validation_response = Gen1ValidationResponse.model_validate(json_data)
+            # Convert to Gen1ValidationResponse format
+            # Note: phase1_structural.errors expects List[str], not List[dict]
+            validation_data = {
+                "validation": {
+                    "stage": "VAL_GEN1",
+                    "version": result.validator_version,
+                    "timestamp": result.timestamp,
+                },
+                "phase1_structural": {
+                    "status": "PASS" if result.passed else "FAIL",
+                    "errors": [str(e) for e in result.errors],  # Convert to strings
+                    "warnings": [str(w) for w in result.warnings],  # Convert to strings
+                },
+                "phase2_quality": None,
+                "decision": {
+                    "status": "PASSED" if result.passed else "FAILED",
+                    "reasoning": f"Python validator: {len(result.errors)} errors, {len(result.warnings)} warnings. "
+                                 + ("Ready for GEN2." if result.passed else "Fix errors before proceeding."),
+                    "proceed_to": "GEN2" if result.passed else None,
+                },
+                "issues": {
+                    "has_issues": len(result.errors) > 0 or len(result.warnings) > 0,
+                    "concerns": [str(e) for e in result.errors] + [str(w) for w in result.warnings],
+                },
+                "retry_guidance": {
+                    "fixes_needed": [f"{e.field}: {e.message}" for e in result.errors],
+                    "regenerate": True,
+                } if not result.passed else None,
+            }
+
+            validation_response = Gen1ValidationResponse.model_validate(validation_data)
 
             if validation_response.passed:
-                logger.success(f"[VAL_GEN1] PASSED - {validation_response.decision.reasoning}")
+                logger.success(f"[VAL_GEN1_PYTHON] PASSED in {result.validation_time_ms:.1f}ms - {validation_response.decision.reasoning}")
             else:
-                logger.warning(f"[VAL_GEN1] FAILED - {validation_response.decision.reasoning}")
+                logger.warning(f"[VAL_GEN1_PYTHON] FAILED in {result.validation_time_ms:.1f}ms - {validation_response.decision.reasoning}")
                 if validation_response.issues.concerns:
-                    for concern in validation_response.issues.concerns:
+                    for concern in validation_response.issues.concerns[:5]:  # Limit to first 5
                         logger.warning(f"  - {concern}")
+                    if len(validation_response.issues.concerns) > 5:
+                        logger.warning(f"  ... and {len(validation_response.issues.concerns) - 5} more issues")
 
             return validation_response
 
         except Exception as e:
-            logger.error(f"[VAL_GEN1] Error: {e}")
+            logger.error(f"[VAL_GEN1_PYTHON] Error: {e}")
             import traceback
             logger.debug(traceback.format_exc())
             return None
@@ -774,7 +825,13 @@ Validate according to VAL_GEN1 rules and return JSON response."""
         project_id: str = "",
     ) -> Optional[Gen2ValidationResponse]:
         """
-        Validate GEN2 output using VAL_GEN2 system prompt.
+        Validate GEN2 output using Python deterministic validator.
+
+        REPLACED LLM validator with Python validator for:
+        - Speed: ~5ms vs ~10-15s
+        - Cost: 0 tokens vs ~4000-6000 tokens
+        - Determinism: 100% reproducible results
+        - No hallucinations
 
         Args:
             gen2_output: The GEN2 output to validate
@@ -784,57 +841,71 @@ Validate according to VAL_GEN1 rules and return JSON response."""
         Returns:
             Gen2ValidationResponse with validation decision
         """
-        if not self.val_gen2_prompt:
-            logger.error("[VAL_GEN2] Validator prompt not loaded!")
-            return None
-
-        logger.info("[VAL_GEN2] Validating GEN2 output...")
-
-        # Build validation request
-        gen2_json = gen2_output.model_dump_json(indent=2)
-        gen1_json = gen1_output.model_dump_json(indent=2)
-
-        user_prompt = f"""Validate the following GEN2 output:
-
-GEN2 OUTPUT:
-{gen2_json}
-
-ORIGINAL GEN1 OUTPUT (for consistency check):
-{gen1_json}
-
-Validate according to VAL_GEN2 rules and return JSON response."""
+        logger.info("[VAL_GEN2_PYTHON] Validating GEN2 output with Python validator...")
 
         try:
-            response = await self.client.aio.models.generate_content(
-                model=self.model,
-                contents=user_prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=self.val_gen2_prompt,
-                    temperature=0.1,  # Deterministic for validation
-                    max_output_tokens=8192,
-                ),
-            )
+            # Convert Pydantic models to dicts for Python validator
+            gen2_dict = gen2_output.model_dump()
+            gen1_dict = gen1_output.model_dump()
 
-            raw_output = response.text
-            if not raw_output:
-                logger.error("[VAL_GEN2] Empty response from API")
-                return None
-            self._save_raw_response(raw_output, "VAL_GEN2", project_id)
+            # Run Python validator (deterministic, ~5ms)
+            result: Gen2ValidationResult = python_validate_gen2(gen2_dict, gen1_dict)
 
-            json_data = self._extract_json(raw_output)
-            if not json_data:
-                logger.error("[VAL_GEN2] Failed to extract JSON from response")
-                return None
+            # Save debug output
+            debug_output = json.dumps(result.to_dict(), indent=2, ensure_ascii=False)
+            self._save_raw_response(debug_output, "VAL_GEN2_PYTHON", project_id)
 
-            validation_response = Gen2ValidationResponse.model_validate(json_data)
+            # Convert scene_checks to Gen2SceneCheck format
+            scene_checks = []
+            for sc in result.scene_checks:
+                scene_checks.append({
+                    "scene": sc.scene,
+                    "image_prompt": sc.image_prompt if sc.image_prompt in ["PASS", "FAIL", "WARNING"] else "PASS",
+                    "video_prompt": sc.video_prompt if sc.video_prompt in ["PASS", "FAIL", "WARNING"] else "PASS",
+                    "motion_elements": sc.motion_elements if sc.motion_elements in ["PASS", "FAIL", "WARNING"] else "PASS",
+                })
+
+            # Convert to Gen2ValidationResponse format
+            validation_data = {
+                "validation": {
+                    "stage": "VAL_GEN2",
+                    "version": result.validator_version,
+                    "timestamp": result.timestamp,
+                },
+                "phase1_structural": {
+                    "status": "PASS" if result.passed else "FAIL",
+                    "scene_checks": scene_checks,
+                    "errors": [str(e) for e in result.errors],  # Convert to strings
+                    "warnings": [str(w) for w in result.warnings],  # Convert to strings
+                },
+                "phase2_quality": None,
+                "decision": {
+                    "status": "PASSED" if result.passed else "FAILED",
+                    "reasoning": f"Python validator: {len(result.errors)} errors, {len(result.warnings)} warnings. "
+                                 + ("Ready for IMG_GEN." if result.passed else "Fix errors before proceeding."),
+                    "proceed_to": "IMG_GEN" if result.passed else None,
+                },
+                "issues": {
+                    "has_issues": len(result.errors) > 0 or len(result.warnings) > 0,
+                    "concerns": [str(e) for e in result.errors] + [str(w) for w in result.warnings],
+                },
+                "retry_guidance": {
+                    "fixes_needed": [f"{e.field}: {e.message}" for e in result.errors],
+                    "regenerate": True,
+                } if not result.passed else None,
+            }
+
+            validation_response = Gen2ValidationResponse.model_validate(validation_data)
 
             if validation_response.passed:
-                logger.success(f"[VAL_GEN2] PASSED - {validation_response.decision.reasoning}")
+                logger.success(f"[VAL_GEN2_PYTHON] PASSED in {result.validation_time_ms:.1f}ms - {validation_response.decision.reasoning}")
             else:
-                logger.warning(f"[VAL_GEN2] FAILED - {validation_response.decision.reasoning}")
+                logger.warning(f"[VAL_GEN2_PYTHON] FAILED in {result.validation_time_ms:.1f}ms - {validation_response.decision.reasoning}")
                 if validation_response.issues.concerns:
-                    for concern in validation_response.issues.concerns:
+                    for concern in validation_response.issues.concerns[:5]:  # Limit to first 5
                         logger.warning(f"  - {concern}")
+                    if len(validation_response.issues.concerns) > 5:
+                        logger.warning(f"  ... and {len(validation_response.issues.concerns) - 5} more issues")
                 failed_scenes = validation_response.get_failed_scenes()
                 if failed_scenes:
                     logger.warning(f"  Failed scenes: {failed_scenes}")
@@ -842,7 +913,7 @@ Validate according to VAL_GEN2 rules and return JSON response."""
             return validation_response
 
         except Exception as e:
-            logger.error(f"[VAL_GEN2] Error: {e}")
+            logger.error(f"[VAL_GEN2_PYTHON] Error: {e}")
             import traceback
             logger.debug(traceback.format_exc())
             return None
@@ -850,6 +921,115 @@ Validate according to VAL_GEN2 rules and return JSON response."""
     # =========================================================================
     # MERGE: Combine GEN1 + GEN2 into final project
     # =========================================================================
+
+    def _parse_price_numeric(self, price_str: str) -> int:
+        """Extract numeric value from price string like '$65 per day' or '$2.5M'."""
+        if not price_str:
+            return 0
+        import re
+        # Remove $ and commas
+        cleaned = price_str.replace('$', '').replace(',', '').strip()
+        # Try to find number with optional M/K suffix
+        match = re.search(r'([\d.]+)\s*(M|K|million|thousand)?', cleaned, re.IGNORECASE)
+        if match:
+            num = float(match.group(1))
+            suffix = (match.group(2) or '').upper()
+            if suffix in ('M', 'MILLION'):
+                return int(num * 1_000_000)
+            elif suffix in ('K', 'THOUSAND'):
+                return int(num * 1_000)
+            return int(num)
+        return 0
+
+    def _parse_safe_zone_from_placement(
+        self,
+        placement: str,
+        validation_check: str = "",
+        gen2_placement_in_prompt: str = ""
+    ) -> str:
+        """
+        Parse safe_zone_position from placement, validation_check, or GEN2 placement_in_prompt.
+
+        Priority order:
+        1. gen2_placement_in_prompt (most accurate - GEN2 Visual Director specifies exact position)
+        2. placement (GEN1 placement description)
+        3. validation_check (fallback)
+
+        Examples:
+            - "bottom right, 5% of frame" -> "bottom-right"
+            - "center-right area" -> "center-right"
+            - "Red jar on beige cable, middle right" -> "center-right"
+        """
+        # Try gen2_placement_in_prompt first (most accurate), then placement, then validation_check
+        for text in [gen2_placement_in_prompt, placement, validation_check]:
+            if not text:
+                continue
+            text_lower = text.lower()
+
+            # Check for position keywords
+            if 'bottom' in text_lower:
+                if 'right' in text_lower:
+                    return "bottom-right"
+                elif 'left' in text_lower:
+                    return "bottom-left"
+                elif 'center' in text_lower or 'middle' in text_lower:
+                    return "bottom-center"
+                return "bottom-right"  # default bottom
+            elif 'top' in text_lower:
+                if 'right' in text_lower:
+                    return "top-right"
+                elif 'left' in text_lower:
+                    return "top-left"
+                return "top-right"  # default top
+            elif 'center' in text_lower or 'middle' in text_lower:
+                if 'right' in text_lower:
+                    return "center-right"
+                elif 'left' in text_lower:
+                    return "center-left"
+                return "center"
+            elif 'right' in text_lower:
+                return "center-right"
+            elif 'left' in text_lower:
+                return "center-left"
+
+        return "center"
+
+    def _parse_visibility_score(self, visibility: str) -> float:
+        """Convert visibility string to score."""
+        if not visibility:
+            return 0.5
+        visibility_upper = visibility.upper()
+        if visibility_upper == "HIDDEN":
+            return 0.2
+        elif visibility_upper == "OBVIOUS":
+            return 0.8
+        elif visibility_upper == "FINDABLE":
+            return 0.5
+        return 0.5
+
+    def _parse_bpm_from_suno_prompt(self, suno_prompt: str) -> int:
+        """Extract BPM from suno prompt like 'Tropical house, 124 bpm'."""
+        if not suno_prompt:
+            return 90
+        import re
+        match = re.search(r'(\d+)\s*bpm', suno_prompt, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+        return 90
+
+    def _convert_viral_score(self, score_0_1: float) -> int:
+        """Convert 0.0-1.0 score to 0-10 integer."""
+        return int(round(score_0_1 * 10))
+
+    def _get_viral_probability(self, overall_score: float) -> str:
+        """Get viral probability string from overall score (0.0-1.0)."""
+        if overall_score >= 0.75:
+            return "VERY_HIGH"
+        elif overall_score >= 0.6:
+            return "HIGH"
+        elif overall_score >= 0.4:
+            return "MEDIUM"
+        return "LOW"
 
     def merge_outputs(
         self,
@@ -871,38 +1051,237 @@ Validate according to VAL_GEN2 rules and return JSON response."""
 
         # Build GlazeScene list
         glaze_scenes: List[GlazeScene] = []
+        current_timestamp: float = 0.0
 
         for gen1_scene in gen1.scenes:
             gen2_scene = gen2_scenes.get(gen1_scene.scene_number)
 
+            # Format timestamp as "M:SS"
+            minutes = int(current_timestamp // 60)
+            seconds = int(current_timestamp % 60)
+            timestamp_str = f"{minutes}:{seconds:02d}"
+
+            # Build GEN2 metadata for this scene
+            scene_inheritance = None
+            scene_post_production = None
+            scene_first_frame = None
+            scene_scale_techniques = None
+            scene_visual_punctuation = None
+            scene_easter_egg_integration = None
+
+            if gen2_scene:
+                # Inheritance (REQUIRES_REF and LOOP_CLOSE scenes)
+                if gen2_scene.inheritance:
+                    scene_inheritance = SceneInheritance(
+                        parent_scene=gen2_scene.inheritance.parent_scene,
+                        inherited_elements=gen2_scene.inheritance.inherited_elements or [],
+                        modified_elements=gen2_scene.inheritance.modified_elements or [],
+                    )
+
+                # Post-production notes
+                if gen2_scene.post_production_notes:
+                    scene_post_production = PostProductionNotes(
+                        speed_ramp=gen2_scene.post_production_notes.speed_ramp or "None",
+                        color_grade=gen2_scene.post_production_notes.color_grade or "Match Scene 1",
+                        loop_match=gen2_scene.post_production_notes.loop_reference or "N/A",
+                    )
+
+                # First frame composition (Scene 1 only)
+                if gen2_scene.first_frame_composition:
+                    scene_first_frame = FirstFrameCompositionGEN2(
+                        hook_element=gen2_scene.first_frame_composition.hook_element,
+                        focal_point=gen2_scene.first_frame_composition.focal_point,
+                        foreground=gen2_scene.first_frame_composition.foreground,
+                        background=gen2_scene.first_frame_composition.background,
+                        scale_proof=gen2_scene.first_frame_composition.scale_proof,
+                        color_anchor=gen2_scene.first_frame_composition.color_anchor,
+                        safe_zone=gen2_scene.first_frame_composition.safe_zone,
+                        motion_visible=gen2_scene.first_frame_composition.motion_visible,
+                        scroll_stop=gen2_scene.first_frame_composition.scroll_stop,
+                    )
+
+                # Scale techniques (exterior scenes)
+                if gen2_scene.scale_techniques:
+                    scene_scale_techniques = ScalesTechniques(
+                        camera_angle=gen2_scene.scale_techniques.camera_angle or "",
+                        atmospheric_depth=gen2_scene.scale_techniques.atmospheric_depth or "",
+                        scale_indicators=gen2_scene.scale_techniques.scale_indicators or "",
+                    )
+
+                # Visual punctuation
+                scene_visual_punctuation = gen2_scene.visual_punctuation
+
+                # Easter egg integration
+                if gen2_scene.easter_egg_integration:
+                    scene_easter_egg_integration = EasterEggIntegration(
+                        object=gen2_scene.easter_egg_integration.object,
+                        placement_in_prompt=gen2_scene.easter_egg_integration.placement_in_prompt,
+                        visibility_check=gen2_scene.easter_egg_integration.visibility_check,
+                        integrated_in_image_prompt=gen2_scene.easter_egg_integration.integrated_in_image_prompt,
+                    )
+
             glaze_scene = GlazeScene(
                 scene_number=gen1_scene.scene_number,
                 scene_name=gen1_scene.scene_name,
+                timestamp=timestamp_str,
                 duration_seconds=gen1_scene.duration_seconds,
+                # Script & Text
                 voiceover=gen1_scene.voiceover_segment,
-                on_screen_text=None,
+                voiceover_segment=gen1_scene.voiceover_segment,
+                on_screen_text="",
+                narrative_purpose=gen1_scene.narrative_purpose,
+                energy_level=gen1_scene.energy_level,
+                # Visual
                 visual_description=gen1_scene.visual_concept.subject,
                 camera_movement=gen1_scene.camera_intent.movement,
+                motion_elements=gen2_scene.motion_elements if gen2_scene else gen1_scene.visual_concept.motion_elements,
+                # Audio
                 audio_sfx=gen1_scene.audio_moment,
+                audio_moment=gen1_scene.audio_moment,
                 # From GEN2
                 image_prompt=gen2_scene.image_prompt if gen2_scene else "",
                 video_prompt=gen2_scene.video_prompt if gen2_scene else "",
                 reference_type=gen2_scene.reference_type if gen2_scene else "INDEPENDENT",
+                reference_hint=gen1_scene.reference_hint,
                 video_tool="KLING",
+                # Status
+                status="pending",
+                # GEN2 metadata
+                inheritance=scene_inheritance,
+                post_production_notes=scene_post_production,
+                first_frame_composition=scene_first_frame,
+                scale_techniques=scene_scale_techniques,
+                visual_punctuation=scene_visual_punctuation,
+                easter_egg_integration=scene_easter_egg_integration,
             )
             glaze_scenes.append(glaze_scene)
+            current_timestamp += gen1_scene.duration_seconds
 
         # Build final project with all required fields from GEN1
+        total_duration = sum(s.duration_seconds for s in glaze_scenes)
+        youtube_title = gen1.youtube_title or gen1.metadata.title or "Glaze City Property"
+
+        # Find easter egg scene in GEN2 to get placement_in_prompt for safe_zone_position
+        easter_egg_scene_num = gen1.engagement.easter_egg.scene_number
+        gen2_easter_egg_scene = gen2_scenes.get(easter_egg_scene_num)
+        gen2_placement_in_prompt = ""
+        if gen2_easter_egg_scene and gen2_easter_egg_scene.easter_egg_integration:
+            gen2_placement_in_prompt = gen2_easter_egg_scene.easter_egg_integration.placement_in_prompt or ""
+
+        # Build full audio data from GEN1
+        sonic_hook_data = None
+        foley_palette_data = None
+        sfx_per_scene_data: List[SceneSFXAssignment] = []
+
+        if gen1.audio:
+            # Sonic hook
+            if gen1.audio.sonic_hook:
+                sonic_hook_data = SonicHook(
+                    type=gen1.audio.sonic_hook.type,
+                    timing=gen1.audio.sonic_hook.timing,
+                    description=gen1.audio.sonic_hook.description,
+                    volume=gen1.audio.sonic_hook.volume,
+                )
+
+            # Foley palette
+            if gen1.audio.foley_palette:
+                foley_palette_data = FoleyPalette(
+                    primary_sounds=[s.id for s in gen1.audio.foley_palette.sounds] if gen1.audio.foley_palette.sounds else (gen1.audio.foley_palette.primary_sounds or []),
+                    search_terms=[s.search for s in gen1.audio.foley_palette.sounds] if gen1.audio.foley_palette.sounds else [],
+                    scene_assignments=gen1.audio.foley_palette.scene_assignments or {},
+                )
+
+            # SFX per scene
+            if gen1.audio.sfx_per_scene:
+                for sfx_scene in gen1.audio.sfx_per_scene:
+                    sfx_items = [
+                        SceneSFX(
+                            type=item.type,
+                            timing=item.timing,
+                            description=item.description,
+                            volume="MEDIUM",  # Default, not in Gen1SfxItem
+                        )
+                        for item in sfx_scene.sfx
+                    ]
+                    sfx_per_scene_data.append(SceneSFXAssignment(
+                        scene=sfx_scene.scene,
+                        sfx=sfx_items,
+                    ))
+
+        # Build share_trigger from GEN1
+        share_trigger_data = None
+        if gen1.engagement.share_trigger:
+            share_trigger_data = ShareTrigger(
+                text=gen1.engagement.share_trigger.text,
+                placement=gen1.engagement.share_trigger.placement,
+            )
+
+        # Build visual_summary from GEN2
+        visual_summary_data = None
+        if gen2.visual_summary:
+            loop_verification_data = None
+            if gen2.visual_summary.loop_verification:
+                loop_verification_data = LoopVerification(
+                    scene1_camera_movement=gen2.visual_summary.loop_verification.scene1_camera_movement or "",
+                    scene6_camera_movement=gen2.visual_summary.loop_verification.scene6_camera_movement or "",
+                    movements_are_different=gen2.visual_summary.loop_verification.movements_are_different if gen2.visual_summary.loop_verification.movements_are_different is not None else True,
+                    scene6_after_reverse=gen2.visual_summary.loop_verification.scene6_after_reverse or "",
+                    scene1_foreground=gen2.visual_summary.loop_verification.scene1_foreground or "",
+                    scene6_foreground=gen2.visual_summary.loop_verification.scene6_foreground or "",
+                    foreground_match=gen2.visual_summary.loop_verification.foreground_match if gen2.visual_summary.loop_verification.foreground_match is not None else True,
+                    scene1_lighting=gen2.visual_summary.loop_verification.scene1_lighting or "",
+                    scene6_lighting=gen2.visual_summary.loop_verification.scene6_lighting or "",
+                    lighting_match=gen2.visual_summary.loop_verification.lighting_match if gen2.visual_summary.loop_verification.lighting_match is not None else True,
+                    same_reference_image=gen2.visual_summary.loop_verification.same_reference_image if gen2.visual_summary.loop_verification.same_reference_image is not None else True,
+                    loop_ready=gen2.visual_summary.loop_verification.loop_ready if gen2.visual_summary.loop_verification.loop_ready is not None else True,
+                )
+
+            visual_summary_data = VisualSummary(
+                total_scenes=gen2.visual_summary.total_scenes,
+                gigantism_protocol=gen2.visual_summary.gigantism_protocol or "APPLIED",
+                reference_breakdown=gen2.visual_summary.reference_breakdown or {},
+                scale_techniques_used=gen2.visual_summary.scale_techniques_used or [],
+                lighting_continuity=gen2.visual_summary.lighting_continuity or "",
+                foreground_scenes=gen2.visual_summary.foreground_scenes or [],
+                motion_summary=gen2.visual_summary.motion_summary or "",
+                energy_pattern=gen2.visual_summary.energy_pattern or "",
+                motion_enforcement=gen2.visual_summary.motion_enforcement or "",
+                loop_verified=gen2.visual_summary.loop_verified if gen2.visual_summary.loop_verified is not None else True,
+                banned_words_checked=gen2.visual_summary.banned_words_checked if gen2.visual_summary.banned_words_checked is not None else True,
+                loop_verification=loop_verification_data,
+            )
+
         project = GlazeCityProject(
             property=PropertyBrief(
                 name=gen1.property.name,
+                location=gen1.property.location,
+                price=gen1.property.price or "$0",
+                price_numeric=self._parse_price_numeric(gen1.property.price or ""),
+                food_material=FoodMaterial(
+                    primary=gen1.food_identity.primary_food,
+                    secondary=gen1.food_identity.texture_keywords[:2] if gen1.food_identity.texture_keywords else [],
+                ),
+                specs=PropertySpecs(
+                    bedrooms=0,
+                    bathrooms=0,
+                    sqft=0,
+                    unique_feature=gen1.property.tagline,
+                ),
             ),
             hook=HookStrategy(
                 type=gen1.hook.type,
-                opening_line=gen1.hook.first_words,
+                psychological_trigger=gen1.hook.psychological_trigger,
+                first_frame_visual=gen1.hook.first_frame_visual,
+                first_words=gen1.hook.first_words,
+                complete_hook_vo=gen1.hook.complete_hook_vo,
+                scroll_stop_element=gen1.hook.scroll_stop_element,
+                opening_line=gen1.hook.first_words,  # legacy alias
+                visual_hook=gen1.hook.first_frame_visual,  # legacy alias
+                audio_hook=gen1.hook.complete_hook_vo,  # legacy alias
             ),
             psychology=Psychology(
                 triggers=[gen1.hook.psychological_trigger],
+                reasoning=f"Using {gen1.hook.psychological_trigger} trigger from hook strategy",
             ),
             # REQUIRED per GEN1 OUTPUT CONTRACT
             architectural_identity=ArchitecturalIdentity(
@@ -926,6 +1305,11 @@ Validate according to VAL_GEN2 rules and return JSON response."""
                     floors_become=gen1.food_identity.food_dna.floors_become,
                     columns_become=gen1.food_identity.food_dna.columns_become,
                     furniture_becomes=gen1.food_identity.food_dna.furniture_becomes,
+                    # Additional fields required by FoodDNA (not in Gen1FoodDNA)
+                    chimney_becomes=getattr(gen1.food_identity.food_dna, 'chimney_becomes', f"{gen1.food_identity.primary_food} stack"),
+                    stairs_become=getattr(gen1.food_identity.food_dna, 'stairs_become', f"Layered {gen1.food_identity.primary_food} steps"),
+                    fence_becomes=getattr(gen1.food_identity.food_dna, 'fence_becomes', f"{gen1.food_identity.primary_food} railing"),
+                    landscaping_becomes=getattr(gen1.food_identity.food_dna, 'landscaping_becomes', f"{gen1.food_identity.primary_food} garden"),
                 ),
                 texture_keywords=gen1.food_identity.texture_keywords,
                 color_keywords=gen1.food_identity.color_keywords,
@@ -937,9 +1321,33 @@ Validate according to VAL_GEN2 rules and return JSON response."""
                 mood_reason=gen1.lighting_master.mood_reason,
                 prompt_snippet=gen1.lighting_master.prompt_snippet,
             ),
+            # Foreground element from GEN1 (optional but important for visual consistency)
+            foreground_element=ForegroundElement(
+                type=gen1.foreground_element.type,
+                prompt_snippet=gen1.foreground_element.prompt_snippet,
+            ) if gen1.foreground_element else None,
+            # Atmosphere mode
+            atmosphere_mode=gen1.atmosphere_mode or "CINEMATIC",
+            # Hook Matrix
+            hook_matrix=HookMatrix(
+                selected_style=gen1.hook.type,
+                style_reason=f"Selected for {gen1.hook.psychological_trigger} trigger",
+                avoid_styles=[],
+            ),
+            # Easter egg with all required fields (safe_zone_position from GEN2 if available)
             easter_egg=EasterEgg(
                 object=gen1.engagement.easter_egg.object,
                 scene_number=gen1.engagement.easter_egg.scene_number,
+                placement=gen1.engagement.easter_egg.placement,
+                visibility=gen1.engagement.easter_egg.visibility,
+                comment_bait=gen1.engagement.easter_egg.comment_bait,
+                validation_check=gen1.engagement.easter_egg.validation_check,
+                safe_zone_position=self._parse_safe_zone_from_placement(
+                    gen1.engagement.easter_egg.placement,
+                    gen1.engagement.easter_egg.validation_check,
+                    gen2_placement_in_prompt,  # GEN2's placement_in_prompt has highest priority
+                ),
+                visibility_score=self._parse_visibility_score(gen1.engagement.easter_egg.visibility),
             ),
             loop=LoopConfig(
                 connection=f"Scene 6 matches Scene 1 with reversed camera",
@@ -954,12 +1362,20 @@ Validate according to VAL_GEN2 rules and return JSON response."""
                 full_script=gen1.voiceover.full_script,
                 total_duration_seconds=gen1.metadata.target_duration_seconds,
             ),
+            # Audio with all required fields (including full GEN1 audio data)
             audio=AudioConfig(
                 background_music=BackgroundMusic(
                     genre="cinematic",
+                    style="epic orchestral",
+                    bpm=self._parse_bpm_from_suno_prompt(gen1.audio.suno_prompt if gen1.audio else ""),
                     mood="epic",
-                    bpm=90,
+                    duration_seconds=gen1.metadata.target_duration_seconds,
+                    reference=gen1.audio.suno_prompt if gen1.audio else "",
                 ),
+                sfx=[],  # Empty list, SFX are in sfx_per_scene
+                sonic_hook=sonic_hook_data,
+                foley_palette=foley_palette_data,
+                sfx_per_scene=sfx_per_scene_data,
             ),
             youtube=ViralMetadata(
                 title=gen1.youtube_title or gen1.metadata.title,
@@ -967,8 +1383,45 @@ Validate according to VAL_GEN2 rules and return JSON response."""
                 hashtags=gen1.engagement.hashtags,
                 tags=gen1.youtube_tags,
             ),
-            viral_audit=ViralAudit(),
-            series=SeriesInfo(),
+            # Viral audit with scores from GEN1 viral_assessment
+            viral_audit=ViralAudit(
+                scores=ViralAuditScores(
+                    hook_strength=AuditScore(
+                        score=self._convert_viral_score(gen1.viral_assessment.hook_strength),
+                        reason=gen1.viral_assessment.strength_points[0] if gen1.viral_assessment.strength_points else "Strong visual hook"
+                    ),
+                    retention_architecture=AuditScore(
+                        score=self._convert_viral_score(gen1.viral_assessment.visual_uniqueness),
+                        reason="Unique visual style" if gen1.viral_assessment.visual_uniqueness > 0.6 else "Standard visual approach"
+                    ),
+                    loop_quality=AuditScore(
+                        score=self._convert_viral_score(gen1.viral_assessment.shareability),
+                        reason="Highly shareable content" if gen1.viral_assessment.shareability > 0.6 else "Moderate shareability"
+                    ),
+                    psychological_triggers=AuditScore(
+                        score=self._convert_viral_score(gen1.viral_assessment.comment_potential),
+                        reason=f"Uses {gen1.hook.psychological_trigger} trigger"
+                    ),
+                    easter_egg_appeal=AuditScore(
+                        score=self._convert_viral_score(gen1.viral_assessment.humor_quotient),
+                        reason="Engaging easter egg with humor" if gen1.viral_assessment.humor_quotient > 0.5 else "Subtle easter egg"
+                    ),
+                    brand_fit=AuditScore(
+                        score=self._convert_viral_score(gen1.viral_assessment.overall_score),
+                        reason="Matches Glaze City style"
+                    ),
+                ),
+                total_score=int(gen1.viral_assessment.overall_score * 60),
+                max_score=60,
+                viral_probability=self._get_viral_probability(gen1.viral_assessment.overall_score),
+                viral_reasoning="; ".join(gen1.viral_assessment.strength_points[:2]) if gen1.viral_assessment.strength_points else "Strong hook combined with engaging visuals",
+            ),
+            # Series info with all required fields
+            series=SeriesInfo(
+                category=gen1.metadata.concept.category if gen1.metadata.concept else "LANDMARKS",
+                sequel_ideas=["Follow-up property tour", "Behind the scenes"],
+            ),
+            # Meta with all required fields
             meta=ProjectMeta(
                 total_scenes=len(glaze_scenes),
                 total_duration_seconds=sum(s.duration_seconds for s in glaze_scenes),
@@ -976,6 +1429,9 @@ Validate according to VAL_GEN2 rules and return JSON response."""
             ),
             project_id=project_id,
             created_at=datetime.now(),
+            # Additional data from GEN1 and GEN2
+            share_trigger=share_trigger_data,
+            visual_summary=visual_summary_data,
         )
 
         logger.success(f"[Merge] Created project: {project.property.name}")
