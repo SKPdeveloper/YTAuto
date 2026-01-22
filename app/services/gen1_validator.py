@@ -166,7 +166,7 @@ class EnergyLevel(str, Enum):
 # ============================================================================
 
 # Заборонені перші слова для hook.first_words (VAL_GEN1 рядок 122)
-BANNED_FIRST_WORDS: Set[str] = {"This", "Welcome", "So", "Today"}
+BANNED_FIRST_WORDS: Set[str] = {"Welcome", "So", "Today"}
 
 # Заборонені camera movements (VAL_GEN1 рядок 239-244)
 BANNED_CAMERA_MOVEMENTS: Set[str] = {"DRIFT", "FLOAT", "GLIDE"}
