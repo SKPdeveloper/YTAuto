@@ -508,26 +508,50 @@ class Gen1SonicHook(BaseModel):
     volume: str = Field(default="LOUD", description="Volume level: LOUD | MEDIUM | SUBTLE")
 
 
+class Gen1FoleySound(BaseModel):
+    """Single foley sound definition per GEN1_SCHEMA."""
+    id: str = Field(..., description="Sound identifier")
+    search: str = Field(..., description="Search terms for stock audio")
+
+
 class Gen1FoleyPalette(BaseModel):
-    """Foley sounds configuration - supports multiple formats with defaults."""
-    primary_sounds: List[str] = Field(default_factory=list, description="List of sound identifiers")
-    search_terms: List[str] = Field(default_factory=list, description="Search terms for stock audio")
+    """Foley sounds configuration - supports both old and new formats per GEN1_SCHEMA."""
+    # New format per GEN1_SCHEMA.md
+    sounds: List[Gen1FoleySound] = Field(default_factory=list, description="Sound definitions [{id, search}]")
     scene_assignments: Dict[str, List[str]] = Field(default_factory=dict, description="Mapping of scene_N to sound IDs")
+    # Legacy format for backwards compatibility
+    primary_sounds: List[str] = Field(default_factory=list, description="Legacy: List of sound identifiers")
+    search_terms: List[str] = Field(default_factory=list, description="Legacy: Search terms for stock audio")
 
     @model_validator(mode='before')
     @classmethod
     def normalize_foley_format(cls, data: Any) -> Any:
-        """Convert Gemini's legacy format to expected format."""
+        """Convert between legacy and new formats."""
         if isinstance(data, dict):
-            # If legacy format with numbered keys (1, 2, 3...) as scene assignments
-            if 'primary_sounds' in data:
-                # Extract scene assignments from numbered keys
-                scene_assignments = data.get('scene_assignments', {})
-                for key in list(data.keys()):
-                    if key.isdigit():
-                        scene_assignments[f"scene_{key}"] = data.pop(key)
-                if scene_assignments:
-                    data['scene_assignments'] = scene_assignments
+            # Extract scene assignments from numbered keys (legacy Gemini format)
+            scene_assignments = data.get('scene_assignments', {})
+            for key in list(data.keys()):
+                if key.isdigit():
+                    scene_assignments[f"scene_{key}"] = data.pop(key)
+            if scene_assignments:
+                data['scene_assignments'] = scene_assignments
+
+            # Convert primary_sounds + search_terms to sounds format
+            if 'primary_sounds' in data and 'sounds' not in data:
+                primary = data.get('primary_sounds', [])
+                search = data.get('search_terms', primary)  # fallback to primary if no search
+                sounds = []
+                for i, s in enumerate(primary):
+                    search_term = search[i] if i < len(search) else s
+                    sounds.append({"id": s.replace(" ", "_"), "search": search_term})
+                data['sounds'] = sounds
+
+            # Convert sounds to primary_sounds for legacy code
+            if 'sounds' in data and 'primary_sounds' not in data:
+                sounds = data.get('sounds', [])
+                if sounds and isinstance(sounds[0], dict):
+                    data['primary_sounds'] = [s.get('id', '') for s in sounds]
+                    data['search_terms'] = [s.get('search', '') for s in sounds]
         return data
 
 
@@ -827,7 +851,7 @@ class Gen2SceneOutput(BaseModel):
 
     # Generated prompts - REQUIRED
     image_prompt: str = Field(..., description="Full prompt for Nano Banana Pro - REQUIRED")
-    video_prompt: str = Field(..., description="Animation prompt for Kling i2v - MUST end with 10s - REQUIRED")
+    video_prompt: str = Field(..., description="Animation prompt for Kling i2v - NO duration spec (hardcoded) - REQUIRED")
 
     # Motion and dynamics - REQUIRED
     motion_elements: List[str] = Field(..., description="Motion elements - REQUIRED")
@@ -866,13 +890,29 @@ class Gen2SceneOutput(BaseModel):
 
     @field_validator('video_prompt')
     @classmethod
-    def validate_video_prompt_duration(cls, v: str) -> str:
-        """Ensure video_prompt ends with '10s'."""
+    def validate_video_prompt_no_duration(cls, v: str) -> str:
+        """Remove duration spec from video_prompt - 10s is hardcoded in software."""
         v = v.strip()
-        if not v.endswith('10s'):
-            # Auto-fix: append 10s if missing
-            v = v.rstrip(',. ') + ', 10s'
-        return v
+        # Remove any duration spec - it's hardcoded in video generation software
+        import re
+        v = re.sub(r',?\s*\d+s\s*$', '', v)
+        v = re.sub(r',?\s*--duration\s*\d+\s*', '', v)
+        return v.strip().rstrip(',')
+
+    @model_validator(mode='after')
+    def validate_inheritance_for_requires_ref(self) -> 'Gen2SceneOutput':
+        """
+        Per GEN2_SCHEMA: reference_type REQUIRES_REF with inheritance=null is invalid.
+        Auto-create default inheritance if missing.
+        """
+        if self.reference_type == "REQUIRES_REF" and self.inheritance is None:
+            # Auto-fix: create default inheritance from Scene 1
+            self.inheritance = Gen2Inheritance(
+                parent_scene=1,
+                inherited_elements=["architectural_style", "food_material", "lighting_preset", "color_palette"],
+                modified_elements=["camera_angle", "subject_focus"]
+            )
+        return self
 
 
 class Gen2LoopVerification(BaseModel):
@@ -1715,6 +1755,7 @@ __all__ = [
     "Gen1SceneConcept",
     "Gen1VoiceoverConfig",
     "Gen1SonicHook",
+    "Gen1FoleySound",
     "Gen1FoleyPalette",
     "Gen1SfxItem",
     "Gen1SfxScene",
@@ -1729,8 +1770,13 @@ __all__ = [
     "Gen2SceneInput",
     "Gen2FirstFrameComposition",
     "Gen2PostProductionNotes",
+    "Gen2Inheritance",
+    "Gen2ScaleTechniques",
+    "Gen2EasterEggIntegration",
     "Gen2SceneOutput",
+    "Gen2LoopVerification",
     "Gen2VisualSummary",
+    "Gen2GlobalSettings",
     "Gen2BatchOutput",
     "Gen2BatchInput",
 
