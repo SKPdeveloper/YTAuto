@@ -820,7 +820,21 @@ class Gen2PostProductionNotes(BaseModel):
     color_grade: Optional[str] = Field(default=None, description="Color grading notes")
     speed_ramp: Optional[str] = Field(default=None, description="Speed ramp timing")
     focus_effect: Optional[str] = Field(default=None, description="Rack focus notes")
-    loop_reference: Optional[str] = Field(default=None, description="Loop matching notes")
+    loop_reference: Optional[str] = Field(default=None, description="Loop matching notes (alias: loop_match)")
+    loop_match: Optional[str] = Field(default=None, description="Loop matching notes (preferred)")
+
+    @model_validator(mode='before')
+    @classmethod
+    def normalize_loop_field(cls, data: Any) -> Any:
+        """Normalize loop_match to loop_reference for backwards compatibility."""
+        if isinstance(data, dict):
+            # If loop_match exists but loop_reference doesn't, copy it
+            if data.get('loop_match') and not data.get('loop_reference'):
+                data['loop_reference'] = data['loop_match']
+            # If loop_reference exists but loop_match doesn't, copy it
+            elif data.get('loop_reference') and not data.get('loop_match'):
+                data['loop_match'] = data['loop_reference']
+        return data
 
 
 class Gen2Inheritance(BaseModel):

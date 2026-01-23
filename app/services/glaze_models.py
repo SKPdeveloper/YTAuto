@@ -340,6 +340,28 @@ class LoopConfig(BaseModel):
 
 
 # ============================================================================
+# GEN1 SCENE DATA - Дані сцени з GEN1 (збережені при merge)
+# ============================================================================
+
+class VisualConcept(BaseModel):
+    """Visual concept from GEN1 - creative direction for the scene."""
+    subject: str = Field(default="", description="Main subject of the scene")
+    environment: str = Field(default="", description="Environment/setting")
+    mood: str = Field(default="", description="Emotional quality")
+    key_elements: List[str] = Field(default_factory=list, description="Key visual elements")
+    lighting_note: str = Field(default="", description="Specific lighting for this scene")
+    motion_elements: List[str] = Field(default_factory=list, description="What should move in the scene (from GEN1)")
+
+
+class CameraIntent(BaseModel):
+    """Camera intent from GEN1 - full camera direction."""
+    movement: str = Field(default="APPROACH", description="APPROACH | RETREAT | ORBIT | etc.")
+    combo: Optional[str] = Field(default=None, description="Movement combination (e.g., APPROACH + RISE)")
+    framing: str = Field(default="Wide", description="Wide | Medium | Close | Extreme Close")
+    special: Optional[str] = Field(default=None, description="Special technique (e.g., 'Low angle looking up')")
+
+
+# ============================================================================
 # GEN2 SCENE METADATA - Метадані сцени з GEN2
 # ============================================================================
 
@@ -433,9 +455,14 @@ class GlazeScene(BaseModel):
     energy_level: str = Field(default="HIGH", description="HIGH/MEDIUM/LOW/EXPLOSIVE")
 
     # Visual - with defaults
-    visual_description: str = Field(default="", description="Опис візуалу")
-    camera_movement: str = Field(default="PUSH", description="Рух камери")
+    visual_description: str = Field(default="", description="Опис візуалу (subject з visual_concept)")
+    camera_movement: str = Field(default="PUSH", description="Рух камери (movement з camera_intent)")
     motion_elements: List[str] = Field(default_factory=list, description="3+ motion elements")
+
+    # GEN1 full data (preserved during merge)
+    broker_script: str = Field(default="", description="Broker script (short VO version)")
+    visual_concept: Optional[VisualConcept] = Field(default=None, description="Full visual concept from GEN1")
+    camera_intent: Optional[CameraIntent] = Field(default=None, description="Full camera intent from GEN1")
 
     # Audio - with defaults
     audio_sfx: str = Field(default="", description="Звукові ефекти")
@@ -445,8 +472,7 @@ class GlazeScene(BaseModel):
     image_prompt: str = Field(..., description="Промпт Nano Banana Pro - REQUIRED")
     video_prompt: str = Field(..., description="Промпт Kling/Veo/Wan - REQUIRED")
     video_tool: str = Field(default="KLING", description="KLING/VEO/WAN")
-    reference_type: str = Field(default="INDEPENDENT", description="PRIMARY | REQUIRES_REF | INDEPENDENT")
-    reference_hint: str = Field(default="INDEPENDENT", description="Підказка для референсу (GEN1)")
+    reference_type: str = Field(default="INDEPENDENT", description="PRIMARY | REQUIRES_REF | INDEPENDENT | LOOP_CLOSE")
 
     # Processing status (додаткові поля для автоматизації)
     image_path: Optional[Path] = Field(default=None, description="Шлях до зображення")
@@ -472,7 +498,7 @@ class GlazeScene(BaseModel):
             # Convert None to empty string for text fields
             text_fields = ['on_screen_text', 'voiceover', 'voiceover_segment', 'scene_name',
                           'visual_description', 'audio_sfx', 'audio_moment', 'narrative_purpose',
-                          'energy_level', 'reference_hint', 'reference_type', 'camera_movement']
+                          'energy_level', 'reference_type', 'camera_movement', 'broker_script']
             for field in text_fields:
                 if data.get(field) is None:
                     data[field] = ""
@@ -488,10 +514,6 @@ class GlazeScene(BaseModel):
     @property
     def duration(self) -> float:
         return self.duration_seconds
-
-    @property
-    def broker_script(self) -> str:
-        return self.voiceover
 
 
 # ============================================================================

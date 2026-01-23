@@ -109,6 +109,9 @@ from app.services.glaze_models import (
     ScalesTechniques,
     LoopVerification,
     VisualSummary,
+    # GEN1 data models (preserved during merge)
+    VisualConcept,
+    CameraIntent,
 )
 from app.services.validation_models import (
     Gen1ValidationResponse,
@@ -1123,7 +1126,7 @@ CRITICAL REQUIREMENTS:
                     scene_post_production = PostProductionNotes(
                         speed_ramp=gen2_scene.post_production_notes.speed_ramp or "None",
                         color_grade=gen2_scene.post_production_notes.color_grade or "Match Scene 1",
-                        loop_match=gen2_scene.post_production_notes.loop_reference or "N/A",
+                        loop_match=gen2_scene.post_production_notes.loop_match or gen2_scene.post_production_notes.loop_reference or "N/A",
                     )
 
                 # First frame composition (Scene 1 only)
@@ -1160,6 +1163,24 @@ CRITICAL REQUIREMENTS:
                         integrated_in_image_prompt=gen2_scene.easter_egg_integration.integrated_in_image_prompt,
                     )
 
+            # Build full visual_concept from GEN1
+            scene_visual_concept = VisualConcept(
+                subject=gen1_scene.visual_concept.subject,
+                environment=gen1_scene.visual_concept.environment,
+                mood=gen1_scene.visual_concept.mood,
+                key_elements=gen1_scene.visual_concept.key_elements,
+                lighting_note=gen1_scene.visual_concept.lighting_note,
+                motion_elements=gen1_scene.visual_concept.motion_elements,
+            )
+
+            # Build full camera_intent from GEN1
+            scene_camera_intent = CameraIntent(
+                movement=gen1_scene.camera_intent.movement,
+                combo=gen1_scene.camera_intent.combo,
+                framing=gen1_scene.camera_intent.framing,
+                special=gen1_scene.camera_intent.special,
+            )
+
             glaze_scene = GlazeScene(
                 scene_number=gen1_scene.scene_number,
                 scene_name=gen1_scene.scene_name,
@@ -1171,10 +1192,14 @@ CRITICAL REQUIREMENTS:
                 on_screen_text="",
                 narrative_purpose=gen1_scene.narrative_purpose,
                 energy_level=gen1_scene.energy_level,
-                # Visual
+                # Visual (summary fields for quick access)
                 visual_description=gen1_scene.visual_concept.subject,
                 camera_movement=gen1_scene.camera_intent.movement,
                 motion_elements=gen2_scene.motion_elements if gen2_scene else gen1_scene.visual_concept.motion_elements,
+                # GEN1 full data (preserved for complete context)
+                broker_script=gen1_scene.broker_script or "",
+                visual_concept=scene_visual_concept,
+                camera_intent=scene_camera_intent,
                 # Audio
                 audio_sfx=gen1_scene.audio_moment,
                 audio_moment=gen1_scene.audio_moment,
@@ -1182,7 +1207,6 @@ CRITICAL REQUIREMENTS:
                 image_prompt=gen2_scene.image_prompt if gen2_scene else "",
                 video_prompt=gen2_scene.video_prompt if gen2_scene else "",
                 reference_type=gen2_scene.reference_type if gen2_scene else "INDEPENDENT",
-                reference_hint=gen1_scene.reference_hint,
                 video_tool="KLING",
                 # Status
                 status="pending",
