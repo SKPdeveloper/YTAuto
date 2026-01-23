@@ -88,7 +88,19 @@
       "Bash(gh repo edit:*)",
       "Bash(venv/Scripts/python.exe:*)",
       "Bash(venv/Scripts/pip.exe install:*)",
-      "Bash(git status:*)"
+      "Bash(git status:*)",
+      "Bash(git fetch:*)",
+      "Bash(git merge:*)",
+      "Bash(python\\\\python.exe run_web.py:*)",
+      "Bash(if [ -f \"python/python.exe\" ])",
+      "Bash(then echo \"Found: python/python.exe\")",
+      "Bash(elif [ -f \"venv/Scripts/python.exe\" ])",
+      "Bash(then echo \"Found: venv/Scripts/python.exe\")",
+      "Bash(else echo \"Using system python\")",
+      "Bash(fi)",
+      "Bash(git checkout:*)",
+      "Bash(git pull:*)",
+      "Bash(git stash:*)"
     ]
   },
   "enabledMcpjsonServers": [

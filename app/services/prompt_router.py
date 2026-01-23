@@ -571,6 +571,44 @@ You MUST fix ALL the issues listed above. Pay special attention to:
 
         logger.info("=" * 70)
 
+    def _fix_scene6_reference_type(self, gen2: Gen2BatchOutput) -> Gen2BatchOutput:
+        """
+        Auto-fix Scene 6 reference_type to LOOP_CLOSE if incorrect.
+
+        Scene 6 MUST always have reference_type='LOOP_CLOSE' for seamless video loop.
+        The LLM sometimes generates 'REQUIRES_REF' instead, so we fix it deterministically.
+
+        Also ensures Scene 6 has proper inheritance pointing to Scene 1.
+        """
+        for scene in gen2.scenes:
+            if scene.scene_number == 6:
+                if scene.reference_type != "LOOP_CLOSE":
+                    logger.warning(
+                        f"[GEN2 POST-FIX] Scene 6 reference_type was '{scene.reference_type}', "
+                        f"auto-correcting to 'LOOP_CLOSE'"
+                    )
+                    scene.reference_type = "LOOP_CLOSE"
+
+                # Ensure inheritance exists and points to Scene 1
+                if not scene.inheritance:
+                    from app.services.gen_models import Gen2Inheritance
+                    logger.warning(
+                        "[GEN2 POST-FIX] Scene 6 missing inheritance, creating with parent_scene=1"
+                    )
+                    scene.inheritance = Gen2Inheritance(
+                        parent_scene=1,
+                        inherited_elements=["exterior establishing shot", "subject design", "lighting"],
+                        modified_elements=["camera movement for loop"]
+                    )
+                elif scene.inheritance.parent_scene != 1:
+                    logger.warning(
+                        f"[GEN2 POST-FIX] Scene 6 inheritance.parent_scene was {scene.inheritance.parent_scene}, "
+                        f"correcting to 1"
+                    )
+                    scene.inheritance.parent_scene = 1
+
+        return gen2
+
     def _log_gen2_scenes(self, gen2: Gen2BatchOutput) -> None:
         """Log detailed GEN2 scene information for debugging."""
         logger.info("=" * 70)
@@ -807,6 +845,10 @@ You MUST fix ALL the issues listed above. Pay special attention to:
             gen2_output = Gen2BatchOutput.model_validate(json_data)
 
             logger.success(f"[GEN2] Generated prompts for {len(gen2_output.scenes)} scenes")
+
+            # Post-process: Auto-fix Scene 6 reference_type to LOOP_CLOSE
+            # This is a deterministic fix since Scene 6 MUST always be LOOP_CLOSE
+            gen2_output = self._fix_scene6_reference_type(gen2_output)
 
             # Log reference type breakdown
             ref_counts = {}
