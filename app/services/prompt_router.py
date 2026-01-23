@@ -1198,16 +1198,54 @@ CRITICAL REQUIREMENTS:
         for gen1_scene in gen1.scenes:
             gen2_scene = gen2_scenes.get(gen1_scene.scene_number)
 
-            # Log merge status for this scene
-            logger.info(f"\n[MERGE] Scene {gen1_scene.scene_number}:")
-            logger.info(f"  GEN1: scene_name={gen1_scene.scene_name}, duration={gen1_scene.duration_seconds}s")
-            logger.info(f"  GEN1: visual_concept.subject={gen1_scene.visual_concept.subject[:50]}...")
-            logger.info(f"  GEN1: camera_intent.movement={gen1_scene.camera_intent.movement}")
+            # Log FULL merge status for this scene
+            logger.info(f"\n{'='*60}")
+            logger.info(f"[MERGE] Scene {gen1_scene.scene_number}: {gen1_scene.scene_name}")
+            logger.info(f"{'='*60}")
+
+            # GEN1 fields
+            logger.info(f"  [GEN1 FIELDS]:")
+            logger.info(f"    scene_number: {gen1_scene.scene_number}")
+            logger.info(f"    scene_name: {gen1_scene.scene_name}")
+            logger.info(f"    duration_seconds: {gen1_scene.duration_seconds}")
+            logger.info(f"    narrative_purpose: {gen1_scene.narrative_purpose}")
+            logger.info(f"    reference_hint: {gen1_scene.reference_hint}")
+            logger.info(f"    energy_level: {gen1_scene.energy_level}")
+            logger.info(f"    voiceover_segment: {gen1_scene.voiceover_segment[:40]}..." if gen1_scene.voiceover_segment else "    voiceover_segment: EMPTY")
+            logger.info(f"    audio_moment: {gen1_scene.audio_moment}")
+
+            # GEN1 visual_concept
+            vc = gen1_scene.visual_concept
+            logger.info(f"    visual_concept.subject: {vc.subject[:50]}..." if vc.subject else "    visual_concept.subject: MISSING!")
+            logger.info(f"    visual_concept.environment: {vc.environment[:40]}..." if vc.environment else "    visual_concept.environment: MISSING!")
+            logger.info(f"    visual_concept.mood: {vc.mood}")
+            logger.info(f"    visual_concept.key_elements: {vc.key_elements}")
+            logger.info(f"    visual_concept.lighting_note: {vc.lighting_note}")
+            logger.info(f"    visual_concept.motion_elements: {vc.motion_elements}")
+
+            # GEN1 camera_intent
+            ci = gen1_scene.camera_intent
+            logger.info(f"    camera_intent.movement: {ci.movement}")
+            logger.info(f"    camera_intent.combo: {ci.combo}")
+            logger.info(f"    camera_intent.framing: {ci.framing}")
+            logger.info(f"    camera_intent.special: {ci.special}")
 
             if gen2_scene:
-                logger.info(f"  GEN2: reference_type={gen2_scene.reference_type}")
-                logger.info(f"  GEN2: image_prompt={gen2_scene.image_prompt[:60]}..." if gen2_scene.image_prompt else "  GEN2: image_prompt=MISSING!")
-                logger.info(f"  GEN2: video_prompt={gen2_scene.video_prompt[:60]}..." if gen2_scene.video_prompt else "  GEN2: video_prompt=MISSING!")
+                logger.info(f"  [GEN2 FIELDS]:")
+                logger.info(f"    reference_type: {gen2_scene.reference_type}")
+                logger.info(f"    image_prompt: {gen2_scene.image_prompt[:80]}..." if gen2_scene.image_prompt else "    image_prompt: MISSING!")
+                logger.info(f"    video_prompt: {gen2_scene.video_prompt[:80]}..." if gen2_scene.video_prompt else "    video_prompt: MISSING!")
+                logger.info(f"    motion_elements: {gen2_scene.motion_elements}")
+
+                if gen2_scene.inheritance:
+                    logger.info(f"    inheritance.parent_scene: {gen2_scene.inheritance.parent_scene}")
+                    logger.info(f"    inheritance.inherited_elements: {gen2_scene.inheritance.inherited_elements}")
+                if gen2_scene.first_frame_composition:
+                    logger.info(f"    first_frame_composition: PRESENT (hook={gen2_scene.first_frame_composition.hook_element})")
+                if gen2_scene.scale_techniques:
+                    logger.info(f"    scale_techniques: PRESENT")
+                if gen2_scene.post_production_notes:
+                    logger.info(f"    post_production_notes: PRESENT")
 
                 # Track missing fields
                 if not gen2_scene.image_prompt:
@@ -1215,7 +1253,7 @@ CRITICAL REQUIREMENTS:
                 if not gen2_scene.video_prompt:
                     merge_issues.append(f"Scene {gen1_scene.scene_number}: missing video_prompt")
             else:
-                logger.warning(f"  GEN2: NOT FOUND for scene {gen1_scene.scene_number}!")
+                logger.warning(f"  [GEN2 FIELDS]: NOT FOUND!")
                 merge_issues.append(f"Scene {gen1_scene.scene_number}: no GEN2 data")
 
             # Format timestamp as "M:SS"
