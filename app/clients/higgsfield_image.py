@@ -794,7 +794,7 @@ class HiggsFieldImageGenerator:
         """
         logger.info(f"Waiting for generation (timeout: {timeout}s, no refresh during wait)...")
 
-        max_cycles = 15  # 15 * 20 = 300 СЃРµРєСѓРЅРґ (5 С…РІРёР»РёРЅ)
+        max_cycles = 30  # 30 * 20 = 600 секунд (10 хвилин)
         wait_per_cycle = 20
 
         initial_first_url = await asyncio.to_thread(self._get_first_image_url)
