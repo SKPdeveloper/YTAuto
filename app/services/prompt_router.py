@@ -395,6 +395,9 @@ class PromptRouter:
             logger.info(f"  YouTube title: {gen1_output.youtube_title}")
             logger.info(f"  Viral score: {gen1_output.viral_assessment.overall_score if gen1_output.viral_assessment else 'N/A'}")
 
+            # Detailed scene logging
+            self._log_gen1_scenes(gen1_output)
+
             return gen1_output
 
         except Exception as e:
@@ -532,6 +535,91 @@ You MUST fix ALL the issues listed above. Pay special attention to:
 - Ensure all required fields are present and properly formatted
 
 """
+
+    def _log_gen1_scenes(self, gen1: Gen1Output) -> None:
+        """Log detailed GEN1 scene information for debugging."""
+        logger.info("=" * 70)
+        logger.info("[GEN1] DETAILED SCENE BREAKDOWN")
+        logger.info("=" * 70)
+
+        for scene in gen1.scenes:
+            logger.info(f"\n[GEN1] Scene {scene.scene_number}: {scene.scene_name}")
+            logger.info(f"  duration: {scene.duration_seconds}s")
+            logger.info(f"  narrative_purpose: {scene.narrative_purpose}")
+            logger.info(f"  reference_hint: {scene.reference_hint}")
+            logger.info(f"  energy_level: {scene.energy_level}")
+
+            # Visual concept
+            vc = scene.visual_concept
+            logger.info(f"  visual_concept.subject: {vc.subject[:80]}..." if len(vc.subject) > 80 else f"  visual_concept.subject: {vc.subject}")
+            logger.info(f"  visual_concept.environment: {vc.environment[:60]}..." if len(vc.environment) > 60 else f"  visual_concept.environment: {vc.environment}")
+            logger.info(f"  visual_concept.mood: {vc.mood}")
+            logger.info(f"  visual_concept.key_elements: {vc.key_elements}")
+            logger.info(f"  visual_concept.lighting_note: {vc.lighting_note}")
+            logger.info(f"  visual_concept.motion_elements: {vc.motion_elements}")
+
+            # Camera intent
+            ci = scene.camera_intent
+            logger.info(f"  camera_intent.movement: {ci.movement}")
+            logger.info(f"  camera_intent.combo: {ci.combo}")
+            logger.info(f"  camera_intent.framing: {ci.framing}")
+            logger.info(f"  camera_intent.special: {ci.special}")
+
+            # Voiceover
+            logger.info(f"  voiceover_segment: {scene.voiceover_segment[:50]}..." if scene.voiceover_segment and len(scene.voiceover_segment) > 50 else f"  voiceover_segment: {scene.voiceover_segment}")
+            logger.info(f"  audio_moment: {scene.audio_moment}")
+
+        logger.info("=" * 70)
+
+    def _log_gen2_scenes(self, gen2: Gen2BatchOutput) -> None:
+        """Log detailed GEN2 scene information for debugging."""
+        logger.info("=" * 70)
+        logger.info("[GEN2] DETAILED SCENE BREAKDOWN")
+        logger.info("=" * 70)
+
+        for scene in gen2.scenes:
+            logger.info(f"\n[GEN2] Scene {scene.scene_number}: {scene.reference_type}")
+            logger.info(f"  image_prompt: {scene.image_prompt[:100]}..." if len(scene.image_prompt) > 100 else f"  image_prompt: {scene.image_prompt}")
+            logger.info(f"  video_prompt: {scene.video_prompt[:100]}..." if len(scene.video_prompt) > 100 else f"  video_prompt: {scene.video_prompt}")
+            logger.info(f"  motion_elements: {scene.motion_elements}")
+
+            # Check for missing critical fields
+            missing = []
+            if not scene.image_prompt:
+                missing.append("image_prompt")
+            if not scene.video_prompt:
+                missing.append("video_prompt")
+            if not scene.motion_elements:
+                missing.append("motion_elements")
+
+            if missing:
+                logger.warning(f"  [!] MISSING FIELDS: {missing}")
+
+            # Inheritance info
+            if scene.inheritance:
+                logger.info(f"  inheritance.parent_scene: {scene.inheritance.parent_scene}")
+                logger.info(f"  inheritance.inherited_elements: {scene.inheritance.inherited_elements}")
+
+            # First frame (scene 1 only)
+            if scene.first_frame_composition:
+                logger.info(f"  first_frame_composition: PRESENT")
+                logger.info(f"    hook_element: {scene.first_frame_composition.hook_element}")
+
+            # Scale techniques
+            if scene.scale_techniques:
+                logger.info(f"  scale_techniques: PRESENT")
+
+        # Visual summary
+        if gen2.visual_summary:
+            logger.info("\n[GEN2] Visual Summary:")
+            logger.info(f"  dominant_color: {gen2.visual_summary.dominant_color}")
+            logger.info(f"  atmosphere: {gen2.visual_summary.atmosphere}")
+            if gen2.visual_summary.loop_verification:
+                lv = gen2.visual_summary.loop_verification
+                logger.info(f"  loop_verification.movements_are_different: {lv.movements_are_different}")
+                logger.info(f"  loop_verification.scene6_camera_movement: {lv.scene6_camera_movement}")
+
+        logger.info("=" * 70)
 
     # =========================================================================
     # DELIVERY: GEN1 -> GEN2
@@ -710,6 +798,9 @@ You MUST fix ALL the issues listed above. Pay special attention to:
                 ref_type = scene.reference_type
                 ref_counts[ref_type] = ref_counts.get(ref_type, 0) + 1
             logger.info(f"  Reference breakdown: {ref_counts}")
+
+            # Detailed scene logging
+            self._log_gen2_scenes(gen2_output)
 
             return gen2_output
 
@@ -1085,19 +1176,45 @@ CRITICAL REQUIREMENTS:
 
         This creates the complete project with all data from both stages.
         """
-        logger.info("[Merge] Combining GEN1 + GEN2 outputs")
+        logger.info("=" * 70)
+        logger.info("[MERGE] Combining GEN1 + GEN2 outputs")
+        logger.info("=" * 70)
+        logger.info(f"[MERGE] GEN1 scenes: {len(gen1.scenes)}")
+        logger.info(f"[MERGE] GEN2 scenes: {len(gen2.scenes)}")
 
         # Create scene mapping from GEN2
         gen2_scenes: Dict[int, Gen2SceneOutput] = {
             s.scene_number: s for s in gen2.scenes
         }
+        logger.info(f"[MERGE] GEN2 scene numbers: {list(gen2_scenes.keys())}")
 
         # Build GlazeScene list
         glaze_scenes: List[GlazeScene] = []
         current_timestamp: float = 0.0
+        merge_issues: List[str] = []
 
         for gen1_scene in gen1.scenes:
             gen2_scene = gen2_scenes.get(gen1_scene.scene_number)
+
+            # Log merge status for this scene
+            logger.info(f"\n[MERGE] Scene {gen1_scene.scene_number}:")
+            logger.info(f"  GEN1: scene_name={gen1_scene.scene_name}, duration={gen1_scene.duration_seconds}s")
+            logger.info(f"  GEN1: visual_concept.subject={gen1_scene.visual_concept.subject[:50]}...")
+            logger.info(f"  GEN1: camera_intent.movement={gen1_scene.camera_intent.movement}")
+
+            if gen2_scene:
+                logger.info(f"  GEN2: reference_type={gen2_scene.reference_type}")
+                logger.info(f"  GEN2: image_prompt={gen2_scene.image_prompt[:60]}..." if gen2_scene.image_prompt else "  GEN2: image_prompt=MISSING!")
+                logger.info(f"  GEN2: video_prompt={gen2_scene.video_prompt[:60]}..." if gen2_scene.video_prompt else "  GEN2: video_prompt=MISSING!")
+
+                # Track missing fields
+                if not gen2_scene.image_prompt:
+                    merge_issues.append(f"Scene {gen1_scene.scene_number}: missing image_prompt")
+                if not gen2_scene.video_prompt:
+                    merge_issues.append(f"Scene {gen1_scene.scene_number}: missing video_prompt")
+            else:
+                logger.warning(f"  GEN2: NOT FOUND for scene {gen1_scene.scene_number}!")
+                merge_issues.append(f"Scene {gen1_scene.scene_number}: no GEN2 data")
 
             # Format timestamp as "M:SS"
             minutes = int(current_timestamp // 60)
@@ -1512,9 +1629,39 @@ CRITICAL REQUIREMENTS:
             visual_summary=visual_summary_data,
         )
 
-        logger.success(f"[Merge] Created project: {project.property.name}")
+        # Log merge summary
+        logger.info("=" * 70)
+        logger.success(f"[MERGE] Created project: {project.property.name}")
         logger.info(f"  Scenes: {len(project.scenes)}")
         logger.info(f"  Duration: {project.meta.total_duration_seconds}s")
+
+        # Log any issues found during merge
+        if merge_issues:
+            logger.warning(f"[MERGE] Issues found ({len(merge_issues)}):")
+            for issue in merge_issues:
+                logger.warning(f"  - {issue}")
+        else:
+            logger.success("[MERGE] All fields merged successfully!")
+
+        # Verify critical fields in final project
+        for i, scene in enumerate(project.scenes):
+            scene_num = scene.scene_number
+            missing = []
+            if not scene.image_prompt:
+                missing.append("image_prompt")
+            if not scene.video_prompt:
+                missing.append("video_prompt")
+            if not scene.visual_concept:
+                missing.append("visual_concept")
+            if not scene.camera_intent:
+                missing.append("camera_intent")
+
+            if missing:
+                logger.error(f"[MERGE] Scene {scene_num} MISSING: {missing}")
+            else:
+                logger.info(f"[MERGE] Scene {scene_num}: OK (image_prompt={len(scene.image_prompt)}ch, video_prompt={len(scene.video_prompt)}ch)")
+
+        logger.info("=" * 70)
 
         return project
 

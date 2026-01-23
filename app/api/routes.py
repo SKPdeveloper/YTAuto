@@ -127,11 +127,12 @@ async def startup():
     logger.info("Starting Web UI server...")
     await init_database()
 
-    # Register control routes
-    app.include_router(control_router)
-
     logger.info(f"Web UI available at http://{settings.WEB_HOST}:{settings.WEB_PORT}")
     logger.info(f"Control panel: http://{settings.WEB_HOST}:{settings.WEB_PORT}/control")
+
+
+# Register control routes at module level (not in startup)
+app.include_router(control_router)
 
 
 @app.on_event("shutdown")
