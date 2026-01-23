@@ -287,6 +287,7 @@ class PromptRouter:
         target_audience: str = "YouTube Shorts viewers",
         duration_seconds: int = 10,
         project_id: str = "",
+        retry_guidance: Optional[List[str]] = None,
     ) -> Optional[Gen1Output]:
         """
         Run GEN1 to generate script and concept.
@@ -298,6 +299,7 @@ class PromptRouter:
             target_audience: Target audience
             duration_seconds: Total video duration in seconds
             project_id: Optional project ID for debugging
+            retry_guidance: List of validation errors to fix from previous attempt
 
         Returns:
             Gen1Output with script, concepts, voiceover, audio config
@@ -326,6 +328,7 @@ class PromptRouter:
             target_audience=target_audience,
             duration_seconds=duration_seconds,
             auto_mode=is_auto_mode,
+            retry_guidance=retry_guidance,
         )
 
         try:
@@ -405,6 +408,7 @@ class PromptRouter:
         target_audience: str,
         duration_seconds: int = 10,
         auto_mode: bool = False,
+        retry_guidance: Optional[List[str]] = None,
     ) -> str:
         """
         Build user prompt for GEN1.
@@ -416,6 +420,7 @@ class PromptRouter:
             target_audience: Target audience
             duration_seconds: Total video duration
             auto_mode: If True, AI generates topic automatically
+            retry_guidance: List of validation errors to fix from previous attempt
         """
         # Get blacklist from topic memory
         blacklist = topic_memory.generate_blacklist_markdown()
@@ -469,7 +474,7 @@ CRITICAL REQUIREMENTS:
    - voiceover_segment
    - audio_moment
 
-Output ONLY valid JSON. Start with {{ and end with }}"""
+{self._format_retry_guidance(retry_guidance)}Output ONLY valid JSON. Start with {{ and end with }}"""
         else:
             # IDEA MODE: User provided hint/topic
             return f"""{blacklist_section}TOPIC: {topic}
@@ -508,7 +513,22 @@ CRITICAL REQUIREMENTS:
    - voiceover_segment
    - audio_moment
 
-Output ONLY valid JSON. Start with {{ and end with }}"""
+{self._format_retry_guidance(retry_guidance)}Output ONLY valid JSON. Start with {{ and end with }}"""
+
+    def _format_retry_guidance(self, retry_guidance: Optional[List[str]]) -> str:
+        """Format retry guidance for inclusion in prompt."""
+        if not retry_guidance:
+            return ""
+
+        fixes = "\n".join(f"  - {fix}" for fix in retry_guidance)
+        return f"""⚠️ PREVIOUS ATTEMPT FAILED VALIDATION - FIX THESE ISSUES:
+{fixes}
+
+You MUST fix ALL the issues listed above. Pay special attention to:
+- motion_elements: Each scene needs AT LEAST 2 motion elements
+- Ensure all required fields are present and properly formatted
+
+"""
 
     # =========================================================================
     # DELIVERY: GEN1 -> GEN2
@@ -626,6 +646,7 @@ Output ONLY valid JSON. Start with {{ and end with }}"""
         self,
         payload: DeliveryPayload,
         project_id: str = "",
+        retry_guidance: Optional[List[str]] = None,
     ) -> Optional[Gen2BatchOutput]:
         """
         Run GEN2 to generate visual prompts.
@@ -633,6 +654,7 @@ Output ONLY valid JSON. Start with {{ and end with }}"""
         Args:
             payload: Delivery payload from GEN1
             project_id: Optional project ID for debugging
+            retry_guidance: List of validation errors to fix from previous attempt
 
         Returns:
             Gen2BatchOutput with image_prompt, video_prompt, reference_type for each scene
@@ -644,7 +666,7 @@ Output ONLY valid JSON. Start with {{ and end with }}"""
         logger.info(f"[GEN2] Generating visual prompts for {len(payload.scenes)} scenes")
 
         # Build user prompt with delivery payload
-        user_prompt = self._build_gen2_user_prompt(payload)
+        user_prompt = self._build_gen2_user_prompt(payload, retry_guidance)
 
         try:
             # Call Gemini with GEN2 system prompt
@@ -694,10 +716,26 @@ Output ONLY valid JSON. Start with {{ and end with }}"""
             logger.debug(traceback.format_exc())
             return None
 
-    def _build_gen2_user_prompt(self, payload: DeliveryPayload) -> str:
+    def _build_gen2_user_prompt(
+        self,
+        payload: DeliveryPayload,
+        retry_guidance: Optional[List[str]] = None,
+    ) -> str:
         """Build user prompt for GEN2 with full delivery payload."""
         # Serialize payload to JSON for GEN2
         payload_json = payload.model_dump_json(indent=2)
+
+        # Build retry guidance section if present
+        retry_section = ""
+        if retry_guidance:
+            fixes = "\n".join(f"  - {fix}" for fix in retry_guidance)
+            retry_section = f"""
+⚠️ PREVIOUS ATTEMPT FAILED VALIDATION - FIX THESE ISSUES:
+{fixes}
+
+You MUST fix ALL the issues listed above before generating output.
+
+"""
 
         return f"""Generate visual prompts for the following creative brief:
 
@@ -728,7 +766,7 @@ CRITICAL REQUIREMENTS:
    - scenes: array of 6 Gen2SceneOutput objects
    - visual_summary: summary object
 
-Output ONLY valid JSON matching Gen2BatchOutput schema."""
+{retry_section}Output ONLY valid JSON matching Gen2BatchOutput schema."""
 
     # =========================================================================
     # VALIDATION: VAL_GEN1 & VAL_GEN2
@@ -1506,6 +1544,7 @@ Output ONLY valid JSON matching Gen2BatchOutput schema."""
         # =====================================================================
         gen1_output: Optional[Gen1Output] = None
         gen1_validated = False
+        last_retry_guidance: Optional[List[str]] = None
 
         for attempt in range(1, MAX_VALIDATION_RETRIES + 1):
             logger.info(f"\n[STAGE 1] Running GEN1 (attempt {attempt}/{MAX_VALIDATION_RETRIES})...")
@@ -1517,6 +1556,7 @@ Output ONLY valid JSON matching Gen2BatchOutput schema."""
                 target_audience=target_audience,
                 duration_seconds=duration_seconds,
                 project_id=project_id,
+                retry_guidance=last_retry_guidance,
             )
 
             if not gen1_output:
@@ -1546,9 +1586,10 @@ Output ONLY valid JSON matching Gen2BatchOutput schema."""
             else:
                 logger.warning(f"[VAL_GEN1] Validation FAILED (attempt {attempt})")
                 if val_result and val_result.retry_guidance:
-                    logger.info(f"  Retry guidance: {val_result.retry_guidance.fixes_needed}")
+                    last_retry_guidance = val_result.retry_guidance.fixes_needed
+                    logger.info(f"  Retry guidance: {last_retry_guidance}")
                 if attempt < MAX_VALIDATION_RETRIES:
-                    logger.info("Retrying GEN1 with fresh generation...")
+                    logger.info("Retrying GEN1 with validation feedback...")
 
         if not gen1_output or not gen1_validated:
             logger.error(f"[GEN1] Failed after {MAX_VALIDATION_RETRIES} attempts")
@@ -1574,11 +1615,12 @@ Output ONLY valid JSON matching Gen2BatchOutput schema."""
         # =====================================================================
         gen2_output: Optional[Gen2BatchOutput] = None
         gen2_validated = False
+        last_gen2_retry_guidance: Optional[List[str]] = None
 
         for attempt in range(1, MAX_VALIDATION_RETRIES + 1):
             logger.info(f"\n[STAGE 2] Running GEN2 (attempt {attempt}/{MAX_VALIDATION_RETRIES})...")
 
-            gen2_output = await self.run_gen2(payload, project_id)
+            gen2_output = await self.run_gen2(payload, project_id, last_gen2_retry_guidance)
 
             if not gen2_output:
                 logger.error(f"[GEN2] Generation failed (attempt {attempt})")
@@ -1607,12 +1649,13 @@ Output ONLY valid JSON matching Gen2BatchOutput schema."""
             else:
                 logger.warning(f"[VAL_GEN2] Validation FAILED (attempt {attempt})")
                 if val_result and val_result.retry_guidance:
-                    logger.info(f"  Retry guidance: {val_result.retry_guidance.fixes_needed}")
+                    last_gen2_retry_guidance = val_result.retry_guidance.fixes_needed
+                    logger.info(f"  Retry guidance: {last_gen2_retry_guidance}")
                 failed_scenes = val_result.get_failed_scenes() if val_result else []
                 if failed_scenes:
                     logger.info(f"  Failed scenes: {failed_scenes}")
                 if attempt < MAX_VALIDATION_RETRIES:
-                    logger.info("Retrying GEN2 with fresh generation...")
+                    logger.info("Retrying GEN2 with validation feedback...")
 
         if not gen2_output:
             logger.error(f"[GEN2] Failed after {MAX_VALIDATION_RETRIES} attempts - no output")

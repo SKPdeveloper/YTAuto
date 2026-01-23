@@ -860,21 +860,8 @@ class Gen2Validator:
                 suggestion="Remove aspect ratio — it's added automatically"
             )
 
-        # Check for anti-toy negative
-        if "--no" in prompt_lower:
-            has_anti_toy = any(kw in prompt_lower for kw in ANTI_TOY_KEYWORDS)
-            if not has_anti_toy:
-                self._add_warning(
-                    f"{prefix}.image_prompt",
-                    "Negative prompt missing anti-toy keywords",
-                    suggestion="Add: tilt-shift, miniature, diorama, toy"
-                )
-        else:
-            self._add_warning(
-                f"{prefix}.image_prompt",
-                "Missing negative prompt (--no ...)",
-                suggestion="Add --no with anti-toy keywords"
-            )
+        # Note: Anti-toy keywords are enforced via global_settings.negative_prompt (ERROR).
+        # Per-scene check removed as redundant - global negative is appended during generation.
 
         return valid
 
