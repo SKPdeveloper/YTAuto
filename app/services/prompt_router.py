@@ -786,7 +786,7 @@ You MUST fix ALL the issues listed above. Pay special attention to:
 
             if not json_data:
                 logger.error("[GEN2] Failed to extract JSON from response")
-                logger.debug(f"Raw output: {raw_output[:1000]}...")
+                logger.warning(f"[GEN2] Raw output first 1500 chars:\n{raw_output[:1500]}")
                 return None
 
             # Parse into Gen2BatchOutput model
@@ -1920,7 +1920,15 @@ CRITICAL REQUIREMENTS:
             return json.loads(json_str)
         except json.JSONDecodeError as e:
             logger.error(f"JSON parse error: {e}")
-            logger.debug(f"Attempted to parse: {json_str[:500]}...")
+            # Show context around the error position
+            error_pos = e.pos if hasattr(e, 'pos') else 0
+            start_ctx = max(0, error_pos - 100)
+            end_ctx = min(len(json_str), error_pos + 100)
+            context = json_str[start_ctx:end_ctx]
+            logger.error(f"Error context (chars {start_ctx}-{end_ctx}):\n{context}")
+            logger.error(f"Full JSON length: {len(json_str)} chars")
+            # Also log first 500 chars to see structure
+            logger.warning(f"JSON start: {json_str[:500]}...")
             return None
 
     def get_prompt_status(self) -> Dict[str, Any]:
