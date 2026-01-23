@@ -222,10 +222,13 @@ class ControlPipeline:
         await self.orchestrator._save_project_state(self.project)
 
     async def _validate_scenes(self):
-        """Run VAL_IMG validation on all scenes."""
+        """Run VAL_IMG validation on all scenes with regeneration on failure."""
 
         if not self.project:
             return
+
+        max_validation_retries = 3
+        primary_scene = self.project.scenes[0] if self.project.scenes else None
 
         for scene in self.project.scenes[1:]:
             if scene.status != SceneStatus.IMAGE_READY:
@@ -234,32 +237,65 @@ class ControlPipeline:
             if not scene.image_path or not Path(scene.image_path).exists():
                 continue
 
-            logger.info(f"[Scene {scene.scene_number}] Validating...")
+            validation_passed = False
 
-            try:
-                result = await self.orchestrator.content_brain.validate_image(
-                    image_path=Path(scene.image_path),
-                    expected_prompt=scene.image_prompt,
-                    scene_number=scene.scene_number,
-                    scene_description=scene.description,
-                    scene_mood=scene.mood,
-                    key_elements=scene.key_elements
-                )
+            for attempt in range(1, max_validation_retries + 1):
+                logger.info(f"[Scene {scene.scene_number}] Validating (attempt {attempt}/{max_validation_retries})...")
 
-                if result.approved:
-                    scene.status = SceneStatus.APPROVED  # Auto-approve (simplified UI)
-                    scene.validation_approved = True
-                    logger.success(f"[Scene {scene.scene_number}] Validation passed - auto-approved")
-                else:
-                    issues_str = ', '.join(result.issues) if result.issues else result.feedback
-                    logger.warning(f"[Scene {scene.scene_number}] Validation failed: {issues_str}")
-                    # Auto-approve anyway (simplified UI - no manual review)
-                    scene.status = SceneStatus.APPROVED
-                    scene.validation_approved = True
+                try:
+                    result = await self.orchestrator.content_brain.validate_image(
+                        image_path=Path(scene.image_path),
+                        expected_prompt=scene.image_prompt,
+                        scene_number=scene.scene_number,
+                        scene_description=scene.description,
+                        scene_mood=scene.mood,
+                        key_elements=scene.key_elements
+                    )
 
-            except Exception as e:
-                logger.error(f"[Scene {scene.scene_number}] Validation error: {e}")
-                scene.status = SceneStatus.APPROVED  # Auto-approve on error too
+                    if result.approved:
+                        scene.status = SceneStatus.APPROVED
+                        scene.validation_approved = True
+                        validation_passed = True
+                        logger.success(f"[Scene {scene.scene_number}] Validation PASSED (attempt {attempt})")
+                        break
+                    else:
+                        issues_str = ', '.join(result.issues[:3]) if result.issues else result.feedback
+                        logger.warning(f"[Scene {scene.scene_number}] Validation FAILED: {issues_str}")
+
+                        if attempt < max_validation_retries:
+                            # Regenerate the image
+                            logger.info(f"[Scene {scene.scene_number}] Regenerating image...")
+                            scene.retry_count = getattr(scene, 'retry_count', 0) + 1
+
+                            try:
+                                # Get reference for REQUIRES_REF/LOOP_CLOSE scenes
+                                ref_image = None
+                                if scene.reference_type in ['REQUIRES_REF', 'LOOP_CLOSE'] and primary_scene:
+                                    ref_image = Path(primary_scene.image_path) if primary_scene.image_path else None
+
+                                new_image = await self.orchestrator.visual_engine.generate_scene_image(
+                                    prompt=scene.image_prompt,
+                                    scene_number=scene.scene_number,
+                                    project_id=self.project.project_id,
+                                    reference_image=ref_image,
+                                    reference_type=scene.reference_type
+                                )
+                                scene.image_path = str(new_image)
+                                logger.success(f"[Scene {scene.scene_number}] New image generated")
+                                await self.orchestrator._save_project_state(self.project)
+                            except Exception as e:
+                                logger.error(f"[Scene {scene.scene_number}] Regeneration failed: {e}")
+                                break  # Can't continue without new image
+
+                except Exception as e:
+                    logger.error(f"[Scene {scene.scene_number}] Validation error: {e}")
+                    break
+
+            # If all attempts failed, approve anyway but mark as not validated
+            if not validation_passed:
+                logger.warning(f"[Scene {scene.scene_number}] All {max_validation_retries} attempts failed - approving anyway")
+                scene.status = SceneStatus.APPROVED
+                scene.validation_approved = False
 
         # Mark scene 1 as approved (already selected by user)
         self.project.scenes[0].status = SceneStatus.APPROVED
