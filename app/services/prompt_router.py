@@ -775,9 +775,23 @@ You MUST fix ALL the issues listed above. Pay special attention to:
 
             # Extract JSON from response
             raw_output = response.text
+
+            # Log response metadata for debugging truncation issues
+            if hasattr(response, 'candidates') and response.candidates:
+                candidate = response.candidates[0]
+                finish_reason = getattr(candidate, 'finish_reason', 'UNKNOWN')
+                logger.info(f"[GEN2] Response finish_reason: {finish_reason}")
+                if finish_reason != 1:  # 1 = STOP (normal completion)
+                    logger.warning(f"[GEN2] Abnormal finish_reason: {finish_reason} (1=STOP, 2=MAX_TOKENS, 3=SAFETY, 4=RECITATION, 5=OTHER)")
+            if hasattr(response, 'usage_metadata'):
+                usage = response.usage_metadata
+                logger.info(f"[GEN2] Tokens - prompt: {getattr(usage, 'prompt_token_count', 'N/A')}, output: {getattr(usage, 'candidates_token_count', 'N/A')}")
+
             if not raw_output:
                 logger.error("[GEN2] Empty response from API")
                 return None
+
+            logger.info(f"[GEN2] Raw output length: {len(raw_output)} chars")
 
             # Save raw response for debugging
             self._save_raw_response(raw_output, "GEN2", project_id)
