@@ -612,8 +612,10 @@ You MUST fix ALL the issues listed above. Pay special attention to:
         # Visual summary
         if gen2.visual_summary:
             logger.info("\n[GEN2] Visual Summary:")
-            logger.info(f"  dominant_color: {gen2.visual_summary.dominant_color}")
-            logger.info(f"  atmosphere: {gen2.visual_summary.atmosphere}")
+            logger.info(f"  total_scenes: {gen2.visual_summary.total_scenes}")
+            logger.info(f"  reference_breakdown: {gen2.visual_summary.reference_breakdown}")
+            logger.info(f"  loop_verified: {gen2.visual_summary.loop_verified}")
+            logger.info(f"  gigantism_protocol: {gen2.visual_summary.gigantism_protocol}")
             if gen2.visual_summary.loop_verification:
                 lv = gen2.visual_summary.loop_verification
                 logger.info(f"  loop_verification.movements_are_different: {lv.movements_are_different}")
