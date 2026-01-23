@@ -856,7 +856,10 @@ CRITICAL REQUIREMENTS:
 
 3. SCENE 1 MUST HAVE first_frame_composition
 
-4. LOOP: Scene 6 must match Scene 1 for seamless loop
+4. SCENE 6 LOOP REQUIREMENTS (CRITICAL!):
+   - reference_type MUST be "LOOP_CLOSE" (NOT "REQUIRES_REF"!)
+   - Must match Scene 1 for seamless loop
+   - Must have inheritance object referencing Scene 1
 
 5. OUTPUT STRUCTURE:
    - scenes: array of 6 Gen2SceneOutput objects
