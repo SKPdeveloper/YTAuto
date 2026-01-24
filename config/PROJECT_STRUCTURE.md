@@ -1,13 +1,13 @@
 # YTAuto - Project Structure
 
-> **Last Updated:** 2024-12-30
-> **Stage:** 5 Complete + Topic Memory (Blacklist)
+> **Last Updated:** 2026-01-24
+> **Stage:** Pipeline v2.2 with AudioStage
 
 ## Quick Overview
 
 AI-конвеєр для автоматичної генерації коротких відео (9:16, 4K) для YouTube.
 
-**Pipeline:** Topic → GEN1 (script) → GEN2 (prompts) → Images → Videos → Audio → Assembly → Upscale
+**Pipeline:** Script → Image → Validation → Video → **Audio** → GEN3a → GEN3b → PostProcess
 
 ---
 
@@ -34,6 +34,17 @@ YTAuto/
 │   │   ├── glaze_parser.py        # GLAZE JSON parsing
 │   │   ├── gen_models.py          # Generation models
 │   │   └── validation_models.py   # Validation response models
+│   │
+│   ├── pipeline/                  # Pipeline stages
+│   │   ├── orchestrator.py        # Stage coordinator
+│   │   ├── base.py                # BasePipelineStage
+│   │   ├── script_stage.py        # GEN1 + GEN2
+│   │   ├── image_stage.py         # Image generation
+│   │   ├── validation_stage.py    # Image validation
+│   │   ├── video_stage.py         # Video generation
+│   │   ├── audio_stage.py         # [NEW] Audio generation (voiceover, music)
+│   │   ├── gen3_stages.py         # GEN3a + GEN3b stages
+│   │   └── postprocess_stage.py   # FFmpeg render, Topaz, thumbnail
 │   │
 │   ├── modules/                   # High-level modules
 │   │   └── topaz_queue.py         # Topaz Video AI queue
@@ -132,83 +143,80 @@ YTAuto/
 
 ---
 
-## Pipeline Flow
+## Pipeline Flow (v2.2)
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                         USER INPUT                               │
-│                      (topic string)                              │
+│                      ORCHESTRATOR STAGES                         │
+│     Script → Image → Validation → Video → Audio → GEN3a/b       │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│  1. ScriptStage                                                  │
+│  - GEN1: Creative Director (Gemini) → script, hooks, scenes     │
+│  - GEN2: Visual Director → image_prompt, video_prompt per scene │
+│  - Output: project_brief.json                                    │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  GEN1: ContentBrain                                              │
-│  - Loads config/GEN1.txt prompt                                  │
-│  - Generates: script, hooks, voiceover, scenes                   │
-│  - Output: Script model with ScenePrompts[]                      │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  GEN2: PromptRouter → ContentBrain                               │
-│  - Loads config/GEN2.txt prompt                                  │
-│  - Generates: image_prompt, motion_prompt per scene              │
-│  - Output: Enhanced ScenePrompts with visual details             │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  IMAGE GENERATION: HiggsFieldClient                              │
-│  - Model: nano-banana-pro                                        │
+│  2. ImageStage                                                   │
+│  - Higgsfield Web: nano-banana-pro                               │
 │  - Resolution: 2160x3840 (4K vertical)                           │
-│  - Parallel: up to 5 scenes                                      │
+│  - PRIMARY scene first, then remaining in parallel               │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  IMAGE VALIDATION: ImageValidator (GLAZE-VAL)                    │
-│  - Loads config/VAL_IMG.txt                                      │
-│  - Checks: artifacts, quality, composition                       │
-│  - Retry if failed                                               │
+│  3. ValidationStage                                              │
+│  - GLAZE-VAL: Image quality validation                           │
+│  - Checks: artifacts, composition, consistency                   │
+│  - Auto-retry failed images                                      │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  VIDEO GENERATION: HiggsFieldClient                              │
-│  - Model: kling-video/v2.6/pro/image-to-video                    │
-│  - Duration: 5-10 seconds per scene                              │
-│  - Motion from motion_prompt                                     │
+│  4. VideoStage                                                   │
+│  - Kling v2.6 Pro image-to-video                                 │
+│  - 10 seconds per scene                                          │
+│  - Motion from video_prompt                                      │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  AUDIO: AudioEngine                                              │
-│  - ElevenLabs TTS                                                │
-│  - Voice: from settings                                          │
-│  - SSML pause markers                                            │
+│  5. AudioStage (NEW - runs BEFORE GEN3a!)                        │
+│  - Voiceover: ElevenLabs TTS from project_brief                  │
+│  - Music: Replicate Stable Audio                                 │
+│  - Ambient: Optional ambient bed                                 │
+│  - Output: voiceover.mp3, music.mp3, ambient.mp3                 │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  ASSEMBLY: VideoAssembler                                        │
-│  - FFmpeg concatenation                                          │
-│  - Audio sync                                                    │
+│  6. Gen3aStage                                                   │
+│  - Preprocessing: beats.json, vo_timing.json (uses audio!)      │
+│  - Video analysis with Gemini Vision                             │
+│  - Glitch detection, action peaks, speed maps                    │
+│  - Output: gen3a_analysis.json                                   │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  7. Gen3bStage                                                   │
+│  - Creative editing decisions                                    │
+│  - Hook style, effects, transitions                              │
+│  - Beat sync alignment                                           │
+│  - Output: manifest.json                                         │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  8. PostProcessStage                                             │
+│  - ManifestRenderer: FFmpeg rendering from manifest              │
+│  - 5-layer audio mixing                                          │
+│  - Topaz upscale (optional)                                      │
+│  - Thumbnail generation                                          │
 │  - Output: final.mp4                                             │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  UPSCALE (optional): TopazQueue                                  │
-│  - Topaz Video AI                                                │
-│  - Frame interpolation                                           │
-│  - 4K enhancement                                                │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  APPROVAL: TelegramController                                    │
-│  - Sends preview to Telegram                                     │
-│  - User approves/rejects                                         │
 └─────────────────────────────────────────────────────────────────┘
 ```
 

@@ -1,7 +1,18 @@
-# GLAZE CITY PIPELINE v2.1
-## GEN3a/GEN3b Architecture with Music Generation & Validators
+# GLAZE CITY PIPELINE v2.2
+## GEN3a/GEN3b Architecture with AudioStage
 
 ---
+
+## 📋 ЗМІНИ v2.1 → v2.2
+
+| Зміна | Опис |
+|-------|------|
+| **AudioStage** | Новий стейдж для генерації аудіо ДО GEN3a |
+| **Pipeline Order** | Script → Image → Validation → Video → **Audio** → GEN3a → GEN3b → PostProcess |
+| **Voiceover перед аналізом** | voiceover.mp3 генерується до GEN3a для beat sync |
+| **Music перед аналізом** | music.mp3 генерується до GEN3a для beat sync |
+| **PostProcessStage** | Тепер тільки FFmpeg рендеринг, Topaz, thumbnail |
+| **Optional audio fallback** | GEN3a працює без аудіо з fallback JSON |
 
 ## 📋 ЗМІНИ v2.0 → v2.1
 
