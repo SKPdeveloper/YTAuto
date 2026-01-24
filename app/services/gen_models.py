@@ -1630,9 +1630,11 @@ class Gen3aOutput(BaseModel):
 class ManifestEffect(BaseModel):
     """Ефект для manifest.json."""
     type: str = Field(..., description="Тип ефекту (ZOOM_PUNCH, RGB_SPLIT, etc)")
-    output_start: float = Field(..., description="Початок на timeline")
-    output_end: float = Field(..., description="Кінець на timeline")
+    output_start: Optional[float] = Field(default=None, description="Початок на timeline (optional for global effects)")
+    output_end: Optional[float] = Field(default=None, description="Кінець на timeline (optional for global effects)")
     params: Dict[str, Any] = Field(default_factory=dict, description="Параметри ефекту")
+    effect_id: Optional[str] = Field(default=None, description="ID ефекту")
+    ffmpeg_filter: Optional[str] = Field(default=None, description="FFmpeg filter string")
 
 
 class ManifestCut(BaseModel):

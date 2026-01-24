@@ -22,6 +22,11 @@ websockets>=12.0  # WebSocket support
 google-generativeai>=0.3.2  # Gemini API
 anthropic>=0.18.0  # Claude API (optional для ContentBrain)
 elevenlabs>=1.0.0  # ElevenLabs TTS API
+replicate>=0.25.0  # Replicate API (music generation)
+
+# Audio Analysis
+# ----------------------------------------------------------------------------
+librosa>=0.10.0  # Music beat detection, BPM analysis
 
 # Data Validation & Configuration
 # ----------------------------------------------------------------------------

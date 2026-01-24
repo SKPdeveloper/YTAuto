@@ -241,6 +241,14 @@ Return ONLY valid JSON."""
             raw_output = response.text
             logger.info(f"Received response: {len(raw_output)} characters")
 
+            # Log token usage
+            if hasattr(response, 'usage_metadata') and response.usage_metadata:
+                usage = response.usage_metadata
+                input_tokens = getattr(usage, 'prompt_token_count', 0) or 0
+                output_tokens = getattr(usage, 'candidates_token_count', 0) or 0
+                total_tokens = getattr(usage, 'total_token_count', 0) or (input_tokens + output_tokens)
+                logger.info(f"Token usage: {input_tokens:,} input + {output_tokens:,} output = {total_tokens:,} total")
+
             # Extract JSON
             analysis_data = self._parse_json_response(raw_output)
 

@@ -263,6 +263,10 @@ class ProjectData(BaseModel):
     # Директорії
     project_dir: Optional[Path] = Field(None, description="Шлях до директорії проекту")
 
+    # Output files
+    final_video_path: Optional[str] = Field(None, description="Шлях до фінального відео")
+    thumbnail_path: Optional[str] = Field(None, description="Шлях до thumbnail")
+
     # Timestamps
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
