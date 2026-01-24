@@ -27,7 +27,7 @@ class Timeouts:
     PAGE_LOAD: int = 30
     GENERATION: int = 300  # 5 хв для зображень
     VIDEO_GENERATION: int = 600  # 10 хв для відео
-    IMAGE_UPLOAD: int = 180  # 3 min for reference upload to server
+    IMAGE_UPLOAD: int = 300  # 5 min for reference upload to server
     IMAGE_UPLOAD_EXTRA: int = 15
     VIDEO_UPLOAD: int = 90  # Longer wait for server upload
     ADSPOWER_RATE_LIMIT: float = 1.1

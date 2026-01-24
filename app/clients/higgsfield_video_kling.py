@@ -989,10 +989,53 @@ class KlingVideoGenerator:
         logger.debug("  ActionChains click executed")
 
     def _click_method_pyautogui(self, btn) -> None:
-        """Метод 5: PyAutoGUI click по координатах"""
+        """Метод 5: PyAutoGUI click по координатах з підтримкою multi-monitor та DPI scaling"""
         import pyautogui
+        import ctypes
+
+        # Вимкнути failsafe для роботи на інших моніторах
+        pyautogui.FAILSAFE = False
 
         driver = self.browser.driver
+
+        # Активувати вікно браузера перед кліком (Windows)
+        try:
+            import win32gui
+            import win32con
+
+            # Отримати handle вікна браузера через title
+            window_title = driver.title
+
+            def find_window_callback(hwnd, windows):
+                if win32gui.IsWindowVisible(hwnd):
+                    title = win32gui.GetWindowText(hwnd)
+                    if window_title and window_title in title:
+                        windows.append(hwnd)
+                return True
+
+            windows = []
+            win32gui.EnumWindows(find_window_callback, windows)
+
+            if windows:
+                hwnd = windows[0]
+                # Активувати вікно
+                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                win32gui.SetForegroundWindow(hwnd)
+                time.sleep(0.3)  # Дати час на активацію
+                logger.debug(f"  Browser window activated: hwnd={hwnd}")
+        except ImportError:
+            logger.debug("  win32gui not available, skipping window activation")
+        except Exception as e:
+            logger.debug(f"  Window activation failed: {e}")
+
+        # Встановити DPI awareness для коректних координат на multi-monitor
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
+        except Exception:
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
 
         # Отримати точні координати кнопки через JavaScript
         # getBoundingClientRect() дає координати відносно viewport
@@ -1016,7 +1059,7 @@ class KlingVideoGenerator:
         x = int(window_rect['x'] + rect['x'])
         y = int(window_rect['y'] + rect['y'] + toolbar_height)
 
-        logger.debug(f"  PyAutoGUI clicking at ({x}, {y}), toolbar_height={toolbar_height}")
+        logger.debug(f"  PyAutoGUI clicking at ({x}, {y}), window_rect={window_rect}, toolbar_height={toolbar_height}")
         pyautogui.click(x, y)
         logger.debug("  PyAutoGUI click executed")
 
