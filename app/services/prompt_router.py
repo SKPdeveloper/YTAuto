@@ -342,9 +342,18 @@ class PromptRouter:
                 config=types.GenerateContentConfig(
                     system_instruction=self.gen1_prompt,
                     temperature=0.7,  # Creative for concept generation
-                    max_output_tokens=16384,  # Larger output for full contract
+                    max_output_tokens=65536,  # Gemini 3 Pro max
                 ),
             )
+
+            # Log response metadata for debugging
+            if hasattr(response, 'candidates') and response.candidates:
+                candidate = response.candidates[0]
+                finish_reason = getattr(candidate, 'finish_reason', 'UNKNOWN')
+                logger.info(f"[GEN1] Response finish_reason: {finish_reason}")
+            if hasattr(response, 'usage_metadata'):
+                usage = response.usage_metadata
+                logger.info(f"[GEN1] Tokens - prompt: {getattr(usage, 'prompt_token_count', 'N/A')}, output: {getattr(usage, 'candidates_token_count', 'N/A')}")
 
             # Extract JSON from response
             raw_output = response.text
@@ -807,7 +816,7 @@ You MUST fix ALL the issues listed above. Pay special attention to:
                 config=types.GenerateContentConfig(
                     system_instruction=self.gen2_prompt,
                     temperature=0.3,  # Precise for prompt generation
-                    max_output_tokens=16384,
+                    max_output_tokens=65536,  # Gemini 3 Pro max
                 ),
             )
 
