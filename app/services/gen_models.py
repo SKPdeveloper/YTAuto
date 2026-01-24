@@ -868,9 +868,9 @@ class Gen2SceneOutput(BaseModel):
     image_prompt: str = Field(..., description="Full prompt for Nano Banana Pro - REQUIRED")
     video_prompt: str = Field(..., description="Animation prompt for Kling i2v - NO duration spec (hardcoded) - REQUIRED")
 
-    # Motion and dynamics - REQUIRED
+    # Motion and dynamics
     motion_elements: List[str] = Field(..., description="Motion elements - REQUIRED")
-    energy_level: str = Field(..., description="Energy level - REQUIRED")
+    energy_level: Optional[str] = Field(default=None, description="Energy level - from GEN1, optional in GEN2 v4.0")
     visual_punctuation: str = Field(..., description="Visual beat - REQUIRED")
 
     # Scene 1 only - Required for Scene 1, Optional for others
