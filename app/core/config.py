@@ -287,7 +287,7 @@ class Settings(BaseSettings):
 
     # Encoding Settings
     TOPAZ_CODEC: str = Field(
-        default="hevc_nvenc",
+        default="hevc_amf",
         description="Кодек для вихідного відео (hevc_nvenc/h264_nvenc для NVIDIA, hevc_amf/h264_amf для AMD)"
     )
 
