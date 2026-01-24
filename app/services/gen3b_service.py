@@ -14,6 +14,7 @@ Features:
 """
 
 import json
+import re
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 from datetime import datetime
@@ -136,8 +137,15 @@ Return ONLY valid JSON."""
             # Extract JSON
             manifest_data = self._parse_json_response(raw_output)
 
+            # DEBUG: Save raw Gemini response for analysis
+            from app.core.config import settings
+            debug_path = Path(settings.PROJECTS_DIR) / gen3a_analysis.project_id / "gen3b_raw_response.json"
+            with open(debug_path, "w", encoding="utf-8") as f:
+                json.dump(manifest_data, f, indent=2, ensure_ascii=False)
+            logger.info(f"DEBUG: Raw response saved to {debug_path}")
+
             # Convert to Gen3bManifest
-            manifest = self._convert_to_manifest(manifest_data, gen3a_analysis)
+            manifest = self._convert_to_manifest(manifest_data, gen3a_analysis, gen1_brief)
 
             logger.success("=" * 60)
             logger.success("GEN3b: Manifest Generated")
@@ -230,10 +238,335 @@ NO markdown formatting."""
 
         return json.loads(text)
 
+    def _safe_parse_list(self, items: list, model_class, defaults: dict = None) -> list:
+        """Safely parse list of items, silently skipping invalid entries."""
+        result = []
+        defaults = defaults or {}
+        for i, item in enumerate(items or []):
+            try:
+                if isinstance(item, dict):
+                    result.append(model_class(**item))
+                elif isinstance(item, str):
+                    # Create minimal object with string as main field
+                    if model_class == ManifestEffect:
+                        result.append(model_class(type=item, **defaults))
+                    elif model_class == ManifestSubtitle:
+                        result.append(model_class(id=f"s{i+1}", text=item, output_start=0.0, output_end=3.0))
+                    elif model_class == ManifestSFXEvent:
+                        result.append(model_class(id=f"sfx{i+1}", file=item, timestamp=0.0))
+                    # Silently skip string values for other types (SpeedSegment, ManifestCut)
+                    # These require complex dict structures that can't be inferred from a string
+                # Skip None or other invalid types silently
+            except Exception as e:
+                # Use debug level to avoid cluttering output - these are expected parsing variations
+                logger.debug(f"Skipped {model_class.__name__} item: {e}")
+        return result
+
+    def _validate_subtitles(self, subtitles: List[ManifestSubtitle]) -> bool:
+        """
+        Validate that subtitles are usable (not placeholder/garbage text).
+
+        Returns True if subtitles are valid, False if they need regeneration.
+        """
+        if not subtitles:
+            return False
+
+        # Placeholder patterns that indicate bad subtitle generation
+        placeholder_patterns = [
+            "lorem", "ipsum", "placeholder", "test", "sample",
+            "[text]", "<text>", "subtitle text", "description here",
+            "tagline", "hook text", "voiceover", "narration",
+        ]
+
+        valid_count = 0
+        for sub in subtitles:
+            text = sub.text.lower().strip()
+
+            # Skip empty or very short
+            if len(text) < 3:
+                continue
+
+            # Check for placeholder patterns
+            is_placeholder = any(pattern in text for pattern in placeholder_patterns)
+            if is_placeholder:
+                logger.debug(f"Subtitle '{sub.text}' looks like placeholder")
+                continue
+
+            # Check timing makes sense
+            if sub.output_end <= sub.output_start:
+                logger.debug(f"Subtitle '{sub.text}' has invalid timing")
+                continue
+
+            valid_count += 1
+
+        # At least 50% should be valid
+        min_valid = max(1, len(subtitles) // 2)
+        is_valid = valid_count >= min_valid
+
+        if not is_valid:
+            logger.warning(f"Only {valid_count}/{len(subtitles)} subtitles are valid")
+
+        return is_valid
+
+    def _merge_subtitles_with_voiceover(
+        self,
+        gen3b_subtitles: List[ManifestSubtitle],
+        gen1_brief: Dict[str, Any],
+        manifest_scenes: List[ManifestScene],
+        project_dir: Path = None,
+    ) -> List[ManifestSubtitle]:
+        """
+        Merge GEN3b subtitles with voiceover from gen1_brief.
+
+        - Uses voiceover_timing.json for accurate timing when available
+        - Falls back to gen1_brief.scenes[N].voiceover_segment for text
+        - Keeps GEN3b style if available
+        """
+        gen1_scenes = gen1_brief.get("scenes", [])
+        result = []
+
+        # Try to load voiceover_timing.json for accurate timing
+        vo_timing = {}
+        if project_dir:
+            timing_path = project_dir / "voiceover_timing.json"
+            if timing_path.exists():
+                import json
+                with open(timing_path, "r", encoding="utf-8") as f:
+                    timing_data = json.load(f)
+                for seg in timing_data.get("segments", []):
+                    vo_timing[seg["scene_number"]] = {
+                        "start_time": seg["start_time"],
+                        "end_time": seg["end_time"],
+                        "text": seg["text"],
+                    }
+                logger.info(f"Loaded voiceover timing for {len(vo_timing)} segments")
+
+        # Build lookup of existing GEN3b subtitles by scene
+        existing_by_scene = {}
+        for sub in gen3b_subtitles:
+            for scene in manifest_scenes:
+                if scene.timeline_start <= sub.output_start < scene.timeline_end:
+                    existing_by_scene[scene.scene_number] = sub
+                    break
+
+        for i, gen1_scene in enumerate(gen1_scenes):
+            scene_num = gen1_scene.get("scene_number", i + 1)
+
+            # Get voiceover text from scene
+            raw_text = gen1_scene.get("voiceover_segment", "") or gen1_scene.get("voiceover", "")
+
+            # Skip empty or placeholder voiceover
+            placeholder_texts = ["tagline", "final vo (can be empty)", "(can be empty)", ""]
+            if not raw_text or raw_text.lower().strip() in placeholder_texts:
+                continue
+
+            # Clean up text - remove ElevenLabs audio tags for display
+            display_text = raw_text
+            for tag in ["[shouts]", "[whispers]", "[whisper]", "[pause]", "[soft]", "[excited]",
+                        "[shout]", "[dramatic]", "[sarcastic]"]:
+                display_text = display_text.replace(tag, "").strip()
+            display_text = re.sub(r'<[^>]+>', '', display_text)
+            display_text = " ".join(display_text.split())
+
+            if not display_text or len(display_text) < 3:
+                continue
+
+            # Determine timing - prefer voiceover_timing.json
+            if scene_num in vo_timing:
+                start_time = vo_timing[scene_num]["start_time"]
+                end_time = vo_timing[scene_num]["end_time"]
+                logger.debug(f"Scene {scene_num}: Using VO timing {start_time}-{end_time}s")
+            else:
+                # Fallback to scene timing
+                manifest_scene = None
+                for ms in manifest_scenes:
+                    if ms.scene_number == scene_num:
+                        manifest_scene = ms
+                        break
+
+                if manifest_scene:
+                    start_time = manifest_scene.timeline_start
+                    end_time = manifest_scene.timeline_end
+                else:
+                    timestamp_str = gen1_scene.get("timestamp", "0:00")
+                    parts = timestamp_str.split(":")
+                    start_time = float(parts[0]) * 60 + float(parts[1]) if len(parts) == 2 else 0.0
+                    duration = gen1_scene.get("duration_seconds", 2.0)
+                    end_time = start_time + duration
+
+            # Determine style based on voice direction tags
+            style = "NORMAL"
+            animation = "BOUNCE"
+
+            if "[whisper" in raw_text.lower():
+                style = "WHISPER"
+                animation = "FADE_ELEGANT"
+            elif "[shout" in raw_text.lower():
+                style = "Impact"
+                animation = "SHAKE"
+            elif "[dramatic" in raw_text.lower():
+                style = "DRAMATIC"
+                animation = "SLOW_REVEAL"
+
+            # Use GEN3b style if available, but always use correct timing from voiceover
+            if scene_num in existing_by_scene:
+                existing = existing_by_scene[scene_num]
+                subtitle = ManifestSubtitle(
+                    id=existing.id,
+                    text=display_text,
+                    output_start=float(start_time),  # Always use voiceover timing
+                    output_end=float(end_time),
+                    style=existing.style or style,
+                    position=existing.position or "bottom-center",
+                    animation=existing.animation or animation,
+                )
+            else:
+                subtitle = ManifestSubtitle(
+                    id=f"SUB_S{scene_num}",
+                    text=display_text,
+                    output_start=float(start_time),
+                    output_end=float(end_time),
+                    style=style,
+                    position="bottom-center",
+                    animation=animation,
+                )
+                logger.info(f"Added subtitle for scene {scene_num}: '{display_text[:30]}...' @ {start_time:.2f}s")
+
+            result.append(subtitle)
+
+        result.sort(key=lambda s: s.output_start)
+        logger.info(f"Merged subtitles: {len(result)} total (timing source: {'voiceover_timing.json' if vo_timing else 'scene boundaries'})")
+        return result
+
+    def _generate_subtitles_from_voiceover(
+        self,
+        gen1_brief: Dict[str, Any],
+        manifest_scenes: List[ManifestScene],
+    ) -> List[ManifestSubtitle]:
+        """
+        Generate subtitles from voiceover in gen1_brief scenes.
+
+        This is used as fallback when GEN3b generates bad subtitles.
+        Extracts voiceover_segment from each scene in gen1_brief.
+        """
+        subtitles = []
+        gen1_scenes = gen1_brief.get("scenes", [])
+
+        for i, gen1_scene in enumerate(gen1_scenes):
+            # Get voiceover text from scene
+            text = gen1_scene.get("voiceover_segment", "") or gen1_scene.get("voiceover", "")
+            if not text or text.lower() == "tagline":
+                continue
+
+            # Clean up text - remove voice direction tags for display
+            display_text = text
+            for tag in ["[shouts]", "[whispers]", "[pause]", "[whisper]", "[shout]"]:
+                display_text = display_text.replace(tag, "").strip()
+            display_text = " ".join(display_text.split())  # Normalize whitespace
+
+            if not display_text or len(display_text) < 3:
+                continue
+
+            # Get timing from manifest scene (if exists) or calculate
+            scene_num = gen1_scene.get("scene_number", i + 1)
+            manifest_scene = None
+            for ms in manifest_scenes:
+                if ms.scene_number == scene_num:
+                    manifest_scene = ms
+                    break
+
+            if manifest_scene:
+                start_time = manifest_scene.timeline_start
+                end_time = manifest_scene.timeline_end
+            else:
+                # Parse timestamp "0:02" format
+                timestamp_str = gen1_scene.get("timestamp", "0:00")
+                parts = timestamp_str.split(":")
+                start_time = float(parts[0]) * 60 + float(parts[1]) if len(parts) == 2 else 0.0
+                duration = gen1_scene.get("duration_seconds", 2.0)
+                end_time = start_time + duration
+
+            # Determine style based on voice direction tags
+            style = "NORMAL"
+            animation = "BOUNCE"
+
+            if "[whisper" in text.lower():
+                style = "WHISPER"
+                animation = "FADE_ELEGANT"
+            elif "[shout" in text.lower():
+                style = "Impact"
+                animation = "SHAKE"
+
+            subtitle = ManifestSubtitle(
+                id=f"SUB_VO{i+1}",
+                text=display_text,
+                output_start=float(start_time),
+                output_end=float(end_time),
+                style=style,
+                position="bottom-center",
+                animation=animation,
+            )
+            subtitles.append(subtitle)
+            logger.debug(f"Generated subtitle from VO: '{display_text[:30]}...' @ {start_time}-{end_time}s")
+
+        logger.info(f"Generated {len(subtitles)} subtitles from gen1_brief scenes")
+        return subtitles
+
+    def _parse_subtitles(self, items: list) -> List[ManifestSubtitle]:
+        """Parse subtitles from Gemini format to ManifestSubtitle."""
+        result = []
+        for i, item in enumerate(items or []):
+            try:
+                if not isinstance(item, dict):
+                    continue
+
+                # Extract timing - Gemini nests in "timing" object
+                timing = item.get("timing", {})
+                output_start = timing.get("output_start") or item.get("output_start", 0.0)
+                output_end = timing.get("output_end") or item.get("output_end", 0.0)
+
+                # Extract text
+                text = item.get("text", "")
+                if not text:
+                    continue
+
+                # Skip placeholder text
+                placeholder_texts = ["tagline", "hook text", "placeholder", "subtitle text"]
+                if text.lower().strip() in placeholder_texts:
+                    logger.debug(f"Skipped placeholder subtitle: '{text}'")
+                    continue
+
+                # Extract style and animation
+                style = item.get("style", "NORMAL")
+                visual = item.get("visual", {})
+                animation = visual.get("animation") or item.get("animation", "fade")
+
+                # Extract position
+                position = item.get("position", {})
+                position_zone = position.get("zone") or item.get("position", "bottom_center")
+
+                subtitle = ManifestSubtitle(
+                    id=item.get("id", f"sub_{i+1}"),
+                    text=text,
+                    output_start=float(output_start),
+                    output_end=float(output_end),
+                    style=style,
+                    position=position_zone,
+                    animation=animation,
+                )
+                result.append(subtitle)
+                logger.debug(f"Parsed subtitle: {subtitle.id} '{text[:30]}...' @ {output_start}-{output_end}s")
+            except Exception as e:
+                logger.debug(f"Skipped subtitle item: {e}")
+
+        logger.info(f"Parsed {len(result)} subtitles from Gemini response")
+        return result
+
     def _convert_to_manifest(
         self,
         data: Dict[str, Any],
         gen3a_analysis: Gen3aOutput,
+        gen1_brief: Dict[str, Any] = None,
     ) -> Gen3bManifest:
         """Convert parsed JSON to Gen3bManifest model."""
         # Parse hook section
@@ -241,53 +574,127 @@ NO markdown formatting."""
         hook = HookSection(
             style=hook_data.get("style", gen3a_analysis.hook_variety_analysis.recommended_style),
             duration=hook_data.get("duration", 0.3),
-            effects=[ManifestEffect(**e) for e in hook_data.get("effects", [])],
+            effects=self._safe_parse_list(hook_data.get("effects", []), ManifestEffect),
             sfx=hook_data.get("sfx", ""),
         )
 
-        # Parse scenes
+        # Parse scenes (try multiple keys: scenes, timeline)
         scenes = []
-        for scene_data in data.get("scenes", []):
-            scene = ManifestScene(
-                scene_number=scene_data.get("scene_number", 0),
-                source_file=scene_data.get("source_file", ""),
-                timeline_start=scene_data.get("timeline_start", 0.0),
-                timeline_end=scene_data.get("timeline_end", 0.0),
-                speed_segments=[
-                    SpeedSegment(**ss) for ss in scene_data.get("speed_segments", [])
-                ],
-                effects=[
-                    ManifestEffect(**e) for e in scene_data.get("effects", [])
-                ],
-                cuts=[
-                    ManifestCut(**c) for c in scene_data.get("cuts", [])
-                ],
-            )
-            scenes.append(scene)
+        raw_scenes = data.get("scenes") or data.get("timeline", [])
+        logger.info(f"Raw scenes count: {len(raw_scenes)}")
+        if not raw_scenes:
+            logger.warning(f"No scenes in data. Keys: {list(data.keys())}")
+        for i, scene_data in enumerate(raw_scenes):
+            try:
+                # Handle multiple possible field names (Gemini uses nested structure)
+                scene_number = (
+                    scene_data.get("scene_number") or
+                    scene_data.get("sequence_index") or
+                    scene_data.get("scene") or
+                    (i + 1)
+                )
+                source_file = (
+                    scene_data.get("source_file") or
+                    scene_data.get("source") or
+                    scene_data.get("file") or
+                    ""
+                )
 
-        # Parse subtitles
-        subtitles = [
-            ManifestSubtitle(**sub) for sub in data.get("subtitles", [])
-        ]
+                # Gemini nests timing in output_timing
+                output_timing = scene_data.get("output_timing", {})
+                timeline_start = (
+                    scene_data.get("timeline_start") or
+                    output_timing.get("cumulative_start") or
+                    output_timing.get("start") or
+                    scene_data.get("start") or
+                    scene_data.get("in") or
+                    0.0
+                )
+                timeline_end = (
+                    scene_data.get("timeline_end") or
+                    output_timing.get("cumulative_end") or
+                    output_timing.get("end") or
+                    scene_data.get("end") or
+                    scene_data.get("out") or
+                    0.0
+                )
 
-        # Parse audio layers
+                # Gemini nests speed in speed_processing.speed_map
+                speed_processing = scene_data.get("speed_processing", {})
+                speed_data = (
+                    scene_data.get("speed_segments") or
+                    speed_processing.get("speed_map") or
+                    scene_data.get("speed") or
+                    []
+                )
+
+                # Gemini uses visual_effects
+                effects_data = (
+                    scene_data.get("effects") or
+                    scene_data.get("visual_effects") or
+                    []
+                )
+
+                # Gemini may return cuts as dict {"has_cuts": false} or list
+                cuts_data = scene_data.get("cuts", [])
+                if isinstance(cuts_data, dict):
+                    # Extract actual cut list from dict, or empty if no cuts
+                    cuts_data = cuts_data.get("cut_list", cuts_data.get("cuts", []))
+                    if not isinstance(cuts_data, list):
+                        cuts_data = []
+
+                scene = ManifestScene(
+                    scene_number=int(scene_number) if scene_number else i + 1,
+                    source_file=str(source_file),
+                    timeline_start=float(timeline_start),
+                    timeline_end=float(timeline_end),
+                    speed_segments=self._safe_parse_list(speed_data, SpeedSegment),
+                    effects=self._safe_parse_list(effects_data, ManifestEffect),
+                    cuts=self._safe_parse_list(cuts_data, ManifestCut),
+                )
+                scenes.append(scene)
+            except Exception as e:
+                logger.warning(f"Failed to parse scene {i+1}: {e}")
+
+        # Parse subtitles - handle nested structure {"items": [...]} or flat list
+        subtitles_data = data.get("subtitles", [])
+        if isinstance(subtitles_data, dict):
+            # Gemini may return {"style_system_version": "1.3", "items": [...]}
+            subtitles_data = subtitles_data.get("items", [])
+        subtitles = self._parse_subtitles(subtitles_data)
+
+        # ALWAYS merge with gen1_brief to ensure all voiceover scenes have subtitles
+        logger.info(f"  Pre-merge subtitles: {len(subtitles)}, gen1_brief has scenes: {bool(gen1_brief and gen1_brief.get('scenes'))}")
+        if gen1_brief and gen1_brief.get("scenes"):
+            # Get project_dir for voiceover_timing.json
+            from app.core.config import settings
+            project_dir = Path(settings.PROJECTS_DIR) / gen3a_analysis.project_id
+            subtitles = self._merge_subtitles_with_voiceover(subtitles, gen1_brief, scenes, project_dir)
+            logger.info(f"  Post-merge subtitles: {len(subtitles)}")
+        elif not subtitles:
+            logger.warning("No gen1_brief scenes available for subtitle generation")
+
+        # Parse audio layers with safe defaults
         audio_data = data.get("audio_layers", {})
+
+        def safe_audio_layer(layer_data, layer_name: str) -> ManifestAudioLayer:
+            """Create audio layer with safe defaults."""
+            if isinstance(layer_data, dict) and layer_data:
+                # Ensure 'layer' field exists
+                layer_data.setdefault("layer", layer_name)
+                return ManifestAudioLayer(**layer_data)
+            return ManifestAudioLayer(layer=layer_name)
+
         audio_layers = ManifestAudioLayers(
-            bed=ManifestAudioLayer(**audio_data.get("bed", {"layer": "BED"})),
-            music=ManifestAudioLayer(**audio_data.get("music", {"layer": "MUSIC"})),
-            vo=ManifestAudioLayer(**audio_data.get("vo", {"layer": "VO"})),
-            sfx_events=[
-                ManifestSFXEvent(**sfx) for sfx in audio_data.get("sfx_events", [])
-            ],
-            foley_events=[
-                ManifestSFXEvent(**foley) for foley in audio_data.get("foley_events", [])
-            ],
+            bed=safe_audio_layer(audio_data.get("bed"), "BED"),
+            music=safe_audio_layer(audio_data.get("music"), "MUSIC"),
+            vo=safe_audio_layer(audio_data.get("vo"), "VO"),
+            sfx_events=self._safe_parse_list(audio_data.get("sfx_events", []), ManifestSFXEvent),
+            foley_events=self._safe_parse_list(audio_data.get("foley_events", []), ManifestSFXEvent),
         )
 
         # Parse global effects
-        global_effects = [
-            ManifestEffect(**e) for e in data.get("global_effects", [])
-        ]
+        global_effects = self._safe_parse_list(data.get("global_effects", []), ManifestEffect)
 
         return Gen3bManifest(
             version="1.3.1",

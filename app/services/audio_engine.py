@@ -402,6 +402,112 @@ class AudioEngine:
         logger.warning(f"Voice '{name}' not found")
         return None
 
+    # ========================================================================
+    # SOUND EFFECTS GENERATION (ElevenLabs SFX API)
+    # ========================================================================
+
+    async def generate_sfx(
+        self,
+        text: str,
+        duration_seconds: Optional[float] = None,
+        prompt_influence: float = 0.3,
+    ) -> bytes:
+        """
+        Generate sound effect using ElevenLabs Sound Effects API.
+
+        Args:
+            text: Description of the sound effect (e.g., "Loud sizzling pan")
+            duration_seconds: Duration 0.5-30 seconds (auto if None)
+            prompt_influence: How closely to follow prompt (0-1, default 0.3)
+
+        Returns:
+            Audio bytes (MP3 format)
+
+        Example:
+            >>> sfx_bytes = await engine.generate_sfx("explosion impact boom")
+        """
+        import aiohttp
+
+        logger.info(f"Generating SFX: {text[:50]}...")
+
+        url = "https://api.elevenlabs.io/v1/sound-generation"
+        headers = {
+            "xi-api-key": self.api_key,
+            "Content-Type": "application/json",
+        }
+
+        payload = {
+            "text": text,
+            "model_id": "eleven_text_to_sound_v2",
+            "prompt_influence": prompt_influence,
+        }
+
+        if duration_seconds is not None:
+            # Clamp to valid range
+            duration_seconds = max(0.5, min(30.0, duration_seconds))
+            payload["duration_seconds"] = duration_seconds
+
+        retries = 0
+        while True:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        url,
+                        headers=headers,
+                        json=payload,
+                        timeout=aiohttp.ClientTimeout(total=60),
+                    ) as response:
+                        if response.status == 200:
+                            audio_bytes = await response.read()
+                            logger.success(f"SFX generated: {len(audio_bytes)} bytes")
+                            return audio_bytes
+                        else:
+                            error_text = await response.text()
+                            raise Exception(f"SFX API error {response.status}: {error_text}")
+
+            except Exception as e:
+                retries += 1
+                logger.error(f"SFX generation error (attempt {retries}/{self.max_retries + 1}): {e}")
+
+                if retries > self.max_retries:
+                    logger.error("All retries exhausted for SFX generation")
+                    raise
+
+                wait_time = 5 * retries
+                logger.info(f"Waiting {wait_time}s before retry...")
+                await asyncio.sleep(wait_time)
+
+    async def generate_and_save_sfx(
+        self,
+        text: str,
+        output_path: Path,
+        duration_seconds: Optional[float] = None,
+        prompt_influence: float = 0.3,
+    ) -> Path:
+        """
+        Generate sound effect and save to file.
+
+        Args:
+            text: Description of the sound effect
+            output_path: Path where to save the audio file
+            duration_seconds: Duration 0.5-30 seconds (auto if None)
+            prompt_influence: How closely to follow prompt (0-1)
+
+        Returns:
+            Path to the saved audio file
+        """
+        audio_bytes = await self.generate_sfx(
+            text=text,
+            duration_seconds=duration_seconds,
+            prompt_influence=prompt_influence,
+        )
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(audio_bytes)
+
+        logger.success(f"SFX saved: {output_path}")
+        return output_path
+
 
 # ============================================================================
 # 5-LAYER AUDIO MIXER
@@ -458,7 +564,7 @@ class AudioMixConfig:
 # Default volume levels for each layer
 DEFAULT_VOLUMES = {
     AudioLayer.BED: 0.15,
-    AudioLayer.MUSIC: 0.3,
+    AudioLayer.MUSIC: 0.5,   # Increased from 0.3 - music should be felt
     AudioLayer.SFX: 0.7,
     AudioLayer.FOLEY: 0.5,
     AudioLayer.VO: 1.0,
@@ -467,7 +573,7 @@ DEFAULT_VOLUMES = {
 # Ducked volumes (when VO is playing)
 DUCKED_VOLUMES = {
     AudioLayer.BED: 0.1,
-    AudioLayer.MUSIC: 0.15,  # 50% reduction during VO
+    AudioLayer.MUSIC: 0.25,  # Increased from 0.15 - still audible during VO
     AudioLayer.SFX: 0.5,
     AudioLayer.FOLEY: 0.3,
 }
@@ -582,7 +688,7 @@ class AudioMixer:
         """Add a VO segment for ducking calculations."""
         config.vo_segments.append((start, end))
 
-    def generate_ffmpeg_filter(self, config: AudioMixConfig) -> str:
+    def generate_ffmpeg_filter(self, config: AudioMixConfig, input_offset: int = 1) -> str:
         """
         Generate FFmpeg filter_complex string for audio mixing.
 
@@ -593,13 +699,14 @@ class AudioMixer:
 
         Args:
             config: AudioMixConfig with all layer settings
+            input_offset: Starting input index for audio files (default 1, since video is input 0)
 
         Returns:
             FFmpeg filter_complex string
 
         Note:
             The filter assumes inputs are:
-            - [0:a] = video's original audio (if any)
+            - [0] = video file
             - [1:a] = VO
             - [2:a] = MUSIC
             - [3:a] = BED
@@ -607,7 +714,7 @@ class AudioMixer:
         """
         filters = []
         inputs = []
-        input_idx = 0
+        input_idx = input_offset  # Start after video input
 
         # VO layer
         if config.vo and config.vo.file_path:
@@ -658,7 +765,11 @@ class AudioMixer:
         # Mix all inputs
         if inputs:
             input_labels = "".join(f"[{i}]" for i in inputs)
-            filters.append(f"{input_labels}amix=inputs={len(inputs)}:duration=longest[aout]")
+            # Use duration=longest so music/ambient continue for full video length
+            # VO may be shorter than video, but music should play throughout
+            # Then trim to total_duration to match video length
+            filters.append(f"{input_labels}amix=inputs={len(inputs)}:duration=longest[amixed]")
+            filters.append(f"[amixed]atrim=0:{config.total_duration}[aout]")
 
         return ";".join(filters)
 

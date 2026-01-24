@@ -282,8 +282,8 @@ class Gen3bStage(BasePipelineStage):
                 gen3a_data = json.load(f)
             gen3a_analysis = Gen3aOutput.model_validate(gen3a_data)
 
-            # Load briefs
-            gen1_brief = await self._load_json(project_dir / "gen1_brief.json") or {}
+            # Load briefs (project_brief.json contains GEN1 output)
+            gen1_brief = await self._load_json(project_dir / "project_brief.json") or {}
             gen2_brief = await self._load_json(project_dir / "gen2_brief.json") or {}
 
             await self.notify_progress(30, "Generating creative decisions...")

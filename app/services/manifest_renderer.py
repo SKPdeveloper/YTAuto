@@ -157,6 +157,7 @@ class ManifestRenderer:
 
         Fixes path duplication when LLM returns full paths like
         'projects/proj_.../scene_1/video.mp4' instead of relative 'scene_1/video.mp4'.
+        Also checks gen3a_work/ folder for preprocessed scene files.
         """
         source_path = Path(source_file)
 
@@ -177,7 +178,26 @@ class ManifestRenderer:
                     return resolved
 
         # Standard case: join with project_dir
-        return project_dir / source_file
+        direct_path = project_dir / source_file
+        if direct_path.exists():
+            return direct_path
+
+        # Fallback: check gen3a_work/ folder (preprocessed scene files)
+        gen3a_path = project_dir / "gen3a_work" / source_file
+        if gen3a_path.exists():
+            return gen3a_path
+
+        # Fallback: check scene_N/video.mp4 pattern
+        # If source_file is like "1.mp4", try "scene_1/video.mp4"
+        if source_file.endswith(".mp4"):
+            scene_num = source_file.replace(".mp4", "")
+            if scene_num.isdigit():
+                scene_path = project_dir / f"scene_{scene_num}" / "video.mp4"
+                if scene_path.exists():
+                    return scene_path
+
+        # Return the direct path (may not exist, caller will handle)
+        return direct_path
 
     async def _process_scenes(
         self,
@@ -302,21 +322,32 @@ class ManifestRenderer:
         """Convert ManifestEffect to FFmpeg filter string."""
         effect_type = effect.type.upper()
         params = effect.params or {}
-        duration = effect.output_end - effect.output_start
+
+        # Handle None values for timing (global effects may not have timing)
+        start = effect.output_start if effect.output_start is not None else 0.0
+        end = effect.output_end if effect.output_end is not None else 1.0
+        duration = end - start
 
         # Map effect types to FFmpeg filters
+        # Note: zoompan requires explicit size (s=WxH) and fps
+        w, h = self.config.output_width, self.config.output_height
+        fps = self.config.fps
         effect_map = {
-            "ZOOM_IN": f"zoompan=z='min(zoom+0.0015,1.5)':d={int(duration * 30)}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'",
-            "ZOOM_OUT": f"zoompan=z='max(1.5-zoom*0.0015,1)':d={int(duration * 30)}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'",
-            "ZOOM_PUNCH": f"zoompan=z='if(between(t,{effect.output_start},{effect.output_start + 0.1}),1.1,1)':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'",
-            "SHAKE": "crop=iw-10:ih-10:x='5+random(0)*5':y='5+random(0)*5'",
+            "ZOOM_IN": f"zoompan=z='min(zoom+0.0015,1.5)':d={int(duration * fps)}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={w}x{h}:fps={fps}",
+            "ZOOM_OUT": f"zoompan=z='max(1.5-zoom*0.0015,1)':d={int(duration * fps)}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={w}x{h}:fps={fps}",
+            "ZOOM_PUNCH": f"scale={w}:{h},eq=brightness=0.05:contrast=1.1",  # Simplified - just brightness/contrast punch
+            "CAMERA_SHAKE": f"crop=iw-20:ih-20:x='10+random(0)*10':y='10+random(0)*10',scale={w}:{h}",
+            "SHAKE": f"crop=iw-20:ih-20:x='10+random(0)*10':y='10+random(0)*10',scale={w}:{h}",
             "GLOW": "eq=brightness=0.06:saturation=1.3",
-            "FLASH": f"fade=t=in:st={effect.output_start}:d=0.1,fade=t=out:st={effect.output_start + 0.1}:d=0.1",
+            "FLASH": f"fade=t=in:st={start}:d=0.1,fade=t=out:st={start + 0.1}:d=0.1",
             "VIGNETTE": "vignette=PI/4",
             "RGB_SPLIT": "rgbashift=rh=-3:bh=3",
             "CHROMATIC_ABERRATION": "rgbashift=rh=-3:bh=3",
             "GLITCH": "noise=alls=20:allf=t+u",
             "LETTERBOX": "drawbox=x=0:y=0:w=iw:h=ih*0.1:c=black:t=fill,drawbox=x=0:y=ih*0.9:w=iw:h=ih*0.1:c=black:t=fill",
+            "COLOR_BOOST": "eq=saturation=1.3:contrast=1.1",
+            "WARM": "colorbalance=rs=0.1:gs=0.05:bs=-0.1",
+            "COOL": "colorbalance=rs=-0.1:gs=0:bs=0.1",
         }
 
         return effect_map.get(effect_type)
@@ -463,10 +494,14 @@ class ManifestRenderer:
         ass_path = project_dir / "subtitles.ass"
         self._create_ass_file(subtitles, ass_path)
 
+        # FFmpeg filter requires escaped path on Windows
+        # Replace backslashes with forward slashes and escape colons
+        ass_path_escaped = str(ass_path).replace("\\", "/").replace(":", "\\:")
+
         cmd = [
             "ffmpeg", "-y",
             "-i", str(input_path),
-            "-vf", f"ass={ass_path}",
+            "-vf", f"ass='{ass_path_escaped}'",
             "-c:v", self.config.video_codec,
             "-preset", self.config.preset,
             "-crf", str(self.config.crf),
@@ -485,7 +520,9 @@ class ManifestRenderer:
         output_path: Path,
     ) -> None:
         """Create ASS subtitle file from manifest subtitles."""
-        # ASS header
+        # ASS header for 9:16 vertical video
+        # Alignment: 2 = bottom center, positioned higher with MarginV=400 to avoid safe zone
+        # Font size 70 for good readability on mobile
         header = """[Script Info]
 Title: Glaze City Subtitles
 ScriptType: v4.00+
@@ -495,9 +532,13 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial,72,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,3,2,8,50,50,100,1
-Style: Impact,Impact,80,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,4,3,8,50,50,100,1
-Style: Elegant,Georgia,68,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,1,0,0,100,100,2,0,1,2,1,8,50,50,100,1
+Style: Default,Arial,70,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,4,2,2,50,50,400,1
+Style: NORMAL,Arial,70,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,4,2,2,50,50,400,1
+Style: EXCITED,Arial,70,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,4,2,2,50,50,400,1
+Style: DRAMATIC,Arial,70,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,4,2,2,50,50,400,1
+Style: WHISPER,Arial,70,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,4,2,2,50,50,400,1
+Style: Impact,Arial,70,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,4,2,2,50,50,400,1
+Style: Elegant,Arial,70,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,4,2,2,50,50,400,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -506,21 +547,29 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         lines = [header]
 
         for sub in subtitles:
-            start = self._seconds_to_ass_time(sub.start_time)
-            end = self._seconds_to_ass_time(sub.end_time)
-            style = sub.style if sub.style in ["Default", "Impact", "Elegant"] else "Default"
+            start = self._seconds_to_ass_time(sub.output_start)
+            end = self._seconds_to_ass_time(sub.output_end)
+            # Map style names (Gemini uses NORMAL, WHISPER, EXCITED, DRAMATIC, etc.)
+            style_map = {
+                "NORMAL": "NORMAL",
+                "WHISPER": "WHISPER",
+                "EXCITED": "EXCITED",
+                "DRAMATIC": "DRAMATIC",
+                "IMPACT": "Impact",
+                "ELEGANT": "Elegant",
+            }
+            style = style_map.get(sub.style.upper(), "Default")
             text = sub.text.replace("\n", "\\N")
 
-            # Apply animation effects
+            # Apply animation effects - handle various Gemini animation names
+            anim = sub.animation.upper() if sub.animation else ""
             effects = ""
-            if sub.animation == "FADE_IN":
-                effects = "{\\fad(200,0)}"
-            elif sub.animation == "FADE_OUT":
-                effects = "{\\fad(0,200)}"
-            elif sub.animation == "FADE_IN_OUT":
+            if "FADE" in anim:
                 effects = "{\\fad(200,200)}"
-            elif sub.animation == "POP":
-                effects = "{\\t(0,100,\\fscx120\\fscy120)\\t(100,200,\\fscx100\\fscy100)}"
+            elif anim == "BOUNCE" or anim == "POP":
+                effects = "{\\t(0,100,\\fscx110\\fscy110)\\t(100,200,\\fscx100\\fscy100)}"
+            elif anim == "SLIDE":
+                effects = "{\\move(540,1520,540,1420,0,200)}"
 
             lines.append(f"Dialogue: 0,{start},{end},{style},,0,0,0,,{effects}{text}")
 
@@ -543,9 +592,20 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         output_path: Path,
     ) -> Path:
         """Mix 5-layer audio and combine with video."""
-        # Create audio mix configuration
+        # Get actual video duration (may differ from manifest due to speed processing)
+        import subprocess
+        result = subprocess.run([
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(video_path)
+        ], capture_output=True, text=True)
+        actual_duration = float(result.stdout.strip()) if result.returncode == 0 else manifest.total_duration
+        logger.info(f"  Video duration: {actual_duration:.2f}s (manifest: {manifest.total_duration}s)")
+
+        # Create audio mix configuration with actual video duration
         audio_config = self.audio_mixer.create_default_config(
-            total_duration=manifest.total_duration,
+            total_duration=actual_duration,
             vo_path=project_dir / "voiceover.mp3",
             music_path=project_dir / "music.mp3",
             bed_path=project_dir / "ambient.mp3" if (project_dir / "ambient.mp3").exists() else None,
@@ -563,6 +623,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     sfx.volume,
                     sfx.reason,
                 )
+
+        # AUTO-SFX: If no SFX from manifest, auto-discover SFX files
+        if not audio_layers.sfx_events:
+            await self._auto_add_sfx(audio_config, manifest, project_dir)
 
         # Add FOLEY events
         for foley in audio_layers.foley_events:
@@ -610,6 +674,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             if input_files:
                 cmd.extend(["-map", "1:a"])
 
+        # Do NOT use -shortest as it trims to voiceover length, losing video scenes
+        # Audio will be trimmed/padded to match video length automatically
         cmd.extend([
             "-c:v", "copy",
             "-c:a", self.config.audio_codec,
@@ -624,7 +690,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
     async def _run_ffmpeg(self, cmd: List[str]) -> None:
         """Run FFmpeg command asynchronously."""
-        logger.debug(f"FFmpeg: {' '.join(cmd[:10])}...")
+        logger.debug(f"FFmpeg command: {' '.join(cmd)}")
 
         process = await asyncio.create_subprocess_exec(
             *cmd,
@@ -636,7 +702,110 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
         if process.returncode != 0:
             error_msg = stderr.decode() if stderr else "Unknown error"
-            raise Exception(f"FFmpeg failed: {error_msg[:500]}")
+            # Extract the actual error from stderr (last few lines usually contain the error)
+            error_lines = error_msg.strip().split('\n')
+            # Get last 10 lines which typically contain the actual error
+            relevant_error = '\n'.join(error_lines[-10:]) if len(error_lines) > 10 else error_msg
+            logger.error(f"FFmpeg command failed: {' '.join(cmd[:15])}...")
+            logger.error(f"FFmpeg error:\n{relevant_error}")
+            raise Exception(f"FFmpeg failed: {relevant_error}")
+
+    async def _auto_add_sfx(
+        self,
+        audio_config,
+        manifest: Gen3bManifest,
+        project_dir: Path,
+    ) -> None:
+        """
+        Auto-discover and add SFX files when manifest doesn't specify them.
+
+        Uses GEN3a action_peaks for timing when available, otherwise uses scene midpoint.
+
+        Looks for:
+        - sonic_hook.mp3 -> plays at 0.0s (hook impact)
+        - scene_N_sfx.mp3 -> plays at action_peak or scene midpoint
+        """
+        sfx_dir = project_dir / "sfx"
+        logger.info(f"  Auto-SFX: Checking {sfx_dir}")
+
+        # Load GEN3a analysis for action_peaks timing
+        gen3a_path = project_dir / "gen3a_analysis.json"
+        action_peaks_by_scene = {}
+        if gen3a_path.exists():
+            import json
+            with open(gen3a_path, "r", encoding="utf-8") as f:
+                gen3a_data = json.load(f)
+            for scene_data in gen3a_data.get("scenes", []):
+                scene_num = scene_data.get("scene_number")
+                peaks = scene_data.get("action_peaks", [])
+                if peaks:
+                    # Get the first/most intense action peak
+                    peak = peaks[0]
+                    action_peaks_by_scene[scene_num] = peak.get("source_timestamp", 0)
+
+        # Add sonic hook at the beginning
+        hook_sfx = sfx_dir / "sonic_hook.mp3"
+        if hook_sfx.exists():
+            self.audio_mixer.add_sfx_event(
+                audio_config,
+                timestamp=0.0,
+                sfx_path=hook_sfx,
+                volume=0.8,
+                reason="hook_impact",
+            )
+            logger.info(f"  Auto-added SFX: sonic_hook.mp3 @ 0.0s")
+
+        # Add per-scene SFX at action peaks (or scene midpoint as fallback)
+        for scene in manifest.scenes:
+            sfx_file = sfx_dir / f"scene_{scene.scene_number}_sfx.mp3"
+            if sfx_file.exists():
+                # Calculate SFX timestamp
+                if scene.scene_number in action_peaks_by_scene:
+                    # Transform source_timestamp to output_timestamp using speed_map
+                    source_time = action_peaks_by_scene[scene.scene_number]
+                    output_time = self._transform_source_to_output(source_time, scene)
+                    timestamp = scene.timeline_start + output_time
+                    reason = f"scene_{scene.scene_number}_action_peak"
+                else:
+                    # Fallback: use scene midpoint
+                    scene_duration = scene.timeline_end - scene.timeline_start
+                    timestamp = scene.timeline_start + (scene_duration / 2)
+                    reason = f"scene_{scene.scene_number}_midpoint"
+
+                self.audio_mixer.add_sfx_event(
+                    audio_config,
+                    timestamp=timestamp,
+                    sfx_path=sfx_file,
+                    volume=0.6,
+                    reason=reason,
+                )
+                logger.info(f"  Auto-added SFX: scene_{scene.scene_number}_sfx.mp3 @ {timestamp:.1f}s ({reason})")
+
+    def _transform_source_to_output(self, source_time: float, scene) -> float:
+        """Transform a source video timestamp to output time using scene's speed_map."""
+        if not scene.speed_segments:
+            return source_time
+
+        output_time = 0.0
+        for segment in scene.speed_segments:
+            seg_start = segment.source_start
+            seg_end = segment.source_end
+            speed = segment.speed or 1.0
+
+            if source_time < seg_start:
+                # Before this segment
+                break
+            elif source_time <= seg_end:
+                # Within this segment
+                time_in_segment = source_time - seg_start
+                output_time += time_in_segment / speed
+                break
+            else:
+                # Past this segment - add full segment duration
+                segment_duration = (seg_end - seg_start) / speed
+                output_time += segment_duration
+
+        return output_time
 
     async def render_simple(
         self,
