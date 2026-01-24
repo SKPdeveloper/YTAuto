@@ -668,32 +668,49 @@ class HiggsFieldImageGenerator:
             return False
 
     def _sync_upload_reference(self, image_path: str) -> None:
-        """Sync upload reference С‡РµСЂРµР· hidden file input"""
+        """Sync upload reference через hidden file input"""
         driver = self.browser.driver
+
+        # CRITICAL: Log and verify the file path
+        logger.info(f"[REFERENCE] Uploading file: {image_path}")
+
+        # Check if file exists
+        from pathlib import Path
+        file_path = Path(image_path)
+        if not file_path.exists():
+            logger.error(f"[REFERENCE] FILE NOT FOUND: {image_path}")
+            raise HiggsFieldWebGenerationError(f"Reference file not found: {image_path}")
+
+        # Log file size
+        file_size_mb = file_path.stat().st_size / (1024 * 1024)
+        logger.info(f"[REFERENCE] File exists, size: {file_size_mb:.2f} MB")
 
         try:
             file_input = driver.find_element(By.ID, "image-form-reference")
             file_input.send_keys(image_path)
-            logger.debug("Reference image uploaded")
+            logger.info(f"[REFERENCE] File path sent to input, waiting for upload...")
 
-            logger.info(f"Waiting {TIMEOUTS.IMAGE_UPLOAD}s for reference image to upload...")
-            time.sleep(TIMEOUTS.IMAGE_UPLOAD)
-
-            if self._verify_reference_uploaded():
-                logger.success("Reference image upload VERIFIED - delete button found")
-            else:
-                logger.warning("Reference upload verification FAILED - no delete button found")
-                logger.info(f"Waiting additional {TIMEOUTS.IMAGE_UPLOAD_EXTRA}s...")
-                time.sleep(TIMEOUTS.IMAGE_UPLOAD_EXTRA)
+            # Poll for upload completion instead of fixed wait
+            max_wait = 60  # 60 seconds max
+            poll_interval = 2
+            for waited in range(0, max_wait, poll_interval):
+                time.sleep(poll_interval)
                 if self._verify_reference_uploaded():
-                    logger.success("Reference image upload VERIFIED on second check")
-                else:
-                    raise HiggsFieldWebGenerationError("Reference image upload failed - cannot proceed")
+                    logger.success(f"[REFERENCE] Upload completed in {waited + poll_interval}s")
+                    return
+                logger.debug(f"[REFERENCE] Still uploading... ({waited + poll_interval}s)")
+
+            logger.warning(f"[REFERENCE] Upload not verified after {max_wait}s")
+            raise HiggsFieldWebGenerationError(f"Reference image upload timed out after {max_wait}s")
 
         except NoSuchElementException:
-            logger.warning("Reference image input not found (id=image-form-reference)")
+            logger.error("[REFERENCE] File input not found (id=image-form-reference)")
+            raise HiggsFieldWebGenerationError("Reference image input not found on page")
+        except HiggsFieldWebGenerationError:
+            raise
         except Exception as e:
-            logger.warning(f"Failed to upload reference image: {e}")
+            logger.error(f"[REFERENCE] Upload failed: {e}")
+            raise HiggsFieldWebGenerationError(f"Reference upload failed: {e}")
 
     def _verify_reference_uploaded(self) -> bool:
         """РџРµСЂРµРІС–СЂРёС‚Рё С‡Рё reference Р·Р°РІР°РЅС‚Р°Р¶РµРЅРѕ СѓСЃРїС–С€РЅРѕ"""
@@ -1292,11 +1309,16 @@ class HiggsFieldImageGenerator:
         await self._clear_reference_image()
 
         # Step 1.6: UPLOAD reference image (один раз для всех сцен)
-        if reference_image and reference_image.exists():
-            logger.info(f"[SETUP] Step 1.6: Uploading reference: {reference_image.name}")
-            await self._upload_reference_image(reference_image, skip_if_exists=False)
+        if reference_image:
+            logger.info(f"[SETUP] Step 1.6: Reference path: {reference_image}")
+            if reference_image.exists():
+                logger.info(f"[SETUP] Reference file EXISTS, uploading...")
+                await self._upload_reference_image(reference_image, skip_if_exists=False)
+            else:
+                logger.error(f"[SETUP] Reference file NOT FOUND: {reference_image}")
+                raise HiggsFieldWebGenerationError(f"Reference image not found: {reference_image}")
         else:
-            logger.warning("[SETUP] No reference image provided!")
+            logger.warning("[SETUP] No reference image path provided!")
 
         # Step 2: Set settings ONCE
         logger.info("[SETUP] Step 2: Setting Unlimited ON...")

@@ -1,7 +1,11 @@
 """
-Post-Processing Stage v7.4
+Post-Processing Stage v7.5
 
 Final stage: manifest-based rendering with 5-layer audio.
+
+v7.5 Changes:
+- Audio generation moved to AudioStage (runs before GEN3a)
+- This stage only handles FFmpeg rendering, Topaz, thumbnail
 
 v7.4 Features:
 - ManifestRenderer for FFmpeg-based rendering
@@ -20,9 +24,7 @@ from loguru import logger
 
 from app.pipeline.base import BasePipelineStage, StageResult, StageStatus
 from app.api.schemas import ProjectData, SceneData, SceneStatus, PipelineStage
-from app.services.audio_engine import AudioEngine
 from app.services.manifest_renderer import ManifestRenderer, RenderConfig
-from app.services.music_generator import MusicGenerator
 from app.core.paths import get_project_path, get_scene_path
 from app.core.config import settings
 
@@ -50,9 +52,7 @@ class PostProcessStage(BasePipelineStage):
 
     def __init__(self, project: ProjectData, **kwargs):
         super().__init__(project, **kwargs)
-        self.audio_engine = AudioEngine()
         self.renderer = ManifestRenderer()
-        self.music_generator = MusicGenerator()
 
     async def can_run(self) -> bool:
         """Check if post-processing should run"""
@@ -133,15 +133,17 @@ class PostProcessStage(BasePipelineStage):
 
         logger.info(f"[{self.project_id}] Loaded manifest: {manifest.total_duration}s, {len(manifest.scenes)} scenes")
 
-        # Generate music (MUSIC layer) if not exists
-        await self.notify_progress(15, "Generating background music...")
-        await self._generate_music(project_dir, manifest.total_duration)
+        # Audio is now generated in AudioStage (before GEN3a)
+        # Check if audio files exist
+        music_path = project_dir / "music.mp3"
+        voiceover_path = project_dir / "voiceover.mp3"
 
-        # Generate ambient bed (BED layer) if not exists
-        await self.notify_progress(20, "Generating ambient bed...")
-        await self._generate_ambient_bed(project_dir, manifest.total_duration)
+        if not music_path.exists():
+            logger.warning(f"[{self.project_id}] music.mp3 not found - AudioStage may have failed")
+        if not voiceover_path.exists():
+            logger.warning(f"[{self.project_id}] voiceover.mp3 not found - AudioStage may have failed")
 
-        await self.notify_progress(25, "Rendering video from manifest...")
+        await self.notify_progress(20, "Rendering video from manifest...")
 
         # PUSH: Start notification
         await self.notifier.push_info(
@@ -207,10 +209,7 @@ class PostProcessStage(BasePipelineStage):
     async def _execute_legacy_render(self, project_dir: Path) -> StageResult:
         """Execute legacy rendering (fallback when no manifest)."""
 
-        await self.notify_progress(10, "Generating voiceover...")
-        audio_paths = await self._generate_voiceover()
-
-        await self.notify_progress(40, "Assembling video (legacy mode)...")
+        await self.notify_progress(10, "Assembling video (legacy mode)...")
 
         # Collect video paths
         video_paths = []
@@ -291,103 +290,6 @@ class PostProcessStage(BasePipelineStage):
                 "duration_seconds": self._get_video_duration(final_path)
             }
         )
-
-    async def _generate_voiceover(self) -> List[Path]:
-        """Generate voiceover audio for each scene (legacy support)"""
-        audio_paths = []
-
-        for scene in self.project.scenes:
-            if not scene.audio_prompt:
-                logger.warning(f"[Scene {scene.scene_number}] No voiceover text")
-                continue
-
-            scene_dir = get_scene_path(self.project_id, scene.scene_number)
-            audio_path = scene_dir / "voiceover.mp3"
-
-            if audio_path.exists():
-                logger.info(f"[Scene {scene.scene_number}] Voiceover already exists")
-                audio_paths.append(audio_path)
-                continue
-
-            try:
-                # Use generate_and_save_voiceover from AudioEngine
-                generated_path = await self.audio_engine.generate_and_save_voiceover(
-                    text=scene.audio_prompt,
-                    output_path=audio_path,
-                )
-
-                if generated_path:
-                    audio_paths.append(generated_path)
-                    logger.success(f"[Scene {scene.scene_number}] Voiceover generated")
-
-            except Exception as e:
-                logger.error(f"[Scene {scene.scene_number}] Voiceover failed: {e}")
-
-        return audio_paths
-
-    async def _generate_music(self, project_dir: Path, duration: float) -> Optional[Path]:
-        """Generate background music for MUSIC layer using Replicate Stable Audio"""
-        music_path = project_dir / "music.mp3"
-
-        if music_path.exists():
-            logger.info(f"[{self.project_id}] Background music already exists")
-            return music_path
-
-        try:
-            # Determine atmosphere from project name or default to cinematic
-            atmosphere = "cinematic"
-            if hasattr(self.project, 'concept') and self.project.concept:
-                concept_lower = self.project.concept.lower()
-                if any(word in concept_lower for word in ["mystery", "dark", "scary"]):
-                    atmosphere = "mysterious"
-                elif any(word in concept_lower for word in ["fun", "party", "celebration"]):
-                    atmosphere = "upbeat"
-                elif any(word in concept_lower for word in ["epic", "grand", "massive"]):
-                    atmosphere = "epic"
-                elif any(word in concept_lower for word in ["chill", "relax", "peaceful"]):
-                    atmosphere = "chill"
-
-            result = await self.music_generator.generate_for_project(
-                project_dir=project_dir,
-                atmosphere=atmosphere,
-                duration=min(duration, 47.0),  # Stable Audio max 47s
-            )
-
-            if result.success:
-                logger.success(f"[{self.project_id}] Background music generated: {atmosphere}")
-                return result.file_path
-            else:
-                logger.warning(f"[{self.project_id}] Music generation failed: {result.error}")
-
-        except Exception as e:
-            logger.error(f"[{self.project_id}] Music generation error: {e}")
-
-        return None
-
-    async def _generate_ambient_bed(self, project_dir: Path, duration: float) -> Optional[Path]:
-        """Generate ambient bed audio for BED layer"""
-        ambient_path = project_dir / "ambient.mp3"
-
-        if ambient_path.exists():
-            logger.info(f"[{self.project_id}] Ambient bed already exists")
-            return ambient_path
-
-        try:
-            result = await self.music_generator.generate_ambient_bed(
-                project_dir=project_dir,
-                duration=min(duration, 47.0),
-            )
-
-            if result.success:
-                logger.success(f"[{self.project_id}] Ambient bed generated")
-                return result.file_path
-            else:
-                logger.warning(f"[{self.project_id}] Ambient bed generation failed: {result.error}")
-
-        except Exception as e:
-            logger.error(f"[{self.project_id}] Ambient bed generation error: {e}")
-
-        return None
 
     async def _enhance_with_topaz(self, video_path: Path) -> Optional[Path]:
         """Enhance video using Topaz Video AI"""

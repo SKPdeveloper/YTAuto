@@ -68,8 +68,8 @@ class Gen3aPreprocessor:
         self,
         project_dir: Path,
         video_paths: List[Path],
-        music_path: Path,
-        voiceover_path: Path,
+        music_path: Optional[Path],
+        voiceover_path: Optional[Path],
     ) -> PreprocessingResult:
         """
         Run full preprocessing pipeline.
@@ -145,14 +145,20 @@ class Gen3aPreprocessor:
         # STEP 2: Generate beats.json
         # ====================================================================
         logger.info("Step 2/4: Analyzing music beats...")
-        try:
-            beats_data = await self._analyze_beats(music_path)
-            with open(beats_path, 'w', encoding='utf-8') as f:
-                json.dump(beats_data, f, indent=2, ensure_ascii=False)
-            logger.success(f"  beats.json created: BPM={beats_data.get('bpm', 'N/A')}")
-        except Exception as e:
-            errors.append(f"beats.json failed: {e}")
-            logger.error(f"  beats.json failed: {e}")
+        if music_path and music_path.exists():
+            try:
+                beats_data = await self._analyze_beats(music_path)
+                with open(beats_path, 'w', encoding='utf-8') as f:
+                    json.dump(beats_data, f, indent=2, ensure_ascii=False)
+                logger.success(f"  beats.json created: BPM={beats_data.get('bpm', 'N/A')}")
+            except Exception as e:
+                errors.append(f"beats.json failed: {e}")
+                logger.error(f"  beats.json failed: {e}")
+                beats_data = self._create_fallback_beats()
+                with open(beats_path, 'w', encoding='utf-8') as f:
+                    json.dump(beats_data, f, indent=2, ensure_ascii=False)
+        else:
+            logger.warning("  No music file provided - using fallback beats.json")
             beats_data = self._create_fallback_beats()
             with open(beats_path, 'w', encoding='utf-8') as f:
                 json.dump(beats_data, f, indent=2, ensure_ascii=False)
@@ -161,14 +167,20 @@ class Gen3aPreprocessor:
         # STEP 3: Generate vo_timing.json
         # ====================================================================
         logger.info("Step 3/4: Analyzing voiceover timing...")
-        try:
-            vo_timing_data = await self._analyze_voiceover_timing(voiceover_path)
-            with open(vo_timing_path, 'w', encoding='utf-8') as f:
-                json.dump(vo_timing_data, f, indent=2, ensure_ascii=False)
-            logger.success(f"  vo_timing.json created: {len(vo_timing_data.get('segments', []))} segments")
-        except Exception as e:
-            errors.append(f"vo_timing.json failed: {e}")
-            logger.error(f"  vo_timing.json failed: {e}")
+        if voiceover_path and voiceover_path.exists():
+            try:
+                vo_timing_data = await self._analyze_voiceover_timing(voiceover_path)
+                with open(vo_timing_path, 'w', encoding='utf-8') as f:
+                    json.dump(vo_timing_data, f, indent=2, ensure_ascii=False)
+                logger.success(f"  vo_timing.json created: {len(vo_timing_data.get('segments', []))} segments")
+            except Exception as e:
+                errors.append(f"vo_timing.json failed: {e}")
+                logger.error(f"  vo_timing.json failed: {e}")
+                vo_timing_data = self._create_fallback_vo_timing()
+                with open(vo_timing_path, 'w', encoding='utf-8') as f:
+                    json.dump(vo_timing_data, f, indent=2, ensure_ascii=False)
+        else:
+            logger.warning("  No voiceover file provided - using fallback vo_timing.json")
             vo_timing_data = self._create_fallback_vo_timing()
             with open(vo_timing_path, 'w', encoding='utf-8') as f:
                 json.dump(vo_timing_data, f, indent=2, ensure_ascii=False)
@@ -177,14 +189,20 @@ class Gen3aPreprocessor:
         # STEP 4: Generate audio_levels.json
         # ====================================================================
         logger.info("Step 4/4: Analyzing audio levels...")
-        try:
-            audio_levels_data = await self._analyze_audio_levels(music_path, voiceover_path)
-            with open(audio_levels_path, 'w', encoding='utf-8') as f:
-                json.dump(audio_levels_data, f, indent=2, ensure_ascii=False)
-            logger.success(f"  audio_levels.json created")
-        except Exception as e:
-            errors.append(f"audio_levels.json failed: {e}")
-            logger.error(f"  audio_levels.json failed: {e}")
+        if music_path and music_path.exists():
+            try:
+                audio_levels_data = await self._analyze_audio_levels(music_path, voiceover_path)
+                with open(audio_levels_path, 'w', encoding='utf-8') as f:
+                    json.dump(audio_levels_data, f, indent=2, ensure_ascii=False)
+                logger.success(f"  audio_levels.json created")
+            except Exception as e:
+                errors.append(f"audio_levels.json failed: {e}")
+                logger.error(f"  audio_levels.json failed: {e}")
+                audio_levels_data = self._create_fallback_audio_levels()
+                with open(audio_levels_path, 'w', encoding='utf-8') as f:
+                    json.dump(audio_levels_data, f, indent=2, ensure_ascii=False)
+        else:
+            logger.warning("  No music file provided - using fallback audio_levels.json")
             audio_levels_data = self._create_fallback_audio_levels()
             with open(audio_levels_path, 'w', encoding='utf-8') as f:
                 json.dump(audio_levels_data, f, indent=2, ensure_ascii=False)

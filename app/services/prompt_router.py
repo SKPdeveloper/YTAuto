@@ -175,6 +175,9 @@ class PromptRouter:
         self.val_gen1_prompt: Optional[str] = None
         self.val_gen2_prompt: Optional[str] = None
 
+        # Track if last GEN2 call was truncated (for retry guidance)
+        self._last_gen2_truncated: bool = False
+
         # Initialize Gemini client
         self.client = genai.Client(api_key=settings.GOOGLE_GEMINI_API_KEY)
         self.model = settings.CONTENTBRAIN_MODEL  # gemini-3-pro
@@ -799,6 +802,9 @@ You MUST fix ALL the issues listed above. Pay special attention to:
         Returns:
             Gen2BatchOutput with image_prompt, video_prompt, reference_type for each scene
         """
+        # Reset truncation flag
+        self._last_gen2_truncated = False
+
         if not self.gen2_prompt:
             logger.error("GEN2 prompt not loaded!")
             return None
@@ -810,6 +816,7 @@ You MUST fix ALL the issues listed above. Pay special attention to:
 
         try:
             # Call Gemini with GEN2 system prompt
+            # Use 65536 max tokens (gemini-1.5-pro max) to avoid truncation
             response = await self.client.aio.models.generate_content(
                 model=self.model,
                 contents=user_prompt,
@@ -824,15 +831,24 @@ You MUST fix ALL the issues listed above. Pay special attention to:
             raw_output = response.text
 
             # Log response metadata for debugging truncation issues
+            finish_reason = None
             if hasattr(response, 'candidates') and response.candidates:
                 candidate = response.candidates[0]
-                finish_reason = getattr(candidate, 'finish_reason', 'UNKNOWN')
+                finish_reason = getattr(candidate, 'finish_reason', None)
                 logger.info(f"[GEN2] Response finish_reason: {finish_reason}")
-                if finish_reason != 1:  # 1 = STOP (normal completion)
+                if finish_reason and finish_reason != 1:  # 1 = STOP (normal completion)
                     logger.warning(f"[GEN2] Abnormal finish_reason: {finish_reason} (1=STOP, 2=MAX_TOKENS, 3=SAFETY, 4=RECITATION, 5=OTHER)")
             if hasattr(response, 'usage_metadata'):
                 usage = response.usage_metadata
                 logger.info(f"[GEN2] Tokens - prompt: {getattr(usage, 'prompt_token_count', 'N/A')}, output: {getattr(usage, 'candidates_token_count', 'N/A')}")
+
+            # Check for truncation - if MAX_TOKENS, the response is incomplete
+            if finish_reason and (finish_reason == 2 or str(finish_reason) == "FinishReason.MAX_TOKENS"):
+                logger.error(f"[GEN2] Response TRUNCATED (MAX_TOKENS) - output will be incomplete!")
+                logger.error(f"[GEN2] Raw output ends with: ...{raw_output[-200:] if raw_output else 'EMPTY'}")
+                # Set truncation flag for retry guidance
+                self._last_gen2_truncated = True
+                # Don't return None - let it try to parse, validation will catch incomplete data
 
             if not raw_output:
                 logger.error("[GEN2] Empty response from API")
@@ -904,31 +920,37 @@ You MUST fix ALL the issues listed above before generating output.
 
 CRITICAL REQUIREMENTS:
 
-1. IMAGE PROMPTS:
+1. SCENE COUNT (MANDATORY - DO NOT SKIP!):
+   - You MUST return EXACTLY 6 scenes
+   - scene_number MUST be: 1, 2, 3, 4, 5, 6 (in order, no duplicates, no gaps)
+   - Process ALL 6 scenes from the input - do not skip any!
+
+2. IMAGE PROMPTS:
    - Use formulas from system prompt
-   - Include "--ar 9:16 --no text, no letters..." suffix
+   - Include "--no tilt-shift, miniature, diorama..." negative prompt
    - Include "subject positioned in upper portion of frame for vertical safe zone"
    - Scene 1 (PRIMARY): Full description with foreground, landscaping
    - REQUIRES_REF: Include "Maintaining exact design and material consistency..."
    - INDEPENDENT (interior): Include food floor, furniture, fixtures
+   - NO --ar (hardcoded in software)
 
-2. VIDEO PROMPTS:
-   - MUST end with "10s" (Kling generates 10-second clips)
+3. VIDEO PROMPTS:
    - MAX 40 words
    - 2-3+ motion elements per scene
    - NO banned words (slow, gentle, accelerating, rack focus, speed ramp)
    - Include camera movement
+   - NO duration spec like "10s" (hardcoded in software)
 
-3. SCENE 1 MUST HAVE first_frame_composition
+4. SCENE 1 MUST HAVE first_frame_composition
 
-4. SCENE 6 LOOP REQUIREMENTS (CRITICAL!):
+5. SCENE 6 LOOP REQUIREMENTS (CRITICAL!):
    - reference_type MUST be "LOOP_CLOSE" (NOT "REQUIRES_REF"!)
    - Must match Scene 1 for seamless loop
    - Must have inheritance object referencing Scene 1
 
-5. OUTPUT STRUCTURE:
-   - scenes: array of 6 Gen2SceneOutput objects
-   - visual_summary: summary object
+6. OUTPUT STRUCTURE:
+   - scenes: array of EXACTLY 6 Gen2SceneOutput objects with scene_number 1-6
+   - visual_summary: summary object with total_scenes: 6
 
 {retry_section}Output ONLY valid JSON matching Gen2BatchOutput schema."""
 
@@ -1252,11 +1274,27 @@ CRITICAL REQUIREMENTS:
         logger.info(f"[MERGE] GEN1 scenes: {len(gen1.scenes)}")
         logger.info(f"[MERGE] GEN2 scenes: {len(gen2.scenes)}")
 
+        # Validate GEN2 scene_numbers BEFORE creating dict
+        gen2_scene_numbers = [s.scene_number for s in gen2.scenes]
+        logger.info(f"[MERGE] GEN2 scene_numbers (raw): {gen2_scene_numbers}")
+
+        # Check for duplicates
+        if len(gen2_scene_numbers) != len(set(gen2_scene_numbers)):
+            duplicates = [n for n in gen2_scene_numbers if gen2_scene_numbers.count(n) > 1]
+            logger.error(f"[MERGE] CRITICAL: GEN2 has duplicate scene_numbers: {duplicates}")
+
+        # Check for missing scenes
+        gen1_scene_numbers = {s.scene_number for s in gen1.scenes}
+        gen2_scene_numbers_set = set(gen2_scene_numbers)
+        missing_in_gen2 = gen1_scene_numbers - gen2_scene_numbers_set
+        if missing_in_gen2:
+            logger.error(f"[MERGE] CRITICAL: GEN2 missing scene_numbers that exist in GEN1: {sorted(missing_in_gen2)}")
+
         # Create scene mapping from GEN2
         gen2_scenes: Dict[int, Gen2SceneOutput] = {
             s.scene_number: s for s in gen2.scenes
         }
-        logger.info(f"[MERGE] GEN2 scene numbers: {list(gen2_scenes.keys())}")
+        logger.info(f"[MERGE] GEN2 scene numbers (after dict): {list(gen2_scenes.keys())}")
 
         # Build GlazeScene list
         glaze_scenes: List[GlazeScene] = []
@@ -1903,6 +1941,19 @@ CRITICAL REQUIREMENTS:
 
             if not gen2_output:
                 logger.error(f"[GEN2] Generation failed (attempt {attempt})")
+                # If truncation was detected, add it to retry guidance
+                if self._last_gen2_truncated:
+                    logger.warning("[GEN2] Previous attempt was TRUNCATED - adding to retry guidance")
+                    truncation_guidance = [
+                        "CRITICAL: Your previous response was TRUNCATED (cut off mid-JSON)",
+                        "You MUST output complete JSON with ALL 6 scenes",
+                        "Be MORE CONCISE - shorter image_prompt and video_prompt",
+                        "Do NOT add extra fields or verbose descriptions"
+                    ]
+                    if last_gen2_retry_guidance:
+                        last_gen2_retry_guidance = truncation_guidance + last_gen2_retry_guidance
+                    else:
+                        last_gen2_retry_guidance = truncation_guidance
                 if attempt < MAX_VALIDATION_RETRIES:
                     logger.info("Retrying GEN2...")
                 continue

@@ -1029,6 +1029,22 @@ class Gen2BatchOutput(BaseModel):
                 }
         return data
 
+    @model_validator(mode='after')
+    def validate_scenes(self) -> 'Gen2BatchOutput':
+        """Validate all 6 scenes with unique scene_numbers 1-6."""
+        if len(self.scenes) != 6:
+            raise ValueError(f"GEN2 must return exactly 6 scenes, got {len(self.scenes)}")
+
+        scene_numbers = [s.scene_number for s in self.scenes]
+        if len(scene_numbers) != len(set(scene_numbers)):
+            duplicates = [n for n in scene_numbers if scene_numbers.count(n) > 1]
+            raise ValueError(f"GEN2 has duplicate scene_numbers: {duplicates}")
+
+        if set(scene_numbers) != {1, 2, 3, 4, 5, 6}:
+            raise ValueError(f"GEN2 scene_numbers must be 1-6, got {sorted(scene_numbers)}")
+
+        return self
+
 
 # ============================================================================
 # DELIVERY PAYLOAD (GEN1 -> GEN2)
