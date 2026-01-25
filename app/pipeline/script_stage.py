@@ -46,57 +46,134 @@ class ScriptStage(BasePipelineStage):
         return True
 
     async def execute(self) -> StageResult:
-        """Generate script via PromptRouter with detailed logging"""
+        """Generate script via PromptRouter with detailed logging and retry on validation failure"""
 
+        MAX_RETRIES = 3
         await self.notify_progress(0, "Starting script generation...")
 
         try:
             # Use PromptRouter for two-stage generation
             router = PromptRouter()
 
+            # ================================================================
+            # STAGE 1: GEN1 with validation and retry
+            # ================================================================
             await self.notify_progress(5, "🎬 Запуск GEN1 (Creative Director)...")
             await self.notify_log("═══ ЕТАП 1: GEN1 (Creative Director) ═══", "info")
 
-            # Run GEN1 separately to capture output
-            gen1_output = await router.run_gen1(
-                topic=self.project.topic,
-                num_scenes=self.project.num_scenes,
-                style=self.project.style or "cinematic food fantasy",
-                target_audience=self.project.target_audience or "YouTube Shorts viewers",
-                project_id=self.project.project_id,
-            )
+            gen1_output = None
+            gen1_validated = False
+            last_retry_guidance = None
 
-            if not gen1_output:
-                await self.notify_log("❌ GEN1 повернув порожній результат", "error")
+            for attempt in range(1, MAX_RETRIES + 1):
+                await self.notify_log(f"[GEN1] Спроба {attempt}/{MAX_RETRIES}...", "info")
+
+                # Run GEN1
+                gen1_output = await router.run_gen1(
+                    topic=self.project.topic,
+                    num_scenes=self.project.num_scenes,
+                    style=self.project.style or "cinematic food fantasy",
+                    target_audience=self.project.target_audience or "YouTube Shorts viewers",
+                    project_id=self.project.project_id,
+                    retry_guidance=last_retry_guidance,
+                )
+
+                if not gen1_output:
+                    await self.notify_log(f"❌ GEN1 повернув порожній результат (спроба {attempt})", "error")
+                    if attempt < MAX_RETRIES:
+                        await self.notify_log("🔄 Retry GEN1...", "warning")
+                    continue
+
+                # Validate GEN1 output
+                await self.notify_log(f"[VAL_GEN1] Валідація GEN1 (спроба {attempt})...", "info")
+                val_result = await router.validate_gen1(
+                    gen1_output=gen1_output,
+                    original_topic=self.project.topic or "",
+                    project_id=self.project.project_id,
+                )
+
+                if val_result and val_result.passed:
+                    await self.notify_log(f"✅ GEN1 валідація PASSED (спроба {attempt})", "success")
+                    gen1_validated = True
+                    break
+                else:
+                    await self.notify_log(f"⚠️ GEN1 валідація FAILED (спроба {attempt})", "warning")
+                    if val_result and val_result.retry_guidance:
+                        last_retry_guidance = val_result.retry_guidance.fixes_needed
+                        for fix in last_retry_guidance[:3]:
+                            await self.notify_log(f"  → {fix}", "warning")
+                    if attempt < MAX_RETRIES:
+                        await self.notify_log(f"🔄 Retry GEN1 з feedback...", "warning")
+
+            if not gen1_output or not gen1_validated:
+                await self.notify_log(f"❌ GEN1 FAILED після {MAX_RETRIES} спроб", "error")
                 return StageResult(
                     success=False,
                     stage_name=self.name,
                     status=StageStatus.FAILED,
-                    message="GEN1 returned empty output"
+                    message=f"GEN1 validation failed after {MAX_RETRIES} attempts"
                 )
 
             # Log GEN1 output details to client
             await self._log_gen1_output_to_client(gen1_output)
 
+            # ================================================================
+            # STAGE 2: GEN2 with validation and retry
+            # ================================================================
             await self.notify_progress(30, "✅ GEN1 завершено. Запуск GEN2...")
             await self.notify_log("═══ ЕТАП 2: GEN2 (Visual Director) ═══", "info")
 
             # Create delivery payload
             delivery_payload = router.create_delivery_payload(gen1_output, self.project.project_id)
 
-            # Run GEN2
-            gen2_output = await router.run_gen2(
-                payload=delivery_payload,
-                project_id=self.project.project_id,
-            )
+            gen2_output = None
+            gen2_validated = False
+            last_gen2_retry_guidance = None
 
-            if not gen2_output:
-                await self.notify_log("❌ GEN2 повернув порожній результат", "error")
+            for attempt in range(1, MAX_RETRIES + 1):
+                await self.notify_log(f"[GEN2] Спроба {attempt}/{MAX_RETRIES}...", "info")
+
+                # Run GEN2
+                gen2_output = await router.run_gen2(
+                    payload=delivery_payload,
+                    project_id=self.project.project_id,
+                    retry_guidance=last_gen2_retry_guidance,
+                )
+
+                if not gen2_output:
+                    await self.notify_log(f"❌ GEN2 повернув порожній результат (спроба {attempt})", "error")
+                    if attempt < MAX_RETRIES:
+                        await self.notify_log("🔄 Retry GEN2...", "warning")
+                    continue
+
+                # Validate GEN2 output
+                await self.notify_log(f"[VAL_GEN2] Валідація GEN2 (спроба {attempt})...", "info")
+                val_result = await router.validate_gen2(
+                    gen2_output=gen2_output,
+                    gen1_output=gen1_output,
+                    project_id=self.project.project_id,
+                )
+
+                if val_result and val_result.passed:
+                    await self.notify_log(f"✅ GEN2 валідація PASSED (спроба {attempt})", "success")
+                    gen2_validated = True
+                    break
+                else:
+                    await self.notify_log(f"⚠️ GEN2 валідація FAILED (спроба {attempt})", "warning")
+                    if val_result and val_result.retry_guidance:
+                        last_gen2_retry_guidance = val_result.retry_guidance.fixes_needed
+                        for fix in last_gen2_retry_guidance[:3]:
+                            await self.notify_log(f"  → {fix}", "warning")
+                    if attempt < MAX_RETRIES:
+                        await self.notify_log(f"🔄 Retry GEN2 з feedback...", "warning")
+
+            if not gen2_output or not gen2_validated:
+                await self.notify_log(f"❌ GEN2 FAILED після {MAX_RETRIES} спроб", "error")
                 return StageResult(
                     success=False,
                     stage_name=self.name,
                     status=StageStatus.FAILED,
-                    message="GEN2 returned empty output"
+                    message=f"GEN2 validation failed after {MAX_RETRIES} attempts"
                 )
 
             # Log GEN2 output details to client
