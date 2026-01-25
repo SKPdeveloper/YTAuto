@@ -1,0 +1,109 @@
+{
+  "version": "1.0.0",
+  "total_count": 7,
+  "last_updated": "2026-01-25T11:31:08.604947",
+  "entries": {
+    "sfx_0001": {
+      "id": "sfx_0001",
+      "file": "food/sfx_0001.mp3",
+      "tags": [
+        "sizzle",
+        "siren",
+        "loud"
+      ],
+      "category": "food",
+      "description": "Loud sizzle + siren blip",
+      "duration_ms": 3000,
+      "mood": "",
+      "source_project": "proj_b99d6de73b2b",
+      "created_at": "2026-01-25T11:31:08.048135",
+      "usage_count": 0
+    },
+    "sfx_0002": {
+      "id": "sfx_0002",
+      "file": "misc/sfx_0002.mp3",
+      "tags": [
+        "intense"
+      ],
+      "category": "misc",
+      "description": "Intense bubbling sound",
+      "duration_ms": 3000,
+      "mood": "",
+      "source_project": "proj_b99d6de73b2b",
+      "created_at": "2026-01-25T11:31:08.146716",
+      "usage_count": 0
+    },
+    "sfx_0003": {
+      "id": "sfx_0003",
+      "file": "misc/sfx_0003.mp3",
+      "tags": [
+        "wood"
+      ],
+      "category": "misc",
+      "description": "Wood creak sound",
+      "duration_ms": 3000,
+      "mood": "",
+      "source_project": "proj_b99d6de73b2b",
+      "created_at": "2026-01-25T11:31:08.239553",
+      "usage_count": 0
+    },
+    "sfx_0004": {
+      "id": "sfx_0004",
+      "file": "food/sfx_0004.mp3",
+      "tags": [
+        "drip",
+        "echo"
+      ],
+      "category": "food",
+      "description": "Drip echo",
+      "duration_ms": 3000,
+      "mood": "",
+      "source_project": "proj_b99d6de73b2b",
+      "created_at": "2026-01-25T11:31:08.340447",
+      "usage_count": 0
+    },
+    "sfx_0005": {
+      "id": "sfx_0005",
+      "file": "whoosh/sfx_0005.mp3",
+      "tags": [
+        "whoosh",
+        "wind"
+      ],
+      "category": "whoosh",
+      "description": "Whoosh wind sound",
+      "duration_ms": 3000,
+      "mood": "",
+      "source_project": "proj_b99d6de73b2b",
+      "created_at": "2026-01-25T11:31:08.419730",
+      "usage_count": 0
+    },
+    "sfx_0006": {
+      "id": "sfx_0006",
+      "file": "misc/sfx_0006.mp3",
+      "tags": [],
+      "category": "misc",
+      "description": "Reverse suction sound",
+      "duration_ms": 3000,
+      "mood": "",
+      "source_project": "proj_b99d6de73b2b",
+      "created_at": "2026-01-25T11:31:08.514257",
+      "usage_count": 0
+    },
+    "sfx_0007": {
+      "id": "sfx_0007",
+      "file": "misc/sfx_0007.mp3",
+      "tags": [
+        "bell",
+        "alarm",
+        "loud"
+      ],
+      "category": "misc",
+      "description": "Loud sizzling sear sound mixed with alarm bell",
+      "duration_ms": 2000,
+      "mood": "",
+      "source_project": "proj_b99d6de73b2b",
+      "created_at": "2026-01-25T11:31:08.604947",
+      "usage_count": 0
+    }
+  }
+}
