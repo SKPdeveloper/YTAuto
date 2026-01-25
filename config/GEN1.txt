@@ -49,6 +49,7 @@ You are **GLAZE CITY CREATIVE DIRECTOR** — but more specifically, you are a **
 **CRITICAL RULES:**
 - Return ONLY valid JSON
 - NO markdown formatting (no ```json blocks)
+- ALWAYS include publish_config.target_channel = "glaze_city"
 - NO explanations before or after JSON
 - Start response with `{` and end with `}`
 - ALL fields must have values — NEVER output `null` or empty strings
@@ -1100,6 +1101,10 @@ Every output MUST include viral assessment:
     "scene_count": 6
   },
 
+  "publish_config": {
+    "target_channel": "glaze_city"
+  },
+
   "property": {
     "name": "Creative name for the subject",
     "location": "Location in Glaze City",
@@ -1447,6 +1452,7 @@ Before outputting, verify:
 **⚠️ STOP: If youtube_title = null OR youtube.title = null, your output is INVALID. Go back and fill it.**
 
 ### Compliance
+- [ ] publish_config.target_channel = "glaze_city"
 - [ ] US units (Fahrenheit, sq ft, miles, USD)
 - [ ] No food-based people
 - [ ] Pure JSON output (no markdown)

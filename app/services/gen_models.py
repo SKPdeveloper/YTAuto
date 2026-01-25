@@ -266,6 +266,11 @@ class Gen1Concept(BaseModel):
     originality_note: str = Field(..., description="What makes this unique")
 
 
+class Gen1PublishConfig(BaseModel):
+    """Publish configuration for multi-channel support."""
+    target_channel: str = Field(default="glaze_city", description="Target YouTube channel ID")
+
+
 class Gen1Metadata(BaseModel):
     """Project metadata from GEN1."""
     version: str = Field(default="3.0", description="Schema version")
@@ -618,6 +623,7 @@ class Gen1Output(BaseModel):
     Validates all REQUIRED_GEN1_FIELDS per contract.
     """
     metadata: Gen1Metadata = Field(..., description="Project metadata")
+    publish_config: Optional[Gen1PublishConfig] = Field(default=None, description="Publish configuration for multi-channel support")
     property: Gen1Property = Field(..., description="Property/subject info")
     hook: Gen1Hook = Field(..., description="Hook strategy")
     architectural_identity: Gen1ArchitecturalIdentity = Field(..., description="Architectural style")

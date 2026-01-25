@@ -626,6 +626,15 @@ class AudioConfig(BaseModel):
 
 
 # ============================================================================
+# PUBLISH CONFIG - Конфігурація публікації
+# ============================================================================
+
+class PublishConfig(BaseModel):
+    """Конфігурація публікації для мультиканальної підтримки."""
+    target_channel: str = Field(default="glaze_city", description="Ідентифікатор цільового YouTube каналу")
+
+
+# ============================================================================
 # YOUTUBE METADATA - Метадані для публікації
 # ============================================================================
 
@@ -796,6 +805,9 @@ class GlazeCityProject(BaseModel):
     # Voiceover & Audio - REQUIRED
     voiceover: VoiceoverConfig = Field(..., description="Озвучка - REQUIRED")
     audio: AudioConfig = Field(..., description="Аудіо - REQUIRED")
+
+    # Publish Config - for multi-channel support
+    publish_config: Optional[PublishConfig] = Field(default=None, description="Конфігурація публікації для мультиканалів")
 
     # YouTube - REQUIRED, NEVER NULL
     youtube: ViralMetadata

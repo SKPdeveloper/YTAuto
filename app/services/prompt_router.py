@@ -112,6 +112,8 @@ from app.services.glaze_models import (
     # GEN1 data models (preserved during merge)
     VisualConcept,
     CameraIntent,
+    # Publish config for multi-channel support
+    PublishConfig,
 )
 from app.services.validation_models import (
     Gen1ValidationResponse,
@@ -1714,6 +1716,10 @@ CRITICAL REQUIREMENTS:
                 sonic_hook=sonic_hook_data,
                 foley_palette=foley_palette_data,
                 sfx_per_scene=sfx_per_scene_data,
+            ),
+            # Publish config for multi-channel support
+            publish_config=PublishConfig(
+                target_channel=gen1.publish_config.target_channel if gen1.publish_config else "glaze_city"
             ),
             youtube=ViralMetadata(
                 title=gen1.youtube_title or gen1.metadata.title,
