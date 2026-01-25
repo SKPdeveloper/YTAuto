@@ -216,7 +216,15 @@ class WebSocketClient {
                 break;
 
             case 'approval_required':
-                this._showApprovalModal(data);
+                if (data.approval_type === 'video_pre_upscale') {
+                    this._showVideoApprovalModal(data);
+                } else {
+                    this._showApprovalModal(data);
+                }
+                break;
+
+            case 'video_approval_decision':
+                this._handleVideoApprovalDecision(data);
                 break;
 
             case 'error':
@@ -300,6 +308,100 @@ class WebSocketClient {
         });
     }
 
+    _showVideoApprovalModal(data) {
+        // Create video approval modal
+        const modal = document.getElementById('modal-container');
+        if (!modal) return;
+
+        const videoUrl = data.video_url || `/projects/${data.project_id}/assembled_video.mp4`;
+
+        modal.innerHTML = `
+            <div class="modal-backdrop fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+                <div class="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+                    <!-- Header -->
+                    <div class="p-4 border-b border-gray-200 flex items-center justify-between">
+                        <h2 class="text-xl font-bold text-gray-800 flex items-center gap-2">
+                            <i data-lucide="film" class="w-6 h-6 text-purple-600"></i>
+                            Video Review (Pre-Upscale)
+                        </h2>
+                        <button onclick="this.closest('.modal-backdrop').remove()" class="text-gray-400 hover:text-gray-600">
+                            <i data-lucide="x" class="w-6 h-6"></i>
+                        </button>
+                    </div>
+
+                    <!-- Video Preview (9:16 aspect ratio) -->
+                    <div class="p-4 flex justify-center bg-gray-100">
+                        <div class="w-full max-w-[270px] aspect-[9/16] rounded-lg overflow-hidden shadow-lg bg-black">
+                            <video
+                                src="${videoUrl}"
+                                class="w-full h-full object-contain"
+                                controls
+                                autoplay
+                                loop
+                                muted>
+                            </video>
+                        </div>
+                    </div>
+
+                    <!-- Info -->
+                    <div class="px-4 py-2 bg-blue-50 text-blue-700 text-sm">
+                        <i data-lucide="info" class="w-4 h-4 inline mr-1"></i>
+                        Review the assembled video before Topaz upscaling. Upscaling is time-consuming and cannot be undone.
+                    </div>
+
+                    <!-- Actions -->
+                    <div class="p-4 bg-gray-50 flex flex-col gap-2">
+                        <button
+                            onclick="submitVideoApproval('approved')"
+                            class="w-full py-3 px-4 bg-green-600 hover:bg-green-700 text-white rounded-lg font-medium flex items-center justify-center gap-2 transition-colors">
+                            <i data-lucide="check" class="w-5 h-5"></i>
+                            Approve & Start Upscaling
+                        </button>
+
+                        <button
+                            onclick="submitVideoApproval('skip_upscale')"
+                            class="w-full py-3 px-4 bg-yellow-500 hover:bg-yellow-600 text-white rounded-lg font-medium flex items-center justify-center gap-2 transition-colors">
+                            <i data-lucide="fast-forward" class="w-5 h-5"></i>
+                            Skip Upscaling (Mark Complete)
+                        </button>
+
+                        <button
+                            onclick="submitVideoApproval('rejected')"
+                            class="w-full py-3 px-4 bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium flex items-center justify-center gap-2 transition-colors">
+                            <i data-lucide="x" class="w-5 h-5"></i>
+                            Reject & Stop Pipeline
+                        </button>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        // Re-init Lucide icons
+        if (typeof lucide !== 'undefined') {
+            lucide.createIcons();
+        }
+    }
+
+    _handleVideoApprovalDecision(data) {
+        // Close modal
+        const modal = document.querySelector('.modal-backdrop');
+        if (modal) modal.remove();
+
+        // Show toast based on decision
+        const messages = {
+            'approved': 'Video approved! Starting upscaling...',
+            'skip_upscale': 'Upscaling skipped. Project marked as complete.',
+            'rejected': 'Video rejected. Pipeline stopped.'
+        };
+        const types = {
+            'approved': 'success',
+            'skip_upscale': 'warning',
+            'rejected': 'error'
+        };
+
+        this._showToast(messages[data.decision] || 'Decision recorded', types[data.decision] || 'info');
+    }
+
     _refreshProject(projectId) {
         const projectView = document.querySelector(`[data-project="${projectId}"]`);
         if (projectView) {
@@ -342,3 +444,26 @@ document.addEventListener('visibilitychange', () => {
         window.wsClient.connect();
     }
 });
+
+// Global function for video approval submission
+async function submitVideoApproval(decision) {
+    try {
+        const response = await fetch('/api/control/video-approval', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ decision })
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.detail || 'Failed to submit approval');
+        }
+
+        // Modal will be closed by WebSocket event
+    } catch (error) {
+        console.error('Video approval error:', error);
+        showToast(`Error: ${error.message}`, 'error');
+    }
+}

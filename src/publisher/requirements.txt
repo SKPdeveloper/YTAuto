@@ -1,0 +1,27 @@
+# YTAutoPublisher Dependencies
+
+# YouTube API
+google-api-python-client>=2.100.0
+google-auth>=2.23.0
+google-auth-oauthlib>=1.1.0
+google-auth-httplib2>=0.1.1
+
+# Proxy support
+httplib2>=0.22.0
+PySocks>=1.7.1
+
+# CLI
+typer>=0.9.0
+rich>=13.0.0
+
+# Validation
+pydantic>=2.5.0
+
+# Utils
+python-dateutil>=2.8.2
+
+# Logging
+loguru>=0.7.0
+
+# Testing
+pytest>=7.4.0

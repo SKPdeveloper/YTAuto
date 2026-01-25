@@ -175,6 +175,30 @@
     <!-- Modal Container -->
     <div id="modal-container"></div>
 
+    <!-- Media Modal (9:16 vertical format) -->
+    <div id="media-modal" class="fixed inset-0 z-[60] hidden">
+        <div class="absolute inset-0 bg-black/80 backdrop-blur-sm" onclick="closeMediaModal()"></div>
+        <div class="absolute inset-4 md:inset-8 flex items-center justify-center">
+            <div class="relative max-h-full flex flex-col items-center">
+                <!-- Close button -->
+                <button onclick="closeMediaModal()" class="absolute -top-2 -right-2 md:top-2 md:right-2 bg-white/10 hover:bg-white/20 p-2 rounded-full z-10">
+                    <i data-lucide="x" class="w-6 h-6 text-white"></i>
+                </button>
+
+                <!-- Media container (9:16 vertical) -->
+                <div id="media-modal-content" class="max-h-[80vh] max-w-[45vh] rounded-lg overflow-hidden shadow-2xl">
+                    <!-- Content inserted by JS -->
+                </div>
+
+                <!-- Download button -->
+                <a id="media-download-link" href="#" download class="mt-4 px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-lg flex items-center gap-2">
+                    <i data-lucide="download" class="w-4 h-4"></i>
+                    <span>Download</span>
+                </a>
+            </div>
+        </div>
+    </div>
+
     <!-- Toast Container -->
     <div id="toast-container" class="fixed bottom-4 right-4 z-50 space-y-2"></div>
 
@@ -226,6 +250,78 @@
                 setTimeout(() => toast.remove(), 300);
             }, 3000);
         }
+
+        // Media Modal functions (9:16 vertical format)
+        function openMediaModal(path, type) {
+            const modal = document.getElementById('media-modal');
+            const content = document.getElementById('media-modal-content');
+            const downloadLink = document.getElementById('media-download-link');
+
+            // Build URL
+            let url = path;
+            if (!path.startsWith('/') && !path.startsWith('http')) {
+                // Relative path - add /projects/ prefix
+                url = '/projects/' + path.split('projects/').pop();
+            }
+
+            // Set download link
+            downloadLink.href = url;
+
+            // Create media element
+            if (type === 'video') {
+                content.innerHTML = `
+                    <video
+                        src="${url}"
+                        class="w-full h-full object-contain bg-black"
+                        controls
+                        autoplay
+                        loop>
+                    </video>
+                `;
+            } else {
+                content.innerHTML = `
+                    <img
+                        src="${url}"
+                        alt="Media preview"
+                        class="w-full h-full object-contain bg-black">
+                `;
+            }
+
+            // Show modal
+            modal.classList.remove('hidden');
+            document.body.style.overflow = 'hidden';
+
+            // Re-init lucide icons
+            lucide.createIcons();
+        }
+
+        function closeMediaModal() {
+            const modal = document.getElementById('media-modal');
+            const content = document.getElementById('media-modal-content');
+
+            // Stop video if playing
+            const video = content.querySelector('video');
+            if (video) {
+                video.pause();
+            }
+
+            // Hide modal
+            modal.classList.add('hidden');
+            document.body.style.overflow = '';
+
+            // Clear content
+            content.innerHTML = '';
+        }
+
+        // Close media modal on Escape
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                const mediaModal = document.getElementById('media-modal');
+                if (!mediaModal.classList.contains('hidden')) {
+                    closeMediaModal();
+                }
+            }
+        });
     </script>
 
     {% block scripts %}{% endblock %}

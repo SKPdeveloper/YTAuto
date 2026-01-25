@@ -51,6 +51,12 @@ class ControlState:
         self.kicked_scenes: list = []  # Queue of scenes to regenerate
         self.scenes_confirmed: bool = False
 
+        # Video Approval state (pre-upscale)
+        self.awaiting_video_approval: bool = False
+        self.video_approval_project_id: Optional[str] = None
+        self.video_approval_result: Optional[str] = None  # 'approved', 'rejected', 'skip_upscale'
+        self.video_approval_event: Optional[asyncio.Event] = None
+
         # WebSocket manager reference
         self.ws_manager: Optional[ConnectionManager] = None
 
@@ -67,6 +73,11 @@ state = ControlState()
 
 def get_state() -> ControlState:
     """Get control state instance."""
+    return state
+
+
+def get_control_state() -> ControlState:
+    """Alias for get_state - used by VideoApprovalStage."""
     return state
 
 
@@ -187,7 +198,10 @@ async def get_current_state():
         "scene_images": state.scene_images,
         "project_id": state.current_project_id,
         "final_video_path": state.final_video_path,
-        "topaz_video_path": state.topaz_video_path
+        "topaz_video_path": state.topaz_video_path,
+        # Video approval (pre-upscale)
+        "awaiting_video_approval": state.awaiting_video_approval,
+        "video_approval_project_id": state.video_approval_project_id,
     }
 
 
@@ -468,6 +482,61 @@ async def reject_video(request: VideoApproveRequest):
     await broadcast_event("video_regenerating", {"scene_num": request.scene_num})
 
     return {"status": "regenerating", "scene_num": request.scene_num}
+
+
+# ============================================================================
+# VIDEO APPROVAL (PRE-UPSCALE)
+# ============================================================================
+
+class VideoApprovalDecision(BaseModel):
+    """Request body for video approval decision."""
+    decision: str  # 'approved', 'rejected', 'skip_upscale'
+    project_id: Optional[str] = None
+
+
+@router.get("/video-approval-status")
+async def get_video_approval_status():
+    """Get current video approval status."""
+    return {
+        "awaiting": state.awaiting_video_approval,
+        "project_id": state.video_approval_project_id,
+    }
+
+
+@router.post("/video-approval")
+async def submit_video_approval(request: VideoApprovalDecision):
+    """
+    Submit video approval decision.
+
+    Decisions:
+    - approved: Continue to Topaz upscaling
+    - rejected: Stop pipeline, user will fix manually
+    - skip_upscale: Mark complete without upscaling
+    """
+    if not state.awaiting_video_approval:
+        raise HTTPException(status_code=400, detail="No video approval pending")
+
+    if request.decision not in ('approved', 'rejected', 'skip_upscale'):
+        raise HTTPException(status_code=400, detail="Invalid decision. Use: approved, rejected, skip_upscale")
+
+    state.video_approval_result = request.decision
+
+    # Signal the waiting VideoApprovalStage
+    if state.video_approval_event:
+        state.video_approval_event.set()
+
+    logger.info(f"Video approval decision: {request.decision}")
+
+    await broadcast_event("video_approval_decision", {
+        "decision": request.decision,
+        "project_id": state.video_approval_project_id
+    })
+
+    return {
+        "status": "ok",
+        "decision": request.decision,
+        "project_id": state.video_approval_project_id
+    }
 
 
 # ============================================================================
