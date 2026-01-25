@@ -114,6 +114,65 @@ class HiggsFieldWebClient:
         """Перевірити чи браузер відкритий"""
         return self._browser is not None and self._browser.is_browser_open
 
+    def is_browser_alive(self) -> bool:
+        """
+        Перевірити чи браузер дійсно працює (вікно не закрите).
+        """
+        if not self._browser:
+            return False
+        return self._browser.is_browser_alive()
+
+    async def ensure_alive_or_reconnect(self, max_retries: int = 3) -> bool:
+        """
+        Перевірити що браузер живий, якщо ні - перепідключитися.
+
+        Returns:
+            True якщо браузер живий або успішно перепідключено
+        """
+        if not self._browser:
+            return False
+
+        if self._browser.is_browser_alive():
+            return True
+
+        logger.warning("Browser window closed unexpectedly, reconnecting...")
+
+        # Close old generators
+        self._image_generator = None
+        self._video_generator = None
+        self._kling_generator = None
+
+        # Reconnect browser
+        success = await self._browser.reconnect(max_retries=max_retries)
+
+        if success:
+            # Reinitialize generators with new browser connection
+            self._image_generator = HiggsFieldImageGenerator(
+                browser=self._browser,
+                download_dir=self.download_dir,
+                settings=self.image_settings,
+                http_client=self._http_client
+            )
+
+            self._video_generator = HiggsFieldVideoGenerator(
+                browser=self._browser,
+                download_dir=self.download_dir,
+                model=self._video_model,
+                settings=self.video_settings,
+                http_client=self._http_client
+            )
+
+            self._kling_generator = KlingVideoGenerator(
+                browser=self._browser,
+                download_dir=self.download_dir,
+                settings=KlingSettings(),
+                http_client=self._http_client
+            )
+
+            logger.success("Browser reconnected and generators reinitialized")
+
+        return success
+
     @property
     def is_approved_for_shutdown(self) -> bool:
         """Перевірити чи є апрув на закриття"""

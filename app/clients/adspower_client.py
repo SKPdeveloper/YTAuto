@@ -86,6 +86,24 @@ class AdsPowerClient:
         """Перевірити чи браузер відкритий"""
         return self._driver is not None
 
+    def is_browser_alive(self) -> bool:
+        """
+        Перевірити чи браузер дійсно працює (вікно не закрите).
+
+        Відрізняється від is_browser_open тим, що реально тестує з'єднання.
+        """
+        if not self._driver:
+            return False
+
+        try:
+            # Спроба виконати просту команду - якщо вікно закрите, буде exception
+            _ = self._driver.current_url
+            return True
+        except WebDriverException:
+            return False
+        except Exception:
+            return False
+
     @property
     def is_approved_for_shutdown(self) -> bool:
         """Перевірити чи є апрув на закриття"""
@@ -183,6 +201,55 @@ class AdsPowerClient:
                 "Failed to connect Selenium to AdsPower browser",
                 cause=e
             )
+
+    # ========================================================================
+    # RECONNECTION
+    # ========================================================================
+
+    async def reconnect(self, max_retries: int = 3) -> bool:
+        """
+        Перепідключитися до браузера якщо з'єднання втрачено.
+
+        Args:
+            max_retries: Кількість спроб підключення
+
+        Returns:
+            True якщо успішно перепідключено
+        """
+        logger.warning("Browser connection lost, attempting reconnect...")
+
+        # Очистити старий driver
+        if self._driver:
+            try:
+                self._driver.quit()
+            except Exception:
+                pass
+            self._driver = None
+
+        # Спробувати перезапустити
+        try:
+            await self.start_browser(max_retries=max_retries)
+            logger.success("Browser reconnected successfully")
+            return True
+        except Exception as e:
+            logger.error(f"Browser reconnection failed: {e}")
+            return False
+
+    async def ensure_alive_or_reconnect(self, max_retries: int = 3) -> bool:
+        """
+        Перевірити що браузер живий, якщо ні - перепідключитися.
+
+        Args:
+            max_retries: Кількість спроб перепідключення
+
+        Returns:
+            True якщо браузер живий або успішно перепідключено
+        """
+        if self.is_browser_alive():
+            return True
+
+        logger.warning("Browser window closed unexpectedly, reconnecting...")
+        return await self.reconnect(max_retries=max_retries)
 
     # ========================================================================
     # APPROVAL & SHUTDOWN

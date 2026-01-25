@@ -99,30 +99,51 @@ class HiggsFieldWebAdapter:
     # ========================================================================
 
     async def _ensure_browser_started(self) -> None:
-        """Запускає браузер якщо ще не запущено"""
-        if self._browser_started and self._client:
+        """
+        Запускає браузер якщо ще не запущено.
+        Якщо браузер був запущений, але вікно закрите - перепідключається.
+        """
+        # Check if we need to start fresh
+        if not self._browser_started or not self._client:
+            logger.info("Starting HiggsFieldWebClient browser...")
+
+            # Determine video model from settings
+            video_model = VideoModel.KLING if "kling" in settings.HIGGSFIELD_WEB_VIDEO_MODEL.lower() else VideoModel.SEEDANCE
+            logger.info(f"Using video model: {video_model.value}")
+
+            self._client = HiggsFieldWebClient(
+                adspower_config=self._adspower_config,
+                image_settings=self._image_settings,
+                video_settings=self._video_settings,
+                video_model=video_model,
+                download_dir=settings.PROJECTS_DIR / "downloads",
+            )
+
+            await self._client.start_browser()
+            self._browser_started = True
+
+            # NOTE: НЕ очищаємо тут! Очистка тільки в orchestrator
+
+            logger.success("Browser started and ready")
             return
 
-        logger.info("Starting HiggsFieldWebClient browser...")
+        # Browser was started before - check if it's still alive
+        if self._client and not self._client.is_browser_alive():
+            logger.warning("Browser window was closed, reconnecting...")
 
-        # Determine video model from settings
-        video_model = VideoModel.KLING if "kling" in settings.HIGGSFIELD_WEB_VIDEO_MODEL.lower() else VideoModel.SEEDANCE
-        logger.info(f"Using video model: {video_model.value}")
-        
-        self._client = HiggsFieldWebClient(
-            adspower_config=self._adspower_config,
-            image_settings=self._image_settings,
-            video_settings=self._video_settings,
-            video_model=video_model,
-            download_dir=settings.PROJECTS_DIR / "downloads",
-        )
+            # Try to reconnect
+            reconnected = await self._client.ensure_alive_or_reconnect(max_retries=3)
 
-        await self._client.start_browser()
-        self._browser_started = True
+            if not reconnected:
+                # Full restart needed
+                logger.warning("Reconnection failed, performing full restart...")
+                self._browser_started = False
+                self._client = None
 
-        # NOTE: НЕ очищаємо тут! Очистка тільки в orchestrator
-
-        logger.success("Browser started and ready")
+                # Recursive call to start fresh
+                await self._ensure_browser_started()
+            else:
+                logger.success("Browser reconnected successfully")
 
     def approve_shutdown(self) -> None:
         """
@@ -382,6 +403,7 @@ class HiggsFieldWebAdapter:
         scene_number: int,
         project_id: str = "test_project",
         num_candidates: int = 4,
+        max_retries: int = 2,
     ) -> List[Path]:
         """
         Генерує кандидатів для PRIMARY сцени (Unlimited=OFF для якості).
@@ -391,56 +413,87 @@ class HiggsFieldWebAdapter:
             scene_number: Номер сцени (зазвичай 1)
             project_id: ID проекту
             num_candidates: Кількість кандидатів (4)
+            max_retries: Максимум повторних спроб при помилці браузера
 
         Returns:
             List[Path] до збережених зображень
         """
-        await self._ensure_browser_started()
+        last_error = None
 
-        logger.info(f"[Scene {scene_number}] Generating {num_candidates} PRIMARY candidates (Unlimited=OFF)...")
+        for attempt in range(1, max_retries + 2):  # +2 for initial + retries
+            try:
+                await self._ensure_browser_started()
 
-        # Для PRIMARY сцени - Unlimited=OFF для найкращої якості
-        self._client.image_settings.unlimited = False
+                logger.info(f"[Scene {scene_number}] Generating {num_candidates} PRIMARY candidates (Unlimited=OFF)...")
+                if attempt > 1:
+                    logger.info(f"[Scene {scene_number}] Attempt {attempt}/{max_retries + 1}")
 
-        try:
-            # Генеруємо кандидатів (повертає List[GeneratedImage] з path та url)
-            generated_images = await self._client.generate_primary_candidates(
-                prompt=prompt,
-                num_candidates=num_candidates,
-            )
+                # Для PRIMARY сцени - Unlimited=OFF для найкращої якості
+                self._client.image_settings.unlimited = False
 
-            # Копіюємо в директорію проекту
-            scene_dir = settings.get_scene_dir(project_id, scene_number)
-            scene_dir.mkdir(parents=True, exist_ok=True)
-
-            final_paths = []
-            for i, gen_img in enumerate(generated_images, 1):
-                dst_path = scene_dir / f"candidate_{i}.png"
-                shutil.copy(gen_img.path, dst_path)
-                final_paths.append(dst_path)
-
-                # Metadata для кожного кандидата (включаючи URL для валідних)
-                candidate_meta = {
-                    "prompt": prompt,
-                    "scene_number": scene_number,
-                    "project_id": project_id,
-                    "candidate_index": i,
-                    "generation_mode": "web_primary",
-                    "source": "higgsfield_web",
-                    "image_url": gen_img.url,  # URL на HiggsField для відео генерації
-                }
-                await file_manager.save_json(
-                    candidate_meta,
-                    scene_dir / f"candidate_{i}_metadata.json"
+                # Генеруємо кандидатів (повертає List[GeneratedImage] з path та url)
+                generated_images = await self._client.generate_primary_candidates(
+                    prompt=prompt,
+                    num_candidates=num_candidates,
                 )
-                logger.debug(f"  Candidate {i}: saved with URL {gen_img.url[:60]}...")
 
-            logger.success(f"[Scene {scene_number}] Generated {len(final_paths)} PRIMARY candidates with URLs")
-            return final_paths
+                # Копіюємо в директорію проекту
+                scene_dir = settings.get_scene_dir(project_id, scene_number)
+                scene_dir.mkdir(parents=True, exist_ok=True)
 
-        except Exception as e:
-            logger.error(f"[Scene {scene_number}] PRIMARY candidates generation failed: {e}")
-            raise
+                final_paths = []
+                for i, gen_img in enumerate(generated_images, 1):
+                    dst_path = scene_dir / f"candidate_{i}.png"
+                    shutil.copy(gen_img.path, dst_path)
+                    final_paths.append(dst_path)
+
+                    # Metadata для кожного кандидата (включаючи URL для валідних)
+                    candidate_meta = {
+                        "prompt": prompt,
+                        "scene_number": scene_number,
+                        "project_id": project_id,
+                        "candidate_index": i,
+                        "generation_mode": "web_primary",
+                        "source": "higgsfield_web",
+                        "image_url": gen_img.url,  # URL на HiggsField для відео генерації
+                    }
+                    await file_manager.save_json(
+                        candidate_meta,
+                        scene_dir / f"candidate_{i}_metadata.json"
+                    )
+                    logger.debug(f"  Candidate {i}: saved with URL {gen_img.url[:60]}...")
+
+                logger.success(f"[Scene {scene_number}] Generated {len(final_paths)} PRIMARY candidates with URLs")
+                return final_paths
+
+            except Exception as e:
+                last_error = e
+                error_msg = str(e).lower()
+
+                # Check if this is a browser window closed error
+                if "no such window" in error_msg or "target window already closed" in error_msg:
+                    logger.warning(f"[Scene {scene_number}] Browser window closed during generation")
+
+                    if attempt <= max_retries:
+                        logger.info(f"[Scene {scene_number}] Attempting browser reconnection...")
+                        # Force browser restart on next _ensure_browser_started call
+                        self._browser_started = False
+                        if self._client:
+                            try:
+                                await self._client.force_shutdown()
+                            except Exception:
+                                pass
+                        self._client = None
+                        await asyncio.sleep(2)  # Brief pause before retry
+                        continue
+
+                # Non-recoverable error or max retries reached
+                logger.error(f"[Scene {scene_number}] PRIMARY candidates generation failed: {e}")
+                raise
+
+        # Should not reach here, but just in case
+        if last_error:
+            raise last_error
 
     # ========================================================================
     # VIDEO GENERATION (сумісність з HiggsFieldClient)
@@ -536,6 +589,7 @@ class HiggsFieldWebAdapter:
         self,
         scenes: list,
         project_id: str,
+        max_retries_per_scene: int = 2,
     ) -> List[Path]:
         """
         Нова парадигма: послідовна генерація через SimpleVideoGenerator.
@@ -553,6 +607,7 @@ class HiggsFieldWebAdapter:
         Args:
             scenes: Список сцен
             project_id: ID проекту
+            max_retries_per_scene: Максимум повторів на сцену при помилці браузера
 
         Returns:
             List[Path] шляхів до відео файлів
@@ -583,24 +638,87 @@ class HiggsFieldWebAdapter:
             scene_dir = settings.get_scene_dir(project_id, scene_num)
             scene_dir.mkdir(parents=True, exist_ok=True)
 
-            try:
-                result = await generator.generate_and_download(
-                    image_path=image_path,
-                    prompt=video_prompt,
-                    output_dir=scene_dir,
-                    scene_num=scene_num,
-                    project_id=project_id
-                )
+            # Retry loop for browser reconnection
+            scene_success = False
+            for attempt in range(1, max_retries_per_scene + 2):
+                try:
+                    # Check browser is alive before each scene
+                    if not self._client.is_browser_alive():
+                        logger.warning(f"[Scene {scene_num}] Browser not alive, reconnecting...")
+                        await self._ensure_browser_started()
+                        # Reinitialize generator with new browser
+                        generator = SimpleVideoGenerator(
+                            browser=self._client._browser,
+                            projects_dir=settings.PROJECTS_DIR
+                        )
 
-                if result.success and result.video_path:
-                    final_paths.append(result.video_path)
-                    logger.success(f"[Scene {scene_num}] Video saved: {result.video_path}")
-                else:
-                    logger.error(f"[Scene {scene_num}] Video generation failed: {result.error}")
-                    final_paths.append(None)
+                    if attempt > 1:
+                        logger.info(f"[Scene {scene_num}] Retry attempt {attempt}/{max_retries_per_scene + 1}")
 
-            except Exception as e:
-                logger.error(f"[Scene {scene_num}] Exception: {e}")
+                    result = await generator.generate_and_download(
+                        image_path=image_path,
+                        prompt=video_prompt,
+                        output_dir=scene_dir,
+                        scene_num=scene_num,
+                        project_id=project_id
+                    )
+
+                    if result.success and result.video_path:
+                        final_paths.append(result.video_path)
+                        logger.success(f"[Scene {scene_num}] Video saved: {result.video_path}")
+                        scene_success = True
+                        break
+                    else:
+                        error_msg = str(result.error or "").lower()
+                        # Check if browser-related error
+                        if "no such window" in error_msg or "target window already closed" in error_msg:
+                            logger.warning(f"[Scene {scene_num}] Browser window closed during generation")
+                            if attempt <= max_retries_per_scene:
+                                # Force browser restart
+                                self._browser_started = False
+                                if self._client:
+                                    try:
+                                        await self._client.force_shutdown()
+                                    except Exception:
+                                        pass
+                                self._client = None
+                                await asyncio.sleep(2)
+                                await self._ensure_browser_started()
+                                generator = SimpleVideoGenerator(
+                                    browser=self._client._browser,
+                                    projects_dir=settings.PROJECTS_DIR
+                                )
+                                continue
+
+                        logger.error(f"[Scene {scene_num}] Video generation failed: {result.error}")
+                        break
+
+                except Exception as e:
+                    error_msg = str(e).lower()
+                    # Check if browser-related error
+                    if "no such window" in error_msg or "target window already closed" in error_msg:
+                        logger.warning(f"[Scene {scene_num}] Browser window closed: {e}")
+                        if attempt <= max_retries_per_scene:
+                            # Force browser restart
+                            self._browser_started = False
+                            if self._client:
+                                try:
+                                    await self._client.force_shutdown()
+                                except Exception:
+                                    pass
+                            self._client = None
+                            await asyncio.sleep(2)
+                            await self._ensure_browser_started()
+                            generator = SimpleVideoGenerator(
+                                browser=self._client._browser,
+                                projects_dir=settings.PROJECTS_DIR
+                            )
+                            continue
+
+                    logger.error(f"[Scene {scene_num}] Exception: {e}")
+                    break
+
+            if not scene_success:
                 final_paths.append(None)
 
         success_count = sum(1 for p in final_paths if p is not None)
