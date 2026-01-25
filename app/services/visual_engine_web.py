@@ -808,19 +808,27 @@ class HiggsFieldWebAdapter:
         """
         await self._ensure_browser_started()
 
-        logger.info(f"Generating {len(scenes)} images in parallel...")
+        logger.info("=" * 60)
+        logger.info(f"[VISUAL_ENGINE] PARALLEL IMAGE GENERATION: {len(scenes)} scenes")
+        logger.info(f"[VISUAL_ENGINE] reference_image parameter: {reference_image}")
+        if reference_image:
+            logger.info(f"[VISUAL_ENGINE] reference_image exists: {reference_image.exists()}")
+        logger.info("=" * 60)
 
         # Prepare scenes data with reference paths
         prepared_scenes = []
         for scene in scenes:
+            ref_from_scene = scene.get('reference_image')
+            ref_to_use = ref_from_scene or (str(reference_image) if reference_image else None)
+
             scene_data = {
                 'scene_number': scene.get('scene_number'),
                 'image_prompt': scene.get('image_prompt', ''),
-                'reference_image': scene.get('reference_image') or (
-                    str(reference_image) if reference_image else None
-                )
+                'reference_type': scene.get('reference_type', 'REQUIRES_REF'),
+                'reference_image': ref_to_use
             }
             prepared_scenes.append(scene_data)
+            logger.info(f"[VISUAL_ENGINE] Scene {scene.get('scene_number')}: ref_type={scene.get('reference_type')}, ref_image={ref_to_use}")
 
         try:
             # Call client's parallel generation method

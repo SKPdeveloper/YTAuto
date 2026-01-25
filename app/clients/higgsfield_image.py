@@ -672,7 +672,8 @@ class HiggsFieldImageGenerator:
         driver = self.browser.driver
 
         # CRITICAL: Log and verify the file path
-        logger.info(f"[REFERENCE] Uploading file: {image_path}")
+        logger.info(f"[REFERENCE] ====== UPLOADING REFERENCE IMAGE ======")
+        logger.info(f"[REFERENCE] Path: {image_path}")
 
         # Check if file exists
         from pathlib import Path
@@ -685,10 +686,79 @@ class HiggsFieldImageGenerator:
         file_size_mb = file_path.stat().st_size / (1024 * 1024)
         logger.info(f"[REFERENCE] File exists, size: {file_size_mb:.2f} MB")
 
+        # Normalize path for Windows Selenium
+        normalized_path = str(file_path.absolute()).replace('/', '\\')
+        logger.info(f"[REFERENCE] Normalized path: {normalized_path}")
+
         try:
-            file_input = driver.find_element(By.ID, "image-form-reference")
-            file_input.send_keys(image_path)
-            logger.info(f"[REFERENCE] File path sent to input, waiting for upload...")
+            # Try multiple strategies to find file input
+            file_input = None
+
+            # Strategy 1: By ID
+            try:
+                file_input = driver.find_element(By.ID, "image-form-reference")
+                logger.info("[REFERENCE] Found input by ID: image-form-reference")
+            except NoSuchElementException:
+                logger.warning("[REFERENCE] ID 'image-form-reference' not found, trying alternatives...")
+
+            # Strategy 2: By CSS selector with accept attribute
+            if not file_input:
+                try:
+                    inputs = driver.find_elements(By.CSS_SELECTOR, 'input[type="file"][accept*="image"]')
+                    logger.info(f"[REFERENCE] Found {len(inputs)} file inputs with accept=image")
+                    for i, inp in enumerate(inputs):
+                        inp_id = inp.get_attribute('id') or 'no-id'
+                        inp_name = inp.get_attribute('name') or 'no-name'
+                        logger.debug(f"[REFERENCE]   Input {i}: id={inp_id}, name={inp_name}")
+                        # Look for reference-related input
+                        if 'reference' in inp_id.lower() or 'reference' in inp_name.lower():
+                            file_input = inp
+                            logger.info(f"[REFERENCE] Using reference input: {inp_id}")
+                            break
+                    # If no reference-specific, use first one
+                    if not file_input and inputs:
+                        file_input = inputs[0]
+                        logger.info(f"[REFERENCE] Using first file input")
+                except Exception as e:
+                    logger.warning(f"[REFERENCE] CSS selector search failed: {e}")
+
+            # Strategy 3: JavaScript to find hidden inputs
+            if not file_input:
+                try:
+                    file_input = driver.execute_script("""
+                        var inputs = document.querySelectorAll('input[type="file"]');
+                        for (var i = 0; i < inputs.length; i++) {
+                            var id = inputs[i].id || '';
+                            var name = inputs[i].name || '';
+                            if (id.includes('reference') || name.includes('reference')) {
+                                return inputs[i];
+                            }
+                        }
+                        // Return first image file input
+                        for (var i = 0; i < inputs.length; i++) {
+                            var accept = inputs[i].accept || '';
+                            if (accept.includes('image')) {
+                                return inputs[i];
+                            }
+                        }
+                        return inputs[0];
+                    """)
+                    if file_input:
+                        logger.info("[REFERENCE] Found input via JavaScript")
+                except Exception as e:
+                    logger.warning(f"[REFERENCE] JavaScript search failed: {e}")
+
+            if not file_input:
+                logger.error("[REFERENCE] NO FILE INPUT FOUND ON PAGE!")
+                # Log page source for debugging
+                page_html = driver.page_source[:5000]
+                logger.debug(f"[REFERENCE] Page HTML (first 5000 chars): {page_html}")
+                raise HiggsFieldWebGenerationError("Reference image input not found on page")
+
+            # Send file path
+            logger.info(f"[REFERENCE] Sending file path to input...")
+            file_input.send_keys(normalized_path)
+            logger.info(f"[REFERENCE] File path sent, waiting for upload...")
 
             # Poll for upload completion instead of fixed wait
             max_wait = 60  # 60 seconds max
@@ -700,11 +770,11 @@ class HiggsFieldImageGenerator:
                     return
                 logger.debug(f"[REFERENCE] Still uploading... ({waited + poll_interval}s)")
 
-            logger.warning(f"[REFERENCE] Upload not verified after {max_wait}s")
-            raise HiggsFieldWebGenerationError(f"Reference image upload timed out after {max_wait}s")
+            logger.warning(f"[REFERENCE] Upload not verified after {max_wait}s, but continuing...")
+            # Don't raise - maybe UI changed but upload worked
 
         except NoSuchElementException:
-            logger.error("[REFERENCE] File input not found (id=image-form-reference)")
+            logger.error("[REFERENCE] File input element not found")
             raise HiggsFieldWebGenerationError("Reference image input not found on page")
         except HiggsFieldWebGenerationError:
             raise

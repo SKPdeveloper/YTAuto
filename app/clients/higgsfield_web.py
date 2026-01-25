@@ -532,14 +532,20 @@ class HiggsFieldWebClient:
 
         # Find shared reference (first scene with reference_image)
         reference_path = None
-        for scene in scenes:
+        logger.info(f"[BATCH] ====== CHECKING REFERENCE IN SCENES ======")
+        for i, scene in enumerate(scenes):
             ref_str = scene.get('reference_image')
-            if ref_str:
+            ref_type = scene.get('reference_type', 'NOT_SET')
+            logger.info(f"[BATCH] Scene {scene.get('scene_number', i)}: reference_type={ref_type}, reference_image={ref_str}")
+            if ref_str and not reference_path:
                 reference_path = Path(ref_str)
-                break
+                logger.info(f"[BATCH] Using reference from scene {scene.get('scene_number', i)}: {reference_path}")
 
+        logger.info(f"[BATCH] ====== BATCH IMAGE GENERATION ======")
         logger.info(f"[BATCH] Generating {len(scenes)} images in parallel...")
-        logger.info(f"[BATCH] Reference: {reference_path.name if reference_path else 'None'}")
+        logger.info(f"[BATCH] Reference path: {reference_path}")
+        if reference_path:
+            logger.info(f"[BATCH] Reference exists: {reference_path.exists()}")
 
         # Use batch generation method
         generated_paths = await self._image_generator.generate_batch_images(
