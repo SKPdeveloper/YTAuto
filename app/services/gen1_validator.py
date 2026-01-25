@@ -190,7 +190,7 @@ MIN_SCENES: int = 6
 MIN_YOUTUBE_DESCRIPTION_LENGTH: int = 100
 MAX_YOUTUBE_TITLE_LENGTH: int = 60
 MIN_VIRAL_SCORE: float = 0.7
-MIN_MOTION_ELEMENTS: int = 2
+MIN_MOTION_ELEMENTS: int = 1  # Reduced from 2 - single motion element is acceptable
 MIN_DISTINCTIVE_FEATURES: int = 2
 MIN_TEXTURE_KEYWORDS: int = 2
 MIN_COLOR_KEYWORDS: int = 2
@@ -479,11 +479,11 @@ class Gen1Validator:
 
         # version
         version = self._get_nested(metadata, "version")
-        if version and version != "3.0":
+        if version and version not in ("3.0", "3.1"):
             self._add_warning(
                 "metadata.version",
-                f"Expected '3.0', got '{version}'",
-                suggestion="Update to version 3.0"
+                f"Expected '3.0' or '3.1', got '{version}'",
+                suggestion="Update to version 3.0 or 3.1"
             )
 
         # status
