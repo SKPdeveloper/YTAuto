@@ -760,18 +760,33 @@ class HiggsFieldImageGenerator:
             file_input.send_keys(normalized_path)
             logger.info(f"[REFERENCE] File path sent, waiting for upload...")
 
-            # Poll for upload completion instead of fixed wait
-            max_wait = 60  # 60 seconds max
-            poll_interval = 2
+            # CRITICAL: Wait for upload to complete before continuing
+            # This MUST block until reference is visible on page
+            logger.info(f"[REFERENCE] Waiting for upload to complete (max 90s)...")
+            max_wait = 90  # 90 seconds max
+            poll_interval = 3
+            upload_verified = False
+
             for waited in range(0, max_wait, poll_interval):
                 time.sleep(poll_interval)
                 if self._verify_reference_uploaded():
-                    logger.success(f"[REFERENCE] Upload completed in {waited + poll_interval}s")
-                    return
-                logger.debug(f"[REFERENCE] Still uploading... ({waited + poll_interval}s)")
+                    logger.success(f"[REFERENCE] ✓ Upload VERIFIED in {waited + poll_interval}s")
+                    upload_verified = True
+                    # Extra wait to ensure UI is stable
+                    time.sleep(2)
+                    break
+                logger.info(f"[REFERENCE] Still uploading... ({waited + poll_interval}s/{max_wait}s)")
 
-            logger.warning(f"[REFERENCE] Upload not verified after {max_wait}s, but continuing...")
-            # Don't raise - maybe UI changed but upload worked
+            if not upload_verified:
+                logger.error(f"[REFERENCE] ✗ Upload NOT VERIFIED after {max_wait}s!")
+                # Take screenshot for debugging
+                try:
+                    screenshot_path = Path("reference_upload_failed.png")
+                    driver.save_screenshot(str(screenshot_path))
+                    logger.error(f"[REFERENCE] Screenshot saved to: {screenshot_path}")
+                except Exception:
+                    pass
+                raise HiggsFieldWebGenerationError(f"Reference image upload failed - not verified after {max_wait}s")
 
         except NoSuchElementException:
             logger.error("[REFERENCE] File input element not found")
@@ -783,38 +798,88 @@ class HiggsFieldImageGenerator:
             raise HiggsFieldWebGenerationError(f"Reference upload failed: {e}")
 
     def _verify_reference_uploaded(self) -> bool:
-        """РџРµСЂРµРІС–СЂРёС‚Рё С‡Рё reference Р·Р°РІР°РЅС‚Р°Р¶РµРЅРѕ СѓСЃРїС–С€РЅРѕ"""
+        """Перевірити чи reference завантажено успішно - НАДІЙНА версія"""
         driver = self.browser.driver
 
         try:
             result = driver.execute_script("""
-                var buttons = document.querySelectorAll('button.button--fixed, button[class*="remove"], button[class*="clear"], button[class*="delete"]');
+                // STRATEGY 1: Find reference input and check for preview image nearby
+                var refInput = document.getElementById('image-form-reference');
+                if (refInput) {
+                    var container = refInput;
+                    for (var level = 0; level < 8; level++) {
+                        container = container.parentElement;
+                        if (!container) break;
 
-                for (var i = 0; i < buttons.length; i++) {
-                    var btn = buttons[i];
-                    var svg = btn.querySelector('svg path');
-                    if (svg) {
-                        var d = svg.getAttribute('d') || '';
-                        if (!d.includes('V4.16602') && d.length > 10) {
-                            return true;
+                        // Look for preview image in container
+                        var imgs = container.querySelectorAll('img');
+                        for (var i = 0; i < imgs.length; i++) {
+                            var img = imgs[i];
+                            var src = img.src || '';
+                            // Valid preview: has blob/cloudfront/higgsfield URL and is loaded
+                            if (src.length > 50 &&
+                                !src.includes('placeholder') &&
+                                !src.includes('data:image/svg') &&
+                                img.complete &&
+                                img.naturalWidth > 50) {
+                                console.log('[VERIFY] Found preview image near reference input:', src.substring(0, 80));
+                                return 'preview_near_input';
+                            }
+                        }
+
+                        // Look for X/remove button (indicates uploaded file)
+                        var btns = container.querySelectorAll('button');
+                        for (var j = 0; j < btns.length; j++) {
+                            var btn = btns[j];
+                            if (btn.offsetWidth > 0 && btn.offsetWidth < 40) {
+                                var svg = btn.querySelector('svg');
+                                if (svg) {
+                                    console.log('[VERIFY] Found small button with SVG near input - likely remove button');
+                                    return 'remove_button_found';
+                                }
+                            }
                         }
                     }
-                    var label = btn.getAttribute('aria-label') || '';
-                    if (label.toLowerCase().includes('remove') || label.toLowerCase().includes('clear') || label.toLowerCase().includes('delete')) {
-                        return true;
+                }
+
+                // STRATEGY 2: Check for blob URLs (uploaded images show as blob:)
+                var blobImgs = document.querySelectorAll('img[src^="blob:"]');
+                for (var i = 0; i < blobImgs.length; i++) {
+                    var img = blobImgs[i];
+                    if (img.complete && img.naturalWidth > 50 && img.naturalHeight > 50) {
+                        console.log('[VERIFY] Found blob image:', img.src);
+                        return 'blob_image_found';
                     }
                 }
 
-                var refImages = document.querySelectorAll('img[data-asset-preview], .reference-preview img, [class*="reference"] img');
-                for (var i = 0; i < refImages.length; i++) {
-                    if (refImages[i].src && refImages[i].src.length > 50 && !refImages[i].src.includes('placeholder')) {
-                        return true;
+                // STRATEGY 3: Check for cloudfront preview (uploaded to server)
+                var cfImgs = document.querySelectorAll('img[src*="cloudfront"], img[src*="higgsfield"]');
+                for (var i = 0; i < cfImgs.length; i++) {
+                    var img = cfImgs[i];
+                    // Check if it's in a reference-related container
+                    var parent = img.parentElement;
+                    for (var p = 0; p < 5; p++) {
+                        if (!parent) break;
+                        var cls = parent.className || '';
+                        if (cls.toLowerCase().includes('reference') || cls.toLowerCase().includes('upload')) {
+                            if (img.complete && img.naturalWidth > 50) {
+                                console.log('[VERIFY] Found cloudfront image in reference container');
+                                return 'cloudfront_in_ref';
+                            }
+                        }
+                        parent = parent.parentElement;
                     }
                 }
 
+                console.log('[VERIFY] No reference image found');
                 return false;
             """)
-            return result
+
+            if result:
+                logger.debug(f"[VERIFY] Reference detected: {result}")
+                return True
+            return False
+
         except Exception as e:
             logger.debug(f"Error verifying reference upload: {e}")
             return False
@@ -1379,11 +1444,33 @@ class HiggsFieldImageGenerator:
         await self._clear_reference_image()
 
         # Step 1.6: UPLOAD reference image (один раз для всех сцен)
+        # CRITICAL: Генерация НЕ начнется пока референс не загружен!
+        reference_uploaded = False
+
         if reference_image:
             logger.info(f"[SETUP] Step 1.6: Reference path: {reference_image}")
             if reference_image.exists():
                 logger.info(f"[SETUP] Reference file EXISTS, uploading...")
+                logger.info(f"[SETUP] ⏳ BLOCKING until reference is fully uploaded...")
+
+                # Upload and WAIT for completion (this blocks)
                 await self._upload_reference_image(reference_image, skip_if_exists=False)
+
+                # DOUBLE CHECK - reference must be visible before continuing
+                for check in range(10):
+                    is_visible = await asyncio.to_thread(self._verify_reference_uploaded)
+                    if is_visible:
+                        logger.success(f"[SETUP] ✓ Reference CONFIRMED on page (check {check+1})")
+                        reference_uploaded = True
+                        break
+                    logger.warning(f"[SETUP] Reference not visible yet (check {check+1}/10), waiting 3s...")
+                    await asyncio.sleep(3)
+
+                if not reference_uploaded:
+                    logger.error("[SETUP] ✗ CRITICAL: Reference NOT visible after upload!")
+                    raise HiggsFieldWebGenerationError("Reference image upload failed - not visible on page after 30s")
+
+                logger.success("[SETUP] ✓ Reference uploaded and verified - ready to generate")
             else:
                 logger.error(f"[SETUP] Reference file NOT FOUND: {reference_image}")
                 raise HiggsFieldWebGenerationError(f"Reference image not found: {reference_image}")
@@ -1403,10 +1490,6 @@ class HiggsFieldImageGenerator:
         # Remember initial images to exclude from download
         initial_image_urls = await asyncio.to_thread(self._get_generated_image_urls, 100)
         logger.info(f"[SETUP] Found {len(initial_image_urls)} existing images (will exclude)")
-
-        # Track if reference is currently uploaded
-        reference_uploaded = await asyncio.to_thread(self._check_reference_exists)
-        logger.info(f"[SETUP] Reference currently on page: {reference_uploaded}")
 
         # Step 4: Queue all scenes
         logger.info("=" * 70)
@@ -1428,20 +1511,54 @@ class HiggsFieldImageGenerator:
                 logger.info(f"[Scene {scene_num}] Clearing reference (INDEPENDENT)...")
                 await self._clear_reference_image()
                 reference_uploaded = False
-            elif not reference_uploaded and ref_type in ('REQUIRES_REF', 'LOOP_CLOSE'):
-                # Re-upload reference if needed
-                if reference_image and reference_image.exists():
-                    logger.info(f"[Scene {scene_num}] Re-uploading reference...")
-                    await self._upload_reference_image(reference_image, skip_if_exists=False)
-                    reference_uploaded = True
 
-            # Enter prompt
+            elif ref_type in ('REQUIRES_REF', 'LOOP_CLOSE'):
+                # CRITICAL: Verify reference is on page BEFORE generating
+                ref_visible = await asyncio.to_thread(self._verify_reference_uploaded)
+
+                if not ref_visible:
+                    logger.warning(f"[Scene {scene_num}] Reference NOT visible! Re-uploading...")
+                    if reference_image and reference_image.exists():
+                        await self._upload_reference_image(reference_image, skip_if_exists=False)
+
+                        # Wait and verify
+                        for check in range(5):
+                            ref_visible = await asyncio.to_thread(self._verify_reference_uploaded)
+                            if ref_visible:
+                                logger.success(f"[Scene {scene_num}] ✓ Reference re-uploaded and verified")
+                                reference_uploaded = True
+                                break
+                            await asyncio.sleep(2)
+
+                        if not ref_visible:
+                            logger.error(f"[Scene {scene_num}] ✗ CANNOT generate without reference!")
+                            raise HiggsFieldWebGenerationError(f"Scene {scene_num} requires reference but it's not on page")
+                    else:
+                        logger.error(f"[Scene {scene_num}] ✗ Reference file not available!")
+                        raise HiggsFieldWebGenerationError(f"Scene {scene_num} requires reference but file not found")
+                else:
+                    logger.info(f"[Scene {scene_num}] ✓ Reference confirmed on page")
+
+            # Clear old prompt and enter new one
+            logger.info(f"[Scene {scene_num}] Clearing old prompt...")
+            await asyncio.to_thread(self._sync_clear_prompt)
+
+            logger.info(f"[Scene {scene_num}] Entering prompt...")
             await asyncio.to_thread(self._sync_enter_prompt, prompt)
 
+            # FINAL CHECK before Generate for REQUIRES_REF scenes
+            if ref_type in ('REQUIRES_REF', 'LOOP_CLOSE'):
+                final_check = await asyncio.to_thread(self._verify_reference_uploaded)
+                if not final_check:
+                    logger.error(f"[Scene {scene_num}] ✗ Reference disappeared before Generate!")
+                    raise HiggsFieldWebGenerationError(f"Reference lost before Generate click for scene {scene_num}")
+                logger.info(f"[Scene {scene_num}] ✓ Final reference check passed")
+
             # Click Generate
+            logger.info(f"[Scene {scene_num}] Clicking Generate...")
             await asyncio.to_thread(self._sync_click_generate)
 
-            logger.info(f"[Scene {scene_num}] Queued! Waiting 15s before next...")
+            logger.info(f"[Scene {scene_num}] ✓ Queued! Waiting 15s before next...")
             await asyncio.sleep(15)
 
         logger.info("=" * 70)
