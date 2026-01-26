@@ -721,10 +721,12 @@ class HiggsFieldImageGenerator:
         mime_type = 'image/png' if file_name.lower().endswith('.png') else 'image/jpeg'
 
         try:
-            # Метод 1: Drag & Drop через DataTransfer API (быстрый)
-            logger.info("[REFERENCE] Method 1: Drag & Drop simulation...")
+            # Метод 1: Drag & Drop через DataTransfer API (с retry для "холодной" страницы)
+            max_drop_attempts = 3
+            for drop_attempt in range(1, max_drop_attempts + 1):
+                logger.info(f"[REFERENCE] Drag & Drop attempt {drop_attempt}/{max_drop_attempts}...")
 
-            drop_result = driver.execute_script("""
+                drop_result = driver.execute_script("""
                 var base64Data = arguments[0];
                 var fileName = arguments[1];
                 var mimeType = arguments[2];
@@ -828,16 +830,25 @@ class HiggsFieldImageGenerator:
                 return {success: true, target: dropTarget.tagName};
             """, file_data, file_name, mime_type)
 
-            if drop_result and drop_result.get('success'):
-                logger.info(f"[REFERENCE] Drop event dispatched to: {drop_result.get('target')}")
-                time.sleep(2)
+                if drop_result and drop_result.get('success'):
+                    logger.info(f"[REFERENCE] Drop event dispatched to: {drop_result.get('target')}")
+                    time.sleep(3)  # Даём React обработать drop
 
-                # Проверяем сразу
-                if self._verify_reference_uploaded():
-                    logger.success("[REFERENCE] Drag & drop SUCCESS!")
-                    return
+                    # Проверяем
+                    if self._verify_reference_uploaded():
+                        logger.success(f"[REFERENCE] Drag & drop SUCCESS on attempt {drop_attempt}!")
+                        return
 
-            logger.warning("[REFERENCE] Drag & drop didn't work, trying CDP file upload...")
+                    logger.warning(f"[REFERENCE] Drop dispatched but not verified, attempt {drop_attempt}/{max_drop_attempts}")
+                else:
+                    logger.warning(f"[REFERENCE] Drop failed: {drop_result}, attempt {drop_attempt}/{max_drop_attempts}")
+
+                # Пауза перед следующей попыткой (страница может ещё инициализироваться)
+                if drop_attempt < max_drop_attempts:
+                    logger.info(f"[REFERENCE] Waiting 5s before retry...")
+                    time.sleep(5)
+
+            logger.warning("[REFERENCE] All drag & drop attempts failed, trying CDP file upload...")
 
             # Метод 2: CDP DOM.setFileInputFiles - прямая установка файла через DevTools Protocol
             normalized_path = str(file_path.absolute()).replace('/', '\\')
