@@ -340,20 +340,17 @@ class ControlPipeline:
 
                         if attempt < max_validation_retries:
                             # Regenerate the image
-                            logger.info(f"[Scene {scene.scene_number}] Regenerating image...")
+                            logger.info(f"[Scene {scene.scene_number}] Regenerating image (keeping existing reference)...")
                             scene.retry_count = getattr(scene, 'retry_count', 0) + 1
 
                             try:
-                                # Get reference for REQUIRES_REF/LOOP_CLOSE scenes
-                                ref_image = None
-                                if scene.reference_type in ['REQUIRES_REF', 'LOOP_CLOSE'] and primary_scene:
-                                    ref_image = Path(primary_scene.image_path) if primary_scene.image_path else None
-
+                                # DON'T pass reference_image - it's already on the page!
+                                # Passing it would cause upload of wrong image from gallery
                                 new_image = await self.orchestrator.visual_engine.generate_scene_image(
                                     prompt=scene.image_prompt,
                                     scene_number=scene.scene_number,
                                     project_id=self.project.project_id,
-                                    reference_image=ref_image,
+                                    reference_image=None,  # Already set on page!
                                     reference_type=scene.reference_type
                                 )
                                 scene.image_path = str(new_image)
@@ -411,7 +408,7 @@ class ControlPipeline:
         logger.success("All scenes auto-confirmed (simplified UI mode)")
 
     async def _regenerate_scene(self, scene_num: int):
-        """Regenerate a single scene."""
+        """Regenerate a single scene (reference already set, just change prompt)."""
 
         if not self.project:
             return
@@ -420,32 +417,35 @@ class ControlPipeline:
         if not scene:
             return
 
-        logger.info(f"[Scene {scene_num}] Regenerating...")
+        logger.info(f"[Scene {scene_num}] Regenerating (keeping existing reference)...")
 
         # Notify UI
         await self._notify_scene_update(scene_num, {"status": "regenerating"})
 
-        # Get reference
-        primary_scene = self.project.scenes[0]
-        reference_image = primary_scene.image_path
-
-        # Regenerate
+        # Regenerate using simple method - NO reference upload!
+        # Reference is already on the page from initial batch generation
         try:
-            scenes_data = [{
-                'scene_number': scene.scene_number,
-                'image_prompt': scene.image_prompt,
-                'reference_type': scene.reference_type
-            }]
+            # Use HiggsField image generator directly for simple regeneration
+            image_gen = self.orchestrator.visual_engine._client._image_generator
 
-            paths = await self.orchestrator.visual_engine.generate_all_images_parallel(
-                scenes=scenes_data,
-                project_id=self.project.project_id,
-                reference_image=Path(reference_image) if reference_image else None,
-                reference_url=self.selected_reference_url
+            # Just clear prompt, enter new prompt, generate
+            scene_dir = settings.get_scene_dir(self.project.project_id, scene.scene_number)
+            scene_dir.mkdir(parents=True, exist_ok=True)
+
+            # Generate single image (reference already set on page)
+            result = await image_gen.generate_scene_image(
+                prompt=scene.image_prompt,
+                reference_image=None,  # DON'T upload reference - it's already there!
+                reference_type=scene.reference_type
             )
 
-            if paths:
-                scene.image_path = paths[0]
+            if result and result.path:
+                # Copy to scene directory
+                import shutil
+                final_path = scene_dir / "image.png"
+                shutil.copy(result.path, final_path)
+
+                scene.image_path = str(final_path)
                 scene.status = SceneStatus.AWAITING_APPROVAL
                 scene.validation_approved = True
 
