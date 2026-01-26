@@ -89,6 +89,18 @@ class ControlPipeline:
             logger.info("[PIPELINE] Clearing forms at end...")
             await self.orchestrator.visual_engine._client.clear_all_forms()
 
+            # Stage 8: Video Approval (перед Topaz)
+            approval_result = await self._video_approval()
+
+            if approval_result == "rejected":
+                await self._notify_stage("REJECTED", 0)
+                logger.warning("[PIPELINE] Video rejected by user")
+                return project_id
+
+            # Stage 9: Topaz upscaling (если approved)
+            if approval_result == "approved":
+                await self._run_topaz_upscale()
+
             await self._notify_stage("COMPLETED", 100)
 
             return project_id
@@ -529,3 +541,118 @@ class ControlPipeline:
         data["scene_num"] = scene_num
         if self.on_scene_updated:
             await self.on_scene_updated(scene_num, data)
+
+    # ========================================================================
+    # VIDEO APPROVAL & TOPAZ
+    # ========================================================================
+
+    async def _video_approval(self) -> str:
+        """
+        Show assembled video and wait for user approval.
+
+        Returns:
+            'approved' - continue to Topaz
+            'skip_upscale' - skip Topaz, mark as complete
+            'rejected' - stop pipeline
+        """
+        if not self.project:
+            return "approved"
+
+        await self._notify_stage("AWAITING_VIDEO_APPROVAL", 92)
+
+        project_dir = settings.PROJECTS_DIR / self.project.project_id
+
+        # Find assembled video
+        video_path = None
+        for name in ["final.mp4", "assembled_video.mp4", "final_raw.mp4"]:
+            path = project_dir / name
+            if path.exists():
+                video_path = path
+                break
+
+        if not video_path:
+            logger.warning("[PIPELINE] No assembled video found, auto-approving")
+            return "approved"
+
+        # Get video info
+        video_size_mb = video_path.stat().st_size / (1024 * 1024)
+        video_url = f"/projects/{self.project.project_id}/{video_path.name}"
+
+        logger.info(f"[PIPELINE] Video ready for approval: {video_path.name} ({video_size_mb:.1f} MB)")
+
+        # Request approval from UI
+        result = await self._request_approval("video_approval", {
+            "video_url": video_url,
+            "video_size_mb": round(video_size_mb, 1),
+            "project_title": self.project.title,
+            "message": "Review video before Topaz upscaling"
+        })
+
+        action = result.get("action", "approved")
+        logger.info(f"[PIPELINE] Video approval result: {action}")
+
+        return action
+
+    async def _run_topaz_upscale(self):
+        """Run Topaz Video AI upscaling."""
+        if not self.project:
+            return
+
+        await self._notify_stage("TOPAZ_UPSCALING", 95)
+
+        from app.modules.topaz_queue import TopazQueue
+
+        project_dir = settings.PROJECTS_DIR / self.project.project_id
+        input_video = project_dir / "final.mp4"
+
+        if not input_video.exists():
+            logger.warning("[PIPELINE] No final.mp4 for Topaz, skipping")
+            return
+
+        output_video = project_dir / "final_4k.mp4"
+
+        logger.info(f"[PIPELINE] Starting Topaz upscaling: {input_video}")
+
+        try:
+            queue = TopazQueue()
+
+            # Check if Topaz is available
+            if not queue.topaz_available:
+                logger.warning("[PIPELINE] Topaz not available, skipping upscaling")
+                return
+
+            # Start worker
+            await queue.start()
+
+            # Add task (FPS boost + 4K upscale)
+            task_id = await queue.add_task(
+                input_path=input_video,
+                output_path=output_video,
+                project_id=self.project.project_id,
+                stage="combined"  # FPS + upscale in one pass
+            )
+
+            logger.info(f"[PIPELINE] Topaz task added: {task_id}")
+
+            # Wait for completion (with progress updates)
+            while True:
+                status = queue.get_task_status(task_id)
+
+                if status == "completed":
+                    logger.success(f"[PIPELINE] Topaz upscaling complete: {output_video}")
+                    break
+                elif status == "failed":
+                    logger.error("[PIPELINE] Topaz upscaling failed")
+                    break
+                elif status == "processing":
+                    progress = queue.get_task_progress(task_id)
+                    await self._notify_stage("TOPAZ_UPSCALING", 95 + int(progress * 0.04))
+
+                await asyncio.sleep(10)
+
+            # Stop worker
+            await queue.stop()
+
+        except Exception as e:
+            logger.error(f"[PIPELINE] Topaz error: {e}")
+            # Don't raise - continue without upscaling

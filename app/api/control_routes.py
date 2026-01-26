@@ -48,6 +48,12 @@ class ControlState:
         self.approval_event: Optional[asyncio.Event] = None
         self.selected_image_index: Optional[int] = None
         self.rejected_all: bool = False
+
+        # Video approval (pre-Topaz)
+        self.awaiting_video_approval: bool = False
+        self.video_approval_data: dict = {}
+        self.video_approval_result: Optional[str] = None
+        self.video_approval_project_id: Optional[str] = None
         self.kicked_scenes: list = []  # Queue of scenes to regenerate
         self.scenes_confirmed: bool = False
 
@@ -344,6 +350,31 @@ async def confirm_scenes():
     return {"status": "confirmed"}
 
 
+# ============================================================================
+# VIDEO APPROVAL (pre-Topaz)
+# ============================================================================
+
+class VideoApprovalRequest(BaseModel):
+    action: str  # 'approved', 'skip_upscale', 'rejected'
+
+
+@router.post("/video-approval")
+async def video_approval(request: VideoApprovalRequest):
+    """Approve/reject video before Topaz upscaling."""
+    if not state.awaiting_video_approval:
+        raise HTTPException(status_code=400, detail="No video approval pending")
+
+    state.video_approval_result = request.action
+
+    # Signal the waiting pipeline
+    if state.approval_event:
+        state.approval_event.set()
+
+    logger.info(f"Video approval: {request.action}")
+
+    return {"status": request.action}
+
+
 class TopazRequest(BaseModel):
     project_id: str
 
@@ -555,8 +586,8 @@ async def on_approval_required(approval_type: str, data: dict):
     Called when approval is required.
 
     Args:
-        approval_type: 'primary' for Scene 1, 'scenes' for scenes 2-6
-        data: images or scenes data
+        approval_type: 'primary' for Scene 1, 'scenes' for scenes 2-6, 'video_approval' for pre-upscale
+        data: images or scenes or video data
     """
     # SIMPLIFIED UI: Only primary selection requires user interaction
     # Scenes 2-6 are auto-confirmed
@@ -566,6 +597,29 @@ async def on_approval_required(approval_type: str, data: dict):
         state.scene_images = data.get('scenes', [])
         await broadcast_event("scene_updated", {"scenes": state.scene_images})
         return {"action": "confirm"}
+
+    # VIDEO APPROVAL - wait for user before Topaz
+    if approval_type == 'video_approval':
+        logger.info("Waiting for video approval before Topaz...")
+
+        state.awaiting_video_approval = True
+        state.video_approval_data = data
+        state.approval_event = asyncio.Event()
+        state.video_approval_result = None
+
+        await broadcast_event("video_approval_required", {
+            "type": "video_approval",
+            **data
+        })
+
+        # Wait for user action
+        await state.approval_event.wait()
+
+        state.awaiting_video_approval = False
+
+        result = state.video_approval_result or "approved"
+        logger.info(f"Video approval result: {result}")
+        return {"action": result}
 
     # Primary image selection - wait for user
     state.awaiting_approval = True
