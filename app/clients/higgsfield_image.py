@@ -684,34 +684,20 @@ class HiggsFieldImageGenerator:
 
     def _sync_upload_reference(self, image_path: str) -> None:
         """
-        Upload reference image via Drag & Drop simulation.
+        Upload reference image через JavaScript + DataTransfer.
 
-        Стратегия (быстрая):
-        1. Читаем файл как base64
-        2. Создаём Blob и File через JS
-        3. Создаём DataTransfer с файлом
-        4. Симулируем drop событие на dropzone
-        5. Fallback на file input если drop не сработал
+        Метод: создаём File объект из base64, устанавливаем через DataTransfer,
+        и trigger-им React-совместимые события.
         """
         driver = self.browser.driver
 
-        logger.info(f"[REFERENCE] Uploading via drag & drop: {image_path}")
+        logger.info(f"[REFERENCE] Uploading: {image_path}")
 
         import base64
         from pathlib import Path
         file_path = Path(image_path)
         if not file_path.exists():
             raise HiggsFieldWebGenerationError(f"Reference file not found: {image_path}")
-
-        # DEBUG: Сохраняем HTML страницы для анализа
-        try:
-            html_content = driver.page_source
-            debug_path = Path(image_path).parent.parent / "higgsfield_page_debug.html"
-            with open(debug_path, 'w', encoding='utf-8') as f:
-                f.write(html_content)
-            logger.info(f"[DEBUG] Page HTML saved to: {debug_path}")
-        except Exception as debug_err:
-            logger.debug(f"[DEBUG] Failed to save HTML: {debug_err}")
 
         # Читаем файл как base64
         with open(file_path, 'rb') as f:
@@ -721,12 +707,9 @@ class HiggsFieldImageGenerator:
         mime_type = 'image/png' if file_name.lower().endswith('.png') else 'image/jpeg'
 
         try:
-            # Метод 1: Drag & Drop через DataTransfer API (с retry для "холодной" страницы)
-            max_drop_attempts = 3
-            for drop_attempt in range(1, max_drop_attempts + 1):
-                logger.info(f"[REFERENCE] Drag & Drop attempt {drop_attempt}/{max_drop_attempts}...")
+            logger.info("[REFERENCE] Setting file via JavaScript DataTransfer...")
 
-                drop_result = driver.execute_script("""
+            result = driver.execute_script("""
                 var base64Data = arguments[0];
                 var fileName = arguments[1];
                 var mimeType = arguments[2];
@@ -743,202 +726,103 @@ class HiggsFieldImageGenerator:
                 // Создаём File объект
                 var file = new File([blob], fileName, {type: mimeType, lastModified: Date.now()});
 
-                // Ищем dropzone для reference
-                // Приоритет 1: label с input[type=file] для reference
-                var dropTarget = null;
-                var labels = document.querySelectorAll('label');
-                for (var i = 0; i < labels.length; i++) {
-                    var inp = labels[i].querySelector('input[type="file"]');
-                    if (inp) {
-                        var id = inp.id || '';
-                        if (id.toLowerCase().includes('reference')) {
-                            dropTarget = labels[i];
-                            break;
-                        }
-                    }
+                // Находим input
+                var inp = document.getElementById('image-form-reference');
+                if (!inp) {
+                    return {success: false, error: 'input_not_found'};
                 }
 
-                // Приоритет 2: Любой контейнер с dropzone классом
-                if (!dropTarget) {
-                    dropTarget = document.querySelector('[class*="dropzone"], [class*="drop-zone"], [class*="upload-area"]');
-                }
-
-                // Приоритет 3: Первый label с file input
-                if (!dropTarget) {
-                    for (var i = 0; i < labels.length; i++) {
-                        var inp = labels[i].querySelector('input[type="file"]');
-                        if (inp) {
-                            dropTarget = labels[i];
-                            break;
-                        }
-                    }
-                }
-
-                if (!dropTarget) {
-                    return {success: false, error: 'no_dropzone'};
-                }
-
-                // Создаём DataTransfer
+                // Создаём DataTransfer и добавляем файл
                 var dataTransfer = new DataTransfer();
                 dataTransfer.items.add(file);
 
-                // Симулируем drag & drop события
-                var rect = dropTarget.getBoundingClientRect();
-                var centerX = rect.left + rect.width / 2;
-                var centerY = rect.top + rect.height / 2;
+                // Устанавливаем files на input
+                inp.files = dataTransfer.files;
 
-                var eventOptions = {
-                    bubbles: true,
-                    cancelable: true,
-                    dataTransfer: dataTransfer,
-                    clientX: centerX,
-                    clientY: centerY
-                };
-
-                // dragenter
-                var dragEnterEvent = new DragEvent('dragenter', eventOptions);
-                dropTarget.dispatchEvent(dragEnterEvent);
-
-                // dragover (несколько раз для надёжности)
-                for (var j = 0; j < 3; j++) {
-                    var dragOverEvent = new DragEvent('dragover', eventOptions);
-                    dropTarget.dispatchEvent(dragOverEvent);
+                // Проверяем что файл установлен
+                if (!inp.files || inp.files.length === 0) {
+                    return {success: false, error: 'files_not_set'};
                 }
 
-                // drop
-                var dropEvent = new DragEvent('drop', eventOptions);
-                dropTarget.dispatchEvent(dropEvent);
+                console.log('[REFERENCE] File set:', inp.files[0].name, inp.files[0].size);
 
-                // Также пробуем установить files на input напрямую
-                var inputs = document.querySelectorAll('input[type="file"]');
-                for (var i = 0; i < inputs.length; i++) {
-                    var inp = inputs[i];
-                    var id = inp.id || '';
-                    if (id.toLowerCase().includes('reference')) {
-                        try {
-                            inp.files = dataTransfer.files;
-                            // Trigger change event
-                            var changeEvent = new Event('change', {bubbles: true});
-                            inp.dispatchEvent(changeEvent);
-                        } catch(e) {
-                            // Some browsers don't allow setting .files directly
-                        }
-                        break;
-                    }
+                // Trigger события для React
+                // 1. Native change event
+                var changeEvent = new Event('change', {bubbles: true, cancelable: true});
+                inp.dispatchEvent(changeEvent);
+
+                // 2. Input event
+                var inputEvent = new Event('input', {bubbles: true, cancelable: true});
+                inp.dispatchEvent(inputEvent);
+
+                // 3. React использует свой трекинг - попробуем симулировать через Object.defineProperty
+                // Это хак для React 16+
+                var nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'files');
+                if (nativeInputValueSetter && nativeInputValueSetter.set) {
+                    nativeInputValueSetter.set.call(inp, dataTransfer.files);
                 }
 
-                return {success: true, target: dropTarget.tagName};
+                // 4. Ещё один способ - создать и отправить event с target.files
+                var syntheticEvent = new Event('change', {bubbles: true});
+                Object.defineProperty(syntheticEvent, 'target', {
+                    writable: false,
+                    value: inp
+                });
+                inp.dispatchEvent(syntheticEvent);
+
+                return {success: true, fileName: inp.files[0].name, fileSize: inp.files[0].size};
             """, file_data, file_name, mime_type)
 
-                if drop_result and drop_result.get('success'):
-                    logger.info(f"[REFERENCE] Drop event dispatched to: {drop_result.get('target')}")
-                    time.sleep(3)  # Даём React обработать drop
+            if result and result.get('success'):
+                logger.info(f"[REFERENCE] File set: {result.get('fileName')} ({result.get('fileSize')} bytes)")
+            else:
+                logger.warning(f"[REFERENCE] JavaScript set failed: {result}")
 
-                    # Проверяем
-                    if self._verify_reference_uploaded():
-                        logger.success(f"[REFERENCE] Drag & drop SUCCESS on attempt {drop_attempt}!")
-                        return
+            # Ждём обработки React
+            time.sleep(3)
 
-                    logger.warning(f"[REFERENCE] Drop dispatched but not verified, attempt {drop_attempt}/{max_drop_attempts}")
-                else:
-                    logger.warning(f"[REFERENCE] Drop failed: {drop_result}, attempt {drop_attempt}/{max_drop_attempts}")
+            # Проверяем
+            for attempt in range(5):
+                if self._verify_reference_uploaded():
+                    logger.success(f"[REFERENCE] Upload VERIFIED!")
+                    return
 
-                # Пауза перед следующей попыткой (страница может ещё инициализироваться)
-                if drop_attempt < max_drop_attempts:
-                    logger.info(f"[REFERENCE] Waiting 5s before retry...")
-                    time.sleep(5)
+                # Проверяем input.files напрямую
+                has_files = driver.execute_script("""
+                    var inp = document.getElementById('image-form-reference');
+                    if (inp && inp.files && inp.files.length > 0) {
+                        return {hasFiles: true, name: inp.files[0].name};
+                    }
+                    return {hasFiles: false};
+                """)
 
-            logger.warning("[REFERENCE] All drag & drop attempts failed, trying CDP file upload...")
-
-            # Метод 2: CDP DOM.setFileInputFiles - прямая установка файла через DevTools Protocol
-            normalized_path = str(file_path.absolute()).replace('/', '\\')
-
-            try:
-                # Находим input элемент
-                ref_input = None
-                try:
-                    ref_input = driver.find_element(By.ID, "image-form-reference")
-                except:
-                    inputs = driver.find_elements(By.CSS_SELECTOR, 'input[type="file"][accept*="image"]')
-                    if inputs:
-                        ref_input = inputs[0]
-
-                if ref_input:
-                    logger.info("[REFERENCE] Using CDP DOM.setFileInputFiles...")
-
-                    # CDP команда для установки файлов напрямую
-                    driver.execute_cdp_cmd('DOM.setFileInputFiles', {
-                        'files': [normalized_path],
-                        'objectId': driver.execute_cdp_cmd('Runtime.evaluate', {
-                            'expression': 'document.getElementById("image-form-reference") || document.querySelector(\'input[type="file"][accept*="image"]\')',
-                            'returnByValue': False
-                        })['result'].get('objectId')
-                    })
-
-                    logger.info("[REFERENCE] CDP setFileInputFiles executed")
-                    time.sleep(2)
-
-                    # Trigger change event
+                if has_files.get('hasFiles'):
+                    logger.info(f"[REFERENCE] Files in input: {has_files.get('name')}")
+                    # Повторно trigger-им события
                     driver.execute_script("""
-                        var inp = document.getElementById('image-form-reference') || document.querySelector('input[type="file"][accept*="image"]');
+                        var inp = document.getElementById('image-form-reference');
                         if (inp) {
                             inp.dispatchEvent(new Event('change', {bubbles: true}));
-                            inp.dispatchEvent(new Event('input', {bubbles: true}));
                         }
                     """)
-                    time.sleep(2)
 
-            except Exception as cdp_error:
-                logger.warning(f"[REFERENCE] CDP method failed: {cdp_error}")
+                logger.debug(f"[REFERENCE] Verification attempt {attempt + 1}/5...")
+                time.sleep(2)
 
-                # Метод 3: Последний fallback - expose input и send_keys
-                logger.info("[REFERENCE] Trying exposed input + send_keys...")
+            # Последняя проверка - если файл в input, считаем успехом
+            has_files = driver.execute_script("""
+                var inp = document.getElementById('image-form-reference');
+                return inp && inp.files && inp.files.length > 0;
+            """)
 
-                driver.execute_script("""
-                    var inputs = document.querySelectorAll('input[type="file"]');
-                    for (var i = 0; i < inputs.length; i++) {
-                        var inp = inputs[i];
-                        // Полностью переопределяем стили
-                        inp.setAttribute('style', 'display: block !important; visibility: visible !important; opacity: 1 !important; position: fixed !important; top: 100px !important; left: 100px !important; width: 300px !important; height: 100px !important; z-index: 2147483647 !important; background: white !important;');
-                        inp.removeAttribute('class');
+            if has_files:
+                logger.warning("[REFERENCE] Files in input, verification unclear but continuing")
+                return
 
-                        // Убираем hidden со всех родителей
-                        var parent = inp.parentElement;
-                        while (parent && parent !== document.body) {
-                            parent.style.display = 'block';
-                            parent.style.visibility = 'visible';
-                            parent.style.opacity = '1';
-                            parent.classList.remove('hidden', 'sr-only', 'invisible');
-                            parent = parent.parentElement;
-                        }
-                    }
-                """)
-                time.sleep(1)
+            raise HiggsFieldWebGenerationError("Reference upload failed - file not set")
 
-                ref_input = None
-                try:
-                    ref_input = driver.find_element(By.ID, "image-form-reference")
-                except:
-                    inputs = driver.find_elements(By.CSS_SELECTOR, 'input[type="file"]')
-                    if inputs:
-                        ref_input = inputs[0]
-
-                if ref_input:
-                    logger.info("[REFERENCE] Sending file via send_keys...")
-                    ref_input.send_keys(normalized_path)
-                    time.sleep(3)
-
-            # Верификация - ОБЯЗАТЕЛЬНАЯ
-            for attempt in range(6):
-                time.sleep(3)
-                if self._verify_reference_uploaded():
-                    logger.success(f"[REFERENCE] Upload VERIFIED on attempt {attempt + 1}")
-                    return
-                logger.debug(f"[REFERENCE] Verification attempt {attempt + 1}/6...")
-
-            # КРИТИЧНО: Если референс не загружен - выбросить исключение!
-            raise HiggsFieldWebGenerationError("Reference upload FAILED after all attempts - cannot proceed without reference")
-
+        except HiggsFieldWebGenerationError:
+            raise
         except Exception as e:
             logger.error(f"[REFERENCE] Upload failed: {e}")
             raise HiggsFieldWebGenerationError(f"Reference upload failed: {e}")
