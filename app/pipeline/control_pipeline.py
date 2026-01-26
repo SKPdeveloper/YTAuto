@@ -37,6 +37,9 @@ class ControlPipeline:
         self.project: Optional[ProjectData] = None
         self.primary_candidates: List[Path] = []
 
+        # URL выбранной референсной картинки (для поиска в галерее HiggsField)
+        self.selected_reference_url: Optional[str] = None
+
         # Callbacks - set by control_routes.py
         self.on_stage_change: Optional[Callable] = None
         self.on_approval_required: Optional[Callable] = None
@@ -164,8 +167,9 @@ class ControlPipeline:
                 break
 
     async def _select_primary_candidate(self, index: int):
-        """Copy selected candidate as main image."""
+        """Copy selected candidate as main image and save reference URL."""
         import shutil
+        import json
 
         if not self.project or not self.primary_candidates:
             return
@@ -176,6 +180,18 @@ class ControlPipeline:
         # Copy selected candidate
         selected_path = scene_dir / "image.png"
         shutil.copy(self.primary_candidates[index], selected_path)
+
+        # Read URL from metadata file (index is 0-based, candidate files are 1-based)
+        metadata_path = scene_dir / f"candidate_{index + 1}_metadata.json"
+        if metadata_path.exists():
+            try:
+                with open(metadata_path, 'r', encoding='utf-8') as f:
+                    metadata = json.load(f)
+                    self.selected_reference_url = metadata.get('image_url')
+                    if self.selected_reference_url:
+                        logger.info(f"[PRIMARY] Saved reference URL: {self.selected_reference_url[:60]}...")
+            except Exception as e:
+                logger.warning(f"Failed to read metadata for reference URL: {e}")
 
         primary_scene.image_path = str(selected_path)
         primary_scene.status = SceneStatus.IMAGE_READY
@@ -211,12 +227,15 @@ class ControlPipeline:
             } for s in scenes_to_generate]
 
             logger.info(f"Generating {len(scenes_data)} scene images...")
+            if self.selected_reference_url:
+                logger.info(f"Using reference URL: {self.selected_reference_url[:60]}...")
 
             # Generate all images in parallel
             image_paths = await self.orchestrator.visual_engine.generate_all_images_parallel(
                 scenes=scenes_data,
                 project_id=self.project.project_id,
-                reference_image=Path(reference_image) if reference_image else None
+                reference_image=Path(reference_image) if reference_image else None,
+                reference_url=self.selected_reference_url
             )
 
             # Assign paths
@@ -376,7 +395,8 @@ class ControlPipeline:
             paths = await self.orchestrator.visual_engine.generate_all_images_parallel(
                 scenes=scenes_data,
                 project_id=self.project.project_id,
-                reference_image=Path(reference_image) if reference_image else None
+                reference_image=Path(reference_image) if reference_image else None,
+                reference_url=self.selected_reference_url
             )
 
             if paths:

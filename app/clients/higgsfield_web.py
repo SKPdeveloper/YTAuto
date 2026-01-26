@@ -502,6 +502,7 @@ class HiggsFieldWebClient:
         self,
         scenes: list,
         download_dir: Optional[Path] = None,
+        reference_url: Optional[str] = None,
     ) -> List[GeneratedImage]:
         """
         Генерує зображення для всіх сцен ПАРАЛЕЛЬНО (batch).
@@ -520,6 +521,7 @@ class HiggsFieldWebClient:
                 - image_prompt: str
                 - reference_image: Optional[str] (шлях до референсу)
             download_dir: Директорія для завантаження (не використовується)
+            reference_url: URL референсної картинки на HiggsField (для поиска по asset_id)
 
         Returns:
             List[GeneratedImage]: Об'єкти з path та url для кожного зображення
@@ -550,7 +552,8 @@ class HiggsFieldWebClient:
         # Use batch generation method
         generated_paths = await self._image_generator.generate_batch_images(
             scenes=scenes,
-            reference_image=reference_path
+            reference_image=reference_path,
+            reference_url=reference_url
         )
 
         logger.success(f"[BATCH] Generated {len(generated_paths)}/{len(scenes)} images")

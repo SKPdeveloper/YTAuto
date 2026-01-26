@@ -781,6 +781,7 @@ class HiggsFieldWebAdapter:
         scenes: list,
         project_id: str = "test_project",
         reference_image: Optional[Path] = None,
+        reference_url: Optional[str] = None,
     ) -> List[Path]:
         """
         Генерує зображення для всіх сцен паралельно.
@@ -797,6 +798,7 @@ class HiggsFieldWebAdapter:
 
         Args:
             scenes: Список сцен з полями:
+            reference_url: URL референсної картинки на HiggsField (для поиска по asset_id)
                 - scene_number: int
                 - image_prompt: str
                 - reference_image: Optional[str] (шлях до референсу)
@@ -835,7 +837,8 @@ class HiggsFieldWebAdapter:
             # Returns List[GeneratedImage] with path and url
             generated_images = await self._client.generate_all_images_parallel(
                 scenes=prepared_scenes,
-                download_dir=self._download_dir
+                download_dir=self._download_dir,
+                reference_url=reference_url
             )
 
             # FIX: Swap scenes 2 and 6 (indices 0 and 4 in remaining scenes array)

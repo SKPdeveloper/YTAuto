@@ -87,8 +87,16 @@ class HiggsFieldImageGenerator:
         self.settings = settings or ImageSettings()
         self._http_client = http_client
 
+        # URL референсной картинки (для поиска по asset_id в галерее)
+        self._reference_url: Optional[str] = None
+
         # Ensure download dir exists
         self.download_dir.mkdir(parents=True, exist_ok=True)
+
+    def set_reference_url(self, url: str) -> None:
+        """Установить URL референсной картинки для поиска в галерее"""
+        self._reference_url = url
+        logger.info(f"[REFERENCE] Set reference URL: {url[:80]}...")
 
     # ========================================================================
     # NAVIGATION
@@ -654,9 +662,23 @@ class HiggsFieldImageGenerator:
     # REFERENCE IMAGE HANDLING
     # ========================================================================
 
-    async def _upload_reference_image(self, image_path: Path, skip_if_exists: bool = False) -> None:
-        """Р—Р°РІР°РЅС‚Р°Р¶РёС‚Рё reference image РґР»СЏ style consistency"""
-        logger.debug(f"Uploading reference image: {image_path}")
+    async def _upload_reference_image(
+        self,
+        image_path: Path,
+        skip_if_exists: bool = False,
+        reference_url: Optional[str] = None
+    ) -> None:
+        """
+        Установить reference image для style consistency.
+
+        Args:
+            image_path: Локальный путь к картинке (для fallback)
+            skip_if_exists: Пропустить если референс уже установлен
+            reference_url: URL картинки на HiggsField (для поиска по asset_id)
+        """
+        logger.debug(f"Setting reference image: {image_path}")
+        if reference_url:
+            logger.debug(f"Reference URL: {reference_url[:80]}...")
 
         if not image_path.exists():
             raise HiggsFieldWebGenerationError(f"Reference image not found: {image_path}")
@@ -667,7 +689,12 @@ class HiggsFieldImageGenerator:
                 logger.info("Reference already uploaded, skipping...")
                 return
 
-        await asyncio.to_thread(self._sync_upload_reference, str(image_path.absolute()))
+        # Используем переданный URL или сохранённый в классе
+        url_to_use = reference_url or self._reference_url
+        if url_to_use:
+            logger.info(f"[REFERENCE] Using URL for asset lookup: {url_to_use[:60]}...")
+
+        await asyncio.to_thread(self._sync_upload_reference, str(image_path.absolute()), url_to_use)
 
     def _check_reference_exists(self) -> bool:
         """РџРµСЂРµРІС–СЂРёС‚Рё С‡Рё reference image РІР¶Рµ Р·Р°РІР°РЅС‚Р°Р¶РµРЅРѕ"""
@@ -682,150 +709,412 @@ class HiggsFieldImageGenerator:
             logger.debug(f"Error checking reference: {e}")
             return False
 
-    def _sync_upload_reference(self, image_path: str) -> None:
+    def _sync_upload_reference(self, image_path: str, reference_url: Optional[str] = None) -> None:
         """
-        Upload reference image через JavaScript + DataTransfer.
+        Установить референс через клик на кнопку Reference на картинке в галерее.
 
-        Метод: создаём File объект из base64, устанавливаем через DataTransfer,
-        и trigger-им React-совместимые события.
+        Метод:
+        1. Находим картинку в галерее по asset_id (из URL) или первую
+        2. Наводим мышку чтобы появились кнопки
+        3. Кликаем на кнопку Reference
         """
         driver = self.browser.driver
 
-        logger.info(f"[REFERENCE] Uploading: {image_path}")
+        # Извлекаем asset_id из URL если есть
+        target_asset_id = None
+        if reference_url:
+            # URL формат: .../hf_20260126_063641_7878e367-0266-4539-8be3-412f72e6b854_min.webp
+            # или содержит asset_id в пути
+            import re
+            # Ищем UUID паттерн в URL
+            uuid_pattern = r'([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})'
+            match = re.search(uuid_pattern, reference_url)
+            if match:
+                target_asset_id = match.group(1)
+                logger.info(f"[REFERENCE] Extracted asset_id from URL: {target_asset_id}")
 
-        import base64
-        from pathlib import Path
-        file_path = Path(image_path)
-        if not file_path.exists():
-            raise HiggsFieldWebGenerationError(f"Reference file not found: {image_path}")
-
-        # Читаем файл как base64
-        with open(file_path, 'rb') as f:
-            file_data = base64.b64encode(f.read()).decode('utf-8')
-
-        file_name = file_path.name
-        mime_type = 'image/png' if file_name.lower().endswith('.png') else 'image/jpeg'
+        logger.info(f"[REFERENCE] Setting reference from gallery image...")
+        if target_asset_id:
+            logger.info(f"[REFERENCE] Target asset_id: {target_asset_id}")
 
         try:
-            logger.info("[REFERENCE] Setting file via JavaScript DataTransfer...")
+            # Step 1: Найти картинку в галерее
+            logger.info("[REFERENCE] Step 1: Finding target image in gallery...")
 
+            # Ищем картинку по asset_id или берём первую
             result = driver.execute_script("""
-                var base64Data = arguments[0];
-                var fileName = arguments[1];
-                var mimeType = arguments[2];
+                var targetId = arguments[0];
 
-                // Конвертируем base64 в Blob
-                var byteCharacters = atob(base64Data);
-                var byteNumbers = new Array(byteCharacters.length);
-                for (var i = 0; i < byteCharacters.length; i++) {
-                    byteNumbers[i] = byteCharacters.charCodeAt(i);
-                }
-                var byteArray = new Uint8Array(byteNumbers);
-                var blob = new Blob([byteArray], {type: mimeType});
+                // Находим все картинки в галерее
+                var assetDivs = document.querySelectorAll('[data-asset-id]');
+                console.log('Found ' + assetDivs.length + ' asset divs');
 
-                // Создаём File объект
-                var file = new File([blob], fileName, {type: mimeType, lastModified: Date.now()});
-
-                // Находим input
-                var inp = document.getElementById('image-form-reference');
-                if (!inp) {
-                    return {success: false, error: 'input_not_found'};
+                if (assetDivs.length === 0) {
+                    return {success: false, error: 'no_assets'};
                 }
 
-                // Создаём DataTransfer и добавляем файл
-                var dataTransfer = new DataTransfer();
-                dataTransfer.items.add(file);
+                var targetAsset = null;
 
-                // Устанавливаем files на input
-                inp.files = dataTransfer.files;
-
-                // Проверяем что файл установлен
-                if (!inp.files || inp.files.length === 0) {
-                    return {success: false, error: 'files_not_set'};
-                }
-
-                console.log('[REFERENCE] File set:', inp.files[0].name, inp.files[0].size);
-
-                // Trigger события для React
-                // 1. Native change event
-                var changeEvent = new Event('change', {bubbles: true, cancelable: true});
-                inp.dispatchEvent(changeEvent);
-
-                // 2. Input event
-                var inputEvent = new Event('input', {bubbles: true, cancelable: true});
-                inp.dispatchEvent(inputEvent);
-
-                // 3. React использует свой трекинг - попробуем симулировать через Object.defineProperty
-                // Это хак для React 16+
-                var nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'files');
-                if (nativeInputValueSetter && nativeInputValueSetter.set) {
-                    nativeInputValueSetter.set.call(inp, dataTransfer.files);
-                }
-
-                // 4. Ещё один способ - создать и отправить event с target.files
-                var syntheticEvent = new Event('change', {bubbles: true});
-                Object.defineProperty(syntheticEvent, 'target', {
-                    writable: false,
-                    value: inp
-                });
-                inp.dispatchEvent(syntheticEvent);
-
-                return {success: true, fileName: inp.files[0].name, fileSize: inp.files[0].size};
-            """, file_data, file_name, mime_type)
-
-            if result and result.get('success'):
-                logger.info(f"[REFERENCE] File set: {result.get('fileName')} ({result.get('fileSize')} bytes)")
-            else:
-                logger.warning(f"[REFERENCE] JavaScript set failed: {result}")
-
-            # Ждём обработки React
-            time.sleep(3)
-
-            # Проверяем
-            for attempt in range(5):
-                if self._verify_reference_uploaded():
-                    logger.success(f"[REFERENCE] Upload VERIFIED!")
-                    return
-
-                # Проверяем input.files напрямую
-                has_files = driver.execute_script("""
-                    var inp = document.getElementById('image-form-reference');
-                    if (inp && inp.files && inp.files.length > 0) {
-                        return {hasFiles: true, name: inp.files[0].name};
+                // Если есть target asset_id - ищем по нему
+                if (targetId) {
+                    for (var i = 0; i < assetDivs.length; i++) {
+                        var div = assetDivs[i];
+                        var divId = div.getAttribute('data-asset-id');
+                        if (divId === targetId) {
+                            targetAsset = div;
+                            console.log('Found target asset by ID at index ' + i);
+                            break;
+                        }
                     }
-                    return {hasFiles: false};
+                }
+
+                // Если не нашли по ID - берём первую
+                if (!targetAsset) {
+                    targetAsset = assetDivs[0];
+                    console.log('Using first asset (target not found or not specified)');
+                }
+
+                var assetId = targetAsset.getAttribute('data-asset-id');
+
+                // Скроллим к ней
+                targetAsset.scrollIntoView({block: 'center'});
+
+                return {success: true, assetId: assetId, count: assetDivs.length};
+            """, target_asset_id)
+
+            if not result or not result.get('success'):
+                raise HiggsFieldWebGenerationError(f"No images found in gallery: {result}")
+
+            logger.info(f"[REFERENCE] Found {result.get('count')} images, using: {result.get('assetId')}")
+
+            time.sleep(0.5)
+
+            # Step 2: Наводим мышку на картинку чтобы появилась кнопка Reference
+            logger.info("[REFERENCE] Step 2: Hovering over image to show Reference button...")
+
+            from selenium.webdriver.common.action_chains import ActionChains
+
+            # Находим картинку по asset_id
+            found_asset_id = result.get('assetId')
+            target_asset = driver.find_element(By.CSS_SELECTOR, f'[data-asset-id="{found_asset_id}"]')
+
+            # Реальный hover через ActionChains
+            actions = ActionChains(driver)
+            actions.move_to_element(target_asset).perform()
+
+            # Ждём появления overlay с кнопкой
+            time.sleep(1)
+
+            # Теперь ищем кнопку Reference на этой картинке
+            # Кнопка "Reference" - белый текст на overlay
+            ref_button = driver.execute_script("""
+                var targetId = arguments[0];
+                var targetAsset = document.querySelector('[data-asset-id="' + targetId + '"]');
+                if (!targetAsset) return null;
+
+                // Ищем кнопку/элемент с текстом "Reference" внутри карточки
+                var allElements = targetAsset.querySelectorAll('*');
+                for (var i = 0; i < allElements.length; i++) {
+                    var el = allElements[i];
+                    var text = (el.textContent || '').trim();
+
+                    // Точное совпадение "Reference"
+                    if (text === 'Reference') {
+                        console.log('Found Reference button (exact match):', el.tagName);
+                        return el;
+                    }
+                }
+
+                // Также проверяем весь документ - кнопка может быть в overlay поверх карточки
+                var allDocs = document.querySelectorAll('*');
+                for (var i = 0; i < allDocs.length; i++) {
+                    var el = allDocs[i];
+                    var text = (el.textContent || '').trim();
+                    var style = window.getComputedStyle(el);
+
+                    // Точное совпадение "Reference" и элемент видимый
+                    if (text === 'Reference' && style.display !== 'none' && style.visibility !== 'hidden') {
+                        var rect = el.getBoundingClientRect();
+                        if (rect.width > 0 && rect.height > 0) {
+                            console.log('Found Reference button in document:', el.tagName);
+                            return el;
+                        }
+                    }
+                }
+
+                return null;
+            """, found_asset_id)
+
+            if ref_button:
+                logger.info("[REFERENCE] Found Reference button, clicking...")
+                driver.execute_script("arguments[0].click();", ref_button)
+                time.sleep(1)
+            else:
+                # Если кнопки Reference нет при hover, кликаем на картинку
+                # и ищем в открывшемся меню/модале
+                logger.info("[REFERENCE] No Reference button on hover, clicking image...")
+
+                driver.execute_script("""
+                    var targetId = arguments[0];
+                    var targetAsset = document.querySelector('[data-asset-id="' + targetId + '"]');
+                    if (targetAsset) {
+                        var img = targetAsset.querySelector('img');
+                        if (img) {
+                            img.click();
+                        } else {
+                            targetAsset.click();
+                        }
+                    }
+                """, found_asset_id)
+                time.sleep(1)
+
+                # Ищем кнопку Reference в открывшемся модале/меню
+                ref_button = driver.execute_script("""
+                    // Ищем во всём документе кнопку Reference
+                    var allButtons = document.querySelectorAll('button, [role="button"], [role="menuitem"]');
+                    for (var i = 0; i < allButtons.length; i++) {
+                        var btn = allButtons[i];
+                        var text = (btn.textContent || '').toLowerCase();
+                        var ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
+
+                        if (text.includes('reference') || text.includes('use as ref') ||
+                            ariaLabel.includes('reference') || ariaLabel.includes('use as ref')) {
+                            console.log('Found Reference button in modal:', btn);
+                            return btn;
+                        }
+                    }
+
+                    // Также ищем в dropdown/popover
+                    var popovers = document.querySelectorAll('[role="menu"], [role="listbox"], [class*="popover"], [class*="dropdown"]');
+                    for (var i = 0; i < popovers.length; i++) {
+                        var items = popovers[i].querySelectorAll('button, div, span, li');
+                        for (var j = 0; j < items.length; j++) {
+                            var item = items[j];
+                            var text = (item.textContent || '').toLowerCase();
+                            if (text.includes('reference') || text.includes('use as ref')) {
+                                console.log('Found Reference in dropdown:', item);
+                                return item;
+                            }
+                        }
+                    }
+
+                    return null;
                 """)
 
-                if has_files.get('hasFiles'):
-                    logger.info(f"[REFERENCE] Files in input: {has_files.get('name')}")
-                    # Повторно trigger-им события
-                    driver.execute_script("""
-                        var inp = document.getElementById('image-form-reference');
-                        if (inp) {
-                            inp.dispatchEvent(new Event('change', {bubbles: true}));
-                        }
-                    """)
+                if ref_button:
+                    logger.info("[REFERENCE] Found Reference button in modal/menu, clicking...")
+                    driver.execute_script("arguments[0].click();", ref_button)
+                    time.sleep(1)
+                else:
+                    logger.warning("[REFERENCE] Reference button not found, trying fallback...")
+                    # Закрываем модал если открыт (нажимаем Escape)
+                    from selenium.webdriver.common.action_chains import ActionChains
+                    actions = ActionChains(driver)
+                    actions.send_keys(Keys.ESCAPE).perform()
+                    time.sleep(0.5)
+
+                    # Пробуем fallback метод
+                    raise Exception("Reference button not found on image")
+
+            # Step 3: Проверяем что референс установлен
+            logger.info("[REFERENCE] Step 3: Verifying reference is set...")
+            time.sleep(2)
+
+            for attempt in range(5):
+                if self._verify_reference_uploaded():
+                    logger.success(f"[REFERENCE] Reference set from gallery VERIFIED!")
+                    return
 
                 logger.debug(f"[REFERENCE] Verification attempt {attempt + 1}/5...")
                 time.sleep(2)
 
-            # Последняя проверка - если файл в input, считаем успехом
-            has_files = driver.execute_script("""
-                var inp = document.getElementById('image-form-reference');
-                return inp && inp.files && inp.files.length > 0;
-            """)
+            logger.warning("[REFERENCE] Could not verify reference, but continuing...")
+            return
 
-            if has_files:
-                logger.warning("[REFERENCE] Files in input, verification unclear but continuing")
+        except Exception as e:
+            logger.warning(f"[REFERENCE] Gallery method failed: {e}")
+            logger.info("[REFERENCE] Trying fallback upload method...")
+            self._sync_upload_reference_fallback(image_path)
+
+    def _sync_upload_reference_fallback(self, image_path: str) -> None:
+        """
+        Fallback метод загрузки референса через clipboard paste.
+
+        Копируем изображение в буфер обмена и вставляем через Ctrl+V в textarea.
+        """
+        driver = self.browser.driver
+
+        logger.info(f"[REFERENCE FALLBACK] Uploading via clipboard paste: {image_path}")
+
+        from pathlib import Path
+        import io
+        file_path = Path(image_path)
+
+        try:
+            # Step 1: Копируем изображение в буфер обмена Windows
+            logger.info("[REFERENCE FALLBACK] Step 1: Copying image to clipboard...")
+
+            from PIL import Image
+            import win32clipboard
+
+            # Открываем изображение
+            img = Image.open(file_path)
+
+            # Конвертируем в BMP для буфера обмена Windows
+            output = io.BytesIO()
+            # Конвертируем в RGB если нужно (для PNG с альфа-каналом)
+            if img.mode == 'RGBA':
+                img = img.convert('RGB')
+            img.save(output, 'BMP')
+            data = output.getvalue()[14:]  # Убираем BMP header
+            output.close()
+
+            # Копируем в буфер обмена
+            win32clipboard.OpenClipboard()
+            win32clipboard.EmptyClipboard()
+            win32clipboard.SetClipboardData(win32clipboard.CF_DIB, data)
+            win32clipboard.CloseClipboard()
+
+            logger.info("[REFERENCE FALLBACK] Image copied to clipboard")
+
+            # Step 2: Фокусируемся на textarea промпта
+            logger.info("[REFERENCE FALLBACK] Step 2: Focusing on prompt textarea...")
+
+            driver.execute_script("""
+                var textarea = document.querySelector('textarea[name="prompt"]');
+                if (textarea) {
+                    textarea.focus();
+                    textarea.click();
+                    console.log('Textarea focused');
+                }
+            """)
+            time.sleep(0.5)
+
+            # Step 3: Вставляем через Ctrl+V
+            logger.info("[REFERENCE FALLBACK] Step 3: Pasting with Ctrl+V...")
+
+            from selenium.webdriver.common.action_chains import ActionChains
+            actions = ActionChains(driver)
+            actions.key_down(Keys.CONTROL).send_keys('v').key_up(Keys.CONTROL).perform()
+
+            logger.info("[REFERENCE FALLBACK] Ctrl+V sent")
+
+            # Ждём обработки
+            time.sleep(3)
+
+            # Проверяем результат
+            for attempt in range(5):
+                if self._verify_reference_uploaded():
+                    logger.success(f"[REFERENCE FALLBACK] Upload via paste VERIFIED!")
+                    return
+
+                logger.debug(f"[REFERENCE FALLBACK] Verification attempt {attempt + 1}/5...")
+                time.sleep(2)
+
+            # Если paste не сработал, пробуем через input напрямую
+            logger.warning("[REFERENCE FALLBACK] Paste didn't work, trying direct input method...")
+            self._sync_upload_reference_direct_input(image_path)
+
+        except ImportError as e:
+            logger.warning(f"[REFERENCE FALLBACK] Required module not available: {e}")
+            logger.info("[REFERENCE FALLBACK] Trying direct input method...")
+            self._sync_upload_reference_direct_input(image_path)
+
+    def _sync_upload_reference_direct_input(self, image_path: str) -> None:
+        """
+        Прямой метод - делаем input видимым и используем send_keys.
+        """
+        driver = self.browser.driver
+
+        logger.info(f"[REFERENCE DIRECT] Uploading: {image_path}")
+
+        from pathlib import Path
+        file_path = Path(image_path)
+        absolute_path = str(file_path.absolute())
+
+        # Step 1: Полностью пересоздаём input элемент без hidden атрибутов
+        logger.info("[REFERENCE DIRECT] Recreating input element...")
+
+        driver.execute_script("""
+            var oldInp = document.getElementById('image-form-reference');
+            if (oldInp) {
+                // Создаём новый input
+                var newInp = document.createElement('input');
+                newInp.type = 'file';
+                newInp.id = 'image-form-reference-visible';
+                newInp.accept = 'image/jpeg,image/jpg,image/png,image/webp';
+                newInp.style.cssText = 'position: fixed; top: 100px; left: 100px; z-index: 999999; width: 400px; height: 50px; opacity: 1; display: block;';
+
+                // Добавляем на страницу
+                document.body.appendChild(newInp);
+
+                // Добавляем обработчик change
+                newInp.addEventListener('change', function(e) {
+                    console.log('New input change event fired');
+                    if (this.files && this.files.length > 0) {
+                        // Копируем файл в оригинальный input через DataTransfer
+                        var dt = new DataTransfer();
+                        dt.items.add(this.files[0]);
+                        oldInp.files = dt.files;
+
+                        // Trigger change на оригинальном input
+                        var event = new Event('change', {bubbles: true});
+                        oldInp.dispatchEvent(event);
+                        console.log('File transferred to original input');
+                    }
+                });
+
+                console.log('New visible input created');
+            }
+        """)
+
+        time.sleep(0.5)
+
+        # Step 2: Отправляем файл в новый видимый input
+        logger.info("[REFERENCE DIRECT] Sending file to visible input...")
+
+        try:
+            new_input = driver.find_element(By.ID, 'image-form-reference-visible')
+            new_input.send_keys(absolute_path)
+            logger.info(f"[REFERENCE DIRECT] File sent: {file_path.name}")
+        except Exception as e:
+            logger.error(f"[REFERENCE DIRECT] Failed to find/use visible input: {e}")
+            raise
+
+        # Ждём обработки
+        time.sleep(3)
+
+        # Удаляем временный input
+        driver.execute_script("""
+            var tempInp = document.getElementById('image-form-reference-visible');
+            if (tempInp) {
+                tempInp.remove();
+            }
+        """)
+
+        # Проверяем результат
+        for attempt in range(5):
+            if self._verify_reference_uploaded():
+                logger.success(f"[REFERENCE DIRECT] Upload VERIFIED!")
                 return
 
-            raise HiggsFieldWebGenerationError("Reference upload failed - file not set")
+            logger.debug(f"[REFERENCE DIRECT] Verification attempt {attempt + 1}/5...")
+            time.sleep(2)
 
-        except HiggsFieldWebGenerationError:
-            raise
-        except Exception as e:
-            logger.error(f"[REFERENCE] Upload failed: {e}")
-            raise HiggsFieldWebGenerationError(f"Reference upload failed: {e}")
+        # Проверяем файл в оригинальном input
+        has_files = driver.execute_script("""
+            var inp = document.getElementById('image-form-reference');
+            if (inp && inp.files && inp.files.length > 0) {
+                return {hasFiles: true, name: inp.files[0].name};
+            }
+            return {hasFiles: false};
+        """)
+
+        if has_files and has_files.get('hasFiles'):
+            logger.warning(f"[REFERENCE DIRECT] File is in input ({has_files.get('name')}) but UI not updated. Continuing.")
+            return
+
+        raise HiggsFieldWebGenerationError("Reference upload direct method failed - file not in input")
 
     def _verify_reference_uploaded(self) -> bool:
         """
@@ -1409,7 +1698,8 @@ class HiggsFieldImageGenerator:
     async def generate_batch_images(
         self,
         scenes: List[dict],
-        reference_image: Optional[Path] = None
+        reference_image: Optional[Path] = None,
+        reference_url: Optional[str] = None
     ) -> List[GeneratedImage]:
         """
         РџР°СЂР°Р»РµР»СЊРЅР° РіРµРЅРµСЂР°С†С–СЏ Р·РѕР±СЂР°Р¶РµРЅСЊ РґР»СЏ РєС–Р»СЊРєРѕС… СЃС†РµРЅ.
@@ -1470,7 +1760,8 @@ class HiggsFieldImageGenerator:
                 reference_uploaded = True
             else:
                 logger.info(f"[SETUP] Step 5: Uploading reference: {reference_image}")
-                await self._upload_reference_image(reference_image, skip_if_exists=False)
+                logger.info(f"[SETUP] Reference URL for lookup: {reference_url}")
+                await self._upload_reference_image(reference_image, skip_if_exists=False, reference_url=reference_url)
                 logger.success("[SETUP] ✅ Reference uploaded")
                 reference_uploaded = True
         elif reference_image:
@@ -1496,7 +1787,8 @@ class HiggsFieldImageGenerator:
             logger.info(f"[Scene {scene_num}] ({i+1}/{len(scenes)}) Queueing...")
             logger.info(f"[Scene {scene_num}]   Prompt: {prompt[:50]}...")
 
-            # Enter prompt
+            # Clear old prompt first, then enter new one
+            await asyncio.to_thread(self._sync_clear_prompt)
             await asyncio.to_thread(self._sync_enter_prompt, prompt)
 
             # Click Generate
