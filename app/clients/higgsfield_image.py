@@ -703,6 +703,16 @@ class HiggsFieldImageGenerator:
         if not file_path.exists():
             raise HiggsFieldWebGenerationError(f"Reference file not found: {image_path}")
 
+        # DEBUG: Сохраняем HTML страницы для анализа
+        try:
+            html_content = driver.page_source
+            debug_path = Path(image_path).parent.parent / "higgsfield_page_debug.html"
+            with open(debug_path, 'w', encoding='utf-8') as f:
+                f.write(html_content)
+            logger.info(f"[DEBUG] Page HTML saved to: {debug_path}")
+        except Exception as debug_err:
+            logger.debug(f"[DEBUG] Failed to save HTML: {debug_err}")
+
         # Читаем файл как base64
         with open(file_path, 'rb') as f:
             file_data = base64.b64encode(f.read()).decode('utf-8')
