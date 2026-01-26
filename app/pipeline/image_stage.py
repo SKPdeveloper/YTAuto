@@ -162,9 +162,14 @@ class ImageStage(BasePipelineStage):
         await self.notify_progress(130, f"Generating {len(scenes)} remaining images...")
 
         # Get reference from PRIMARY
+        logger.info(f"[REF_DEBUG] primary_scene.image_path = {primary_scene.image_path}")
+        logger.info(f"[REF_DEBUG] primary_scene.image_path type = {type(primary_scene.image_path)}")
+
         reference_image = Path(primary_scene.image_path) if primary_scene.image_path else None
 
         if reference_image:
+            logger.info(f"[REF_DEBUG] reference_image = {reference_image}")
+            logger.info(f"[REF_DEBUG] reference_image.exists() = {reference_image.exists()}")
             logger.info(f"Using PRIMARY reference: {reference_image.name}")
 
         # Prepare scenes data for batch

@@ -155,7 +155,7 @@ VAL_GEN2_PROMPT_PATH = CONFIG_DIR / "VAL_GEN2.txt"
 DEBUG_DIR = Path(__file__).parent.parent.parent / "debug" / "gen_responses"
 
 # Validation constants
-MAX_VALIDATION_RETRIES = 3  # Max retries for GEN1/GEN2 validation
+MAX_VALIDATION_RETRIES = 7  # Max retries for GEN1/GEN2 validation
 
 
 class PromptRouter:
@@ -347,7 +347,7 @@ class PromptRouter:
                 config=types.GenerateContentConfig(
                     system_instruction=self.gen1_prompt,
                     temperature=0.7,  # Creative for concept generation
-                    max_output_tokens=65536,  # Gemini 3 Pro max
+                    max_output_tokens=16384,  # Reduced - some models have lower limits
                 ),
             )
 
@@ -818,14 +818,14 @@ You MUST fix ALL the issues listed above. Pay special attention to:
 
         try:
             # Call Gemini with GEN2 system prompt
-            # Use 65536 max tokens (gemini-1.5-pro max) to avoid truncation
+            # NOTE: response_mime_type removed - it may cause token limit issues
             response = await self.client.aio.models.generate_content(
                 model=self.model,
                 contents=user_prompt,
                 config=types.GenerateContentConfig(
                     system_instruction=self.gen2_prompt,
                     temperature=0.3,  # Precise for prompt generation
-                    max_output_tokens=65536,  # Gemini 3 Pro max
+                    max_output_tokens=16384,  # Reduced - some models have lower limits
                 ),
             )
 
@@ -919,6 +919,12 @@ You MUST fix ALL the issues listed above before generating output.
         return f"""Generate visual prompts for the following creative brief:
 
 {payload_json}
+
+⚠️ TOKEN LIMIT WARNING: Keep your response CONCISE to avoid truncation!
+- image_prompt: MAX 150 words each
+- video_prompt: MAX 40 words each
+- motion_elements: MAX 4 items per scene
+- scale_techniques: Keep brief, 5-10 words per field
 
 CRITICAL REQUIREMENTS:
 

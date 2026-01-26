@@ -48,7 +48,7 @@ class ScriptStage(BasePipelineStage):
     async def execute(self) -> StageResult:
         """Generate script via PromptRouter with detailed logging and retry on validation failure"""
 
-        MAX_RETRIES = 3
+        MAX_RETRIES = 7
         await self.notify_progress(0, "Starting script generation...")
 
         try:

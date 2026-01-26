@@ -68,7 +68,7 @@ class ContentBrain:
             temperature=self.temperature,
             top_p=0.95,
             top_k=40,
-            max_output_tokens=65536,  # Gemini 3 Pro max
+            max_output_tokens=settings.GEMINI_MAX_OUTPUT_TOKENS,
         )
 
         self.validator_config = types.GenerateContentConfig(

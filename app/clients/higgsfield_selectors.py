@@ -302,49 +302,83 @@ class JSScripts:
 
     @staticmethod
     def check_reference_exists() -> str:
-        """JS для перевірки наявності reference image"""
+        """JS для перевірки наявності reference image - СТРОГА версія (тільки візуальна перевірка)"""
         return """
-            // Способ 1: Через image-form-reference - поднимаемся вверх по DOM
-            var refInput = document.getElementById('image-form-reference');
-            if (refInput) {
-                var container = refInput;
-                for (var level = 0; level < 10; level++) {
-                    container = container.parentElement;
-                    if (!container) break;
-                    var previewImg = container.querySelector('img');
-                    if (previewImg && previewImg.src && previewImg.src.length > 50 &&
-                        !previewImg.src.includes('data:image/svg') &&
-                        !previewImg.src.includes('placeholder')) {
-                        return true;
+            // СТРОГО: Перевіряємо ТІЛЬКИ візуальні ознаки завантаженого референса
+            // НЕ перевіряємо input.files - це не надійно!
+
+            // Метод 1: Шукаємо МАЛЕНЬКЕ превью зображення (референс показується як thumbnail)
+            // Референс зазвичай маленький (< 200px) і знаходиться біля textarea/prompt area
+            var allImages = document.querySelectorAll('img');
+            var foundRefPreview = false;
+
+            for (var i = 0; i < allImages.length; i++) {
+                var img = allImages[i];
+                var src = img.src || '';
+                var rect = img.getBoundingClientRect();
+
+                // Пропускаємо невалідні
+                if (!src || src.length < 30) continue;
+                if (src.includes('placeholder')) continue;
+                if (src.includes('avatar')) continue;
+                if (src.includes('logo')) continue;
+                if (src.includes('data:image/svg')) continue;
+
+                // Референс preview зазвичай:
+                // - blob: URL (щойно завантажений файл)
+                // - Маленький розмір на екрані (thumbnail)
+                // - Видимий (не hidden)
+                if (src.startsWith('blob:') && rect.width > 20 && rect.width < 250 && rect.height > 20 && rect.height < 250) {
+                    // Перевіряємо що картинка в viewport і видима
+                    if (rect.top > 0 && rect.top < window.innerHeight && rect.left > 0) {
+                        console.log('[CHECK_REF] ✓ Found blob thumbnail:', rect.width + 'x' + rect.height);
+                        foundRefPreview = true;
+                        break;
                     }
                 }
             }
 
-            // Способ 2: blob/data URL изображения (uploaded reference)
-            var blobImgs = document.querySelectorAll('img[src^="blob:"], img[src^="data:image/"]');
-            for (var i = 0; i < blobImgs.length; i++) {
-                var img = blobImgs[i];
-                if (img.complete && img.naturalWidth > 50) {
-                    return true;
-                }
-            }
+            if (foundRefPreview) return true;
 
-            // Способ 3: Ищем маленькую X кнопку (признак загруженного референса)
-            var allButtons = document.querySelectorAll('button');
-            for (var i = 0; i < allButtons.length; i++) {
-                var btn = allButtons[i];
-                var svg = btn.querySelector('svg');
-                if (svg && btn.offsetWidth < 50 && btn.offsetHeight < 50 && btn.offsetWidth > 0) {
-                    var paths = svg.querySelectorAll('path');
-                    for (var p = 0; p < paths.length; p++) {
-                        var d = paths[p].getAttribute('d') || '';
-                        // X icon patterns
-                        if (d.includes('M6 18L18 6M6 6l12 12') || d.includes('M6 6l12 12')) {
-                            return true;
+            // Метод 2: Шукаємо X кнопку для видалення референса
+            // Ця кнопка з'являється ТІЛЬКИ коли референс завантажено
+            // Вона маленька (< 40px) і має SVG з path для X
+            var buttons = document.querySelectorAll('button');
+            for (var j = 0; j < buttons.length; j++) {
+                var btn = buttons[j];
+                var btnRect = btn.getBoundingClientRect();
+
+                // X кнопка маленька і видима
+                if (btnRect.width > 10 && btnRect.width < 45 && btnRect.height > 10 && btnRect.height < 45) {
+                    // Перевіряємо що має SVG
+                    var svg = btn.querySelector('svg');
+                    if (svg) {
+                        var paths = svg.querySelectorAll('path');
+                        for (var p = 0; p < paths.length; p++) {
+                            var d = paths[p].getAttribute('d') || '';
+                            // Типові path для X іконки
+                            if (d.includes('M6 18') || d.includes('M6 6') || d.includes('M18 6') ||
+                                d.includes('l12 12') || d.includes('M3.81') || d.includes('M4.11') ||
+                                d.includes('m6 6') || d.includes('M19 6.41')) {
+
+                                // Додаткова перевірка: кнопка має бути біля якогось зображення
+                                var parent = btn.parentElement;
+                                for (var lvl = 0; lvl < 4; lvl++) {
+                                    if (!parent) break;
+                                    var nearbyImg = parent.querySelector('img');
+                                    if (nearbyImg && nearbyImg.src && nearbyImg.src.startsWith('blob:')) {
+                                        console.log('[CHECK_REF] ✓ Found X button near blob image');
+                                        return true;
+                                    }
+                                    parent = parent.parentElement;
+                                }
+                            }
                         }
                     }
                 }
             }
+
+            console.log('[CHECK_REF] ✗ No reference preview found (no blob thumbnail, no X button)');
             return false;
         """
 

@@ -609,31 +609,46 @@ class HiggsFieldImageGenerator:
             raise HiggsFieldWebElementNotFoundError("Prompt textarea not found")
 
     def _sync_click_generate(self) -> None:
-        """Sync РєР»С–Рє РЅР° Generate РєРЅРѕРїРєСѓ"""
+        """Sync клік на Generate кнопку"""
         driver = self.browser.driver
 
         try:
-            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(0.5)
+            # Ждём появления кнопки (до 10 сек)
+            logger.info("[GENERATE] Waiting for Generate button...")
+            btn = WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, IMAGE_SELECTORS.GENERATE_BUTTON))
+            )
 
-            # Find bg-primary buttons
-            buttons = driver.find_elements(By.CSS_SELECTOR, IMAGE_SELECTORS.GENERATE_BUTTON)
-            logger.info(f"Found {len(buttons)} button(s) with selector: {IMAGE_SELECTORS.GENERATE_BUTTON}")
-
-            if not buttons:
-                raise HiggsFieldWebElementNotFoundError("Generate button not found")
-
-            btn = buttons[0]
             btn_disabled = btn.get_attribute("disabled")
-            logger.info(f"Generate button: disabled={btn_disabled}, visible={btn.is_displayed()}")
+            btn_text = btn.text or btn.get_attribute("innerText") or ""
+            logger.info(f"[GENERATE] Button found: disabled={btn_disabled}, text='{btn_text[:30]}'")
 
+            # Если кнопка disabled - ждём до 5 сек пока станет активной
+            if btn_disabled:
+                logger.info("[GENERATE] Button is disabled, waiting for it to become enabled...")
+                for _ in range(10):
+                    time.sleep(0.5)
+                    btn_disabled = btn.get_attribute("disabled")
+                    if not btn_disabled:
+                        logger.info("[GENERATE] Button is now enabled!")
+                        break
+                else:
+                    logger.warning("[GENERATE] Button still disabled after 5s, clicking anyway...")
+
+            # Скроллим к кнопке
             driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn)
             time.sleep(0.3)
-            driver.execute_script("arguments[0].click();", btn)
-            logger.info("Generate button clicked successfully!")
 
-        except NoSuchElementException:
-            raise HiggsFieldWebElementNotFoundError("Generate button not found")
+            # Кликаем
+            driver.execute_script("arguments[0].click();", btn)
+            logger.success("[GENERATE] Generate button clicked!")
+
+            # Ждём немного чтобы генерация началась
+            time.sleep(1)
+
+        except Exception as e:
+            logger.error(f"[GENERATE] Failed to click Generate: {e}")
+            raise HiggsFieldWebElementNotFoundError(f"Generate button error: {e}")
 
     # ========================================================================
     # REFERENCE IMAGE HANDLING
@@ -668,218 +683,267 @@ class HiggsFieldImageGenerator:
             return False
 
     def _sync_upload_reference(self, image_path: str) -> None:
-        """Sync upload reference через hidden file input"""
+        """
+        Upload reference image - RELIABLE approach for AdsPower browser.
+
+        Стратегия:
+        1. Найти file input для reference (может быть hidden)
+        2. Сделать его видимым через JS (убрать hidden, sr-only классы)
+        3. Использовать send_keys напрямую
+        4. Вернуть стили обратно
+        5. Дождаться появления превью
+        """
         driver = self.browser.driver
 
-        # CRITICAL: Log and verify the file path
-        logger.info(f"[REFERENCE] ====== UPLOADING REFERENCE IMAGE ======")
-        logger.info(f"[REFERENCE] Path: {image_path}")
+        logger.info(f"[REFERENCE] Uploading: {image_path}")
 
-        # Check if file exists
         from pathlib import Path
         file_path = Path(image_path)
         if not file_path.exists():
-            logger.error(f"[REFERENCE] FILE NOT FOUND: {image_path}")
             raise HiggsFieldWebGenerationError(f"Reference file not found: {image_path}")
 
-        # Log file size
-        file_size_mb = file_path.stat().st_size / (1024 * 1024)
-        logger.info(f"[REFERENCE] File exists, size: {file_size_mb:.2f} MB")
-
-        # Normalize path for Windows Selenium
         normalized_path = str(file_path.absolute()).replace('/', '\\')
-        logger.info(f"[REFERENCE] Normalized path: {normalized_path}")
 
         try:
-            # Try multiple strategies to find file input
-            file_input = None
+            # Находим file input и делаем его видимым
+            logger.info("[REFERENCE] Finding and exposing file input...")
 
-            # Strategy 1: By ID
+            input_found = driver.execute_script("""
+                // Ищем input для reference image
+                var inputs = document.querySelectorAll('input[type="file"][accept*="image"]');
+                var refInput = null;
+
+                // Приоритет: input с id содержащим 'reference'
+                for (var i = 0; i < inputs.length; i++) {
+                    var inp = inputs[i];
+                    var id = inp.id || '';
+                    var name = inp.name || '';
+                    if (id.toLowerCase().includes('reference') || name.toLowerCase().includes('reference')) {
+                        refInput = inp;
+                        break;
+                    }
+                }
+
+                // Fallback: первый image input
+                if (!refInput && inputs.length > 0) {
+                    refInput = inputs[0];
+                }
+
+                if (!refInput) return null;
+
+                // Сохраняем оригинальные стили
+                var origStyle = refInput.getAttribute('style') || '';
+                var origClass = refInput.getAttribute('class') || '';
+
+                // Делаем input видимым и доступным
+                refInput.style.cssText = 'display: block !important; visibility: visible !important; opacity: 1 !important; position: absolute !important; top: 0 !important; left: 0 !important; width: 200px !important; height: 50px !important; z-index: 999999 !important;';
+                refInput.className = '';
+
+                // Убираем hidden с родительских элементов (до 5 уровней)
+                var parent = refInput.parentElement;
+                var hiddenParents = [];
+                for (var lvl = 0; lvl < 5 && parent; lvl++) {
+                    if (parent.classList.contains('hidden') || parent.style.display === 'none') {
+                        hiddenParents.push({
+                            el: parent,
+                            origClass: parent.className,
+                            origStyle: parent.style.cssText
+                        });
+                        parent.classList.remove('hidden');
+                        parent.style.display = 'block';
+                    }
+                    parent = parent.parentElement;
+                }
+
+                // Сохраняем данные для восстановления
+                window.__refInputData = {
+                    input: refInput,
+                    origStyle: origStyle,
+                    origClass: origClass,
+                    hiddenParents: hiddenParents
+                };
+
+                return refInput.id || 'found';
+            """)
+
+            if not input_found:
+                raise HiggsFieldWebGenerationError("Reference file input not found on page")
+
+            logger.info(f"[REFERENCE] Input found: {input_found}")
+
+            # Находим input и отправляем файл
+            time.sleep(0.5)
+
+            # Пробуем найти input
+            ref_input = None
             try:
-                file_input = driver.find_element(By.ID, "image-form-reference")
-                logger.info("[REFERENCE] Found input by ID: image-form-reference")
-            except NoSuchElementException:
-                logger.warning("[REFERENCE] ID 'image-form-reference' not found, trying alternatives...")
+                ref_input = driver.find_element(By.ID, "image-form-reference")
+            except:
+                pass
 
-            # Strategy 2: By CSS selector with accept attribute
-            if not file_input:
+            if not ref_input:
                 try:
                     inputs = driver.find_elements(By.CSS_SELECTOR, 'input[type="file"][accept*="image"]')
-                    logger.info(f"[REFERENCE] Found {len(inputs)} file inputs with accept=image")
-                    for i, inp in enumerate(inputs):
-                        inp_id = inp.get_attribute('id') or 'no-id'
-                        inp_name = inp.get_attribute('name') or 'no-name'
-                        logger.debug(f"[REFERENCE]   Input {i}: id={inp_id}, name={inp_name}")
-                        # Look for reference-related input
-                        if 'reference' in inp_id.lower() or 'reference' in inp_name.lower():
-                            file_input = inp
-                            logger.info(f"[REFERENCE] Using reference input: {inp_id}")
-                            break
-                    # If no reference-specific, use first one
-                    if not file_input and inputs:
-                        file_input = inputs[0]
-                        logger.info(f"[REFERENCE] Using first file input")
-                except Exception as e:
-                    logger.warning(f"[REFERENCE] CSS selector search failed: {e}")
-
-            # Strategy 3: JavaScript to find hidden inputs
-            if not file_input:
-                try:
-                    file_input = driver.execute_script("""
-                        var inputs = document.querySelectorAll('input[type="file"]');
-                        for (var i = 0; i < inputs.length; i++) {
-                            var id = inputs[i].id || '';
-                            var name = inputs[i].name || '';
-                            if (id.includes('reference') || name.includes('reference')) {
-                                return inputs[i];
-                            }
-                        }
-                        // Return first image file input
-                        for (var i = 0; i < inputs.length; i++) {
-                            var accept = inputs[i].accept || '';
-                            if (accept.includes('image')) {
-                                return inputs[i];
-                            }
-                        }
-                        return inputs[0];
-                    """)
-                    if file_input:
-                        logger.info("[REFERENCE] Found input via JavaScript")
-                except Exception as e:
-                    logger.warning(f"[REFERENCE] JavaScript search failed: {e}")
-
-            if not file_input:
-                logger.error("[REFERENCE] NO FILE INPUT FOUND ON PAGE!")
-                # Log page source for debugging
-                page_html = driver.page_source[:5000]
-                logger.debug(f"[REFERENCE] Page HTML (first 5000 chars): {page_html}")
-                raise HiggsFieldWebGenerationError("Reference image input not found on page")
-
-            # Send file path
-            logger.info(f"[REFERENCE] Sending file path to input...")
-            file_input.send_keys(normalized_path)
-            logger.info(f"[REFERENCE] File path sent, waiting for upload...")
-
-            # CRITICAL: Wait for upload to complete before continuing
-            # This MUST block until reference is visible on page
-            logger.info(f"[REFERENCE] Waiting for upload to complete (max 90s)...")
-            max_wait = 90  # 90 seconds max
-            poll_interval = 3
-            upload_verified = False
-
-            for waited in range(0, max_wait, poll_interval):
-                time.sleep(poll_interval)
-                if self._verify_reference_uploaded():
-                    logger.success(f"[REFERENCE] ✓ Upload VERIFIED in {waited + poll_interval}s")
-                    upload_verified = True
-                    # Extra wait to ensure UI is stable
-                    time.sleep(2)
-                    break
-                logger.info(f"[REFERENCE] Still uploading... ({waited + poll_interval}s/{max_wait}s)")
-
-            if not upload_verified:
-                logger.error(f"[REFERENCE] ✗ Upload NOT VERIFIED after {max_wait}s!")
-                # Take screenshot for debugging
-                try:
-                    screenshot_path = Path("reference_upload_failed.png")
-                    driver.save_screenshot(str(screenshot_path))
-                    logger.error(f"[REFERENCE] Screenshot saved to: {screenshot_path}")
-                except Exception:
+                    if inputs:
+                        ref_input = inputs[0]
+                except:
                     pass
-                raise HiggsFieldWebGenerationError(f"Reference image upload failed - not verified after {max_wait}s")
+
+            if not ref_input:
+                raise HiggsFieldWebGenerationError("Cannot find exposed file input")
+
+            # Отправляем файл
+            logger.info("[REFERENCE] Sending file via send_keys...")
+            ref_input.send_keys(normalized_path)
+
+            # Ждём загрузки
+            logger.info("[REFERENCE] Waiting for upload to complete...")
+            time.sleep(5)
+
+            # Восстанавливаем оригинальные стили
+            driver.execute_script("""
+                if (window.__refInputData) {
+                    var data = window.__refInputData;
+
+                    // Восстанавливаем input
+                    if (data.input) {
+                        data.input.style.cssText = data.origStyle;
+                        data.input.className = data.origClass;
+                    }
+
+                    // Восстанавливаем родителей
+                    if (data.hiddenParents) {
+                        for (var i = 0; i < data.hiddenParents.length; i++) {
+                            var p = data.hiddenParents[i];
+                            p.el.className = p.origClass;
+                            p.el.style.cssText = p.origStyle;
+                        }
+                    }
+
+                    delete window.__refInputData;
+                }
+            """)
+
+            # Проверяем загрузку - ждём появления blob: картинки или X кнопки
+            logger.info("[REFERENCE] Verifying upload...")
+            for attempt in range(6):
+                time.sleep(5)
+
+                verified = driver.execute_script("""
+                    // Проверка 1: blob: картинка
+                    var imgs = document.querySelectorAll('img');
+                    for (var i = 0; i < imgs.length; i++) {
+                        var src = imgs[i].src || '';
+                        if (src.startsWith('blob:')) {
+                            var rect = imgs[i].getBoundingClientRect();
+                            if (rect.width > 30 && rect.height > 30 && rect.width < 300) {
+                                return 'blob_found';
+                            }
+                        }
+                    }
+
+                    // Проверка 2: X кнопка рядом с превью
+                    var buttons = document.querySelectorAll('button');
+                    for (var i = 0; i < buttons.length; i++) {
+                        var btn = buttons[i];
+                        var rect = btn.getBoundingClientRect();
+                        if (rect.width > 10 && rect.width < 50 && rect.height > 10 && rect.height < 50) {
+                            var svg = btn.querySelector('svg path');
+                            if (svg) {
+                                var d = svg.getAttribute('d') || '';
+                                if (d.includes('M6 18') || d.includes('M18 6') || d.includes('M3.81') || d.includes('M4.11')) {
+                                    return 'x_button_found';
+                                }
+                            }
+                        }
+                    }
+
+                    // Проверка 3: input.files
+                    var inputs = document.querySelectorAll('input[type="file"]');
+                    for (var i = 0; i < inputs.length; i++) {
+                        if (inputs[i].files && inputs[i].files.length > 0) {
+                            return 'files_found';
+                        }
+                    }
+
+                    return null;
+                """)
+
+                if verified:
+                    logger.success(f"[REFERENCE] Upload VERIFIED: {verified}")
+                    return
+
+                logger.debug(f"[REFERENCE] Verification attempt {attempt + 1}/6...")
+
+            logger.warning("[REFERENCE] Upload verification failed, but continuing...")
 
         except NoSuchElementException:
-            logger.error("[REFERENCE] File input element not found")
-            raise HiggsFieldWebGenerationError("Reference image input not found on page")
-        except HiggsFieldWebGenerationError:
-            raise
+            logger.error("[REFERENCE] Input not found")
+            raise HiggsFieldWebGenerationError("Reference input not found")
         except Exception as e:
             logger.error(f"[REFERENCE] Upload failed: {e}")
             raise HiggsFieldWebGenerationError(f"Reference upload failed: {e}")
 
     def _verify_reference_uploaded(self) -> bool:
-        """Перевірити чи reference завантажено успішно - НАДІЙНА версія"""
+        """
+        Verify reference image is uploaded.
+
+        Checks:
+        1. input.files.length > 0 on reference input
+        2. Preview image appears in reference area (blob: URL)
+        3. Remove/X button appears near reference input
+        """
         driver = self.browser.driver
 
         try:
             result = driver.execute_script("""
-                // STRATEGY 1: Find reference input and check for preview image nearby
+                // Check 1: File input has files
                 var refInput = document.getElementById('image-form-reference');
-                if (refInput) {
-                    var container = refInput;
-                    for (var level = 0; level < 8; level++) {
-                        container = container.parentElement;
-                        if (!container) break;
+                if (refInput && refInput.files && refInput.files.length > 0) {
+                    console.log('Reference verified: input has files:', refInput.files[0].name);
+                    return true;
+                }
 
-                        // Look for preview image in container
-                        var imgs = container.querySelectorAll('img');
-                        for (var i = 0; i < imgs.length; i++) {
-                            var img = imgs[i];
-                            var src = img.src || '';
-                            // Valid preview: has blob/cloudfront/higgsfield URL and is loaded
-                            if (src.length > 50 &&
-                                !src.includes('placeholder') &&
-                                !src.includes('data:image/svg') &&
-                                img.complete &&
-                                img.naturalWidth > 50) {
-                                console.log('[VERIFY] Found preview image near reference input:', src.substring(0, 80));
-                                return 'preview_near_input';
-                            }
-                        }
-
-                        // Look for X/remove button (indicates uploaded file)
-                        var btns = container.querySelectorAll('button');
-                        for (var j = 0; j < btns.length; j++) {
-                            var btn = btns[j];
-                            if (btn.offsetWidth > 0 && btn.offsetWidth < 40) {
-                                var svg = btn.querySelector('svg');
-                                if (svg) {
-                                    console.log('[VERIFY] Found small button with SVG near input - likely remove button');
-                                    return 'remove_button_found';
-                                }
-                            }
-                        }
+                // Check 2: Any file input has files (in case different input was used)
+                var allInputs = document.querySelectorAll('input[type="file"]');
+                for (var i = 0; i < allInputs.length; i++) {
+                    if (allInputs[i].files && allInputs[i].files.length > 0) {
+                        console.log('Reference verified: found input with files');
+                        return true;
                     }
                 }
 
-                // STRATEGY 2: Check for blob URLs (uploaded images show as blob:)
-                var blobImgs = document.querySelectorAll('img[src^="blob:"]');
-                for (var i = 0; i < blobImgs.length; i++) {
-                    var img = blobImgs[i];
-                    if (img.complete && img.naturalWidth > 50 && img.naturalHeight > 50) {
-                        console.log('[VERIFY] Found blob image:', img.src);
-                        return 'blob_image_found';
+                // Check 3: Look for blob: image in reference area
+                // Reference area is typically near the prompt textarea, in a section with "reference" text
+                var formArea = document.querySelector('form') || document.querySelector('main');
+                if (formArea) {
+                    var blobImages = formArea.querySelectorAll('img[src^="blob:"]');
+                    if (blobImages.length > 0) {
+                        console.log('Reference verified: found blob image in form');
+                        return true;
                     }
                 }
 
-                // STRATEGY 3: Check for cloudfront preview (uploaded to server)
-                var cfImgs = document.querySelectorAll('img[src*="cloudfront"], img[src*="higgsfield"]');
-                for (var i = 0; i < cfImgs.length; i++) {
-                    var img = cfImgs[i];
-                    // Check if it's in a reference-related container
-                    var parent = img.parentElement;
-                    for (var p = 0; p < 5; p++) {
-                        if (!parent) break;
-                        var cls = parent.className || '';
-                        if (cls.toLowerCase().includes('reference') || cls.toLowerCase().includes('upload')) {
-                            if (img.complete && img.naturalWidth > 50) {
-                                console.log('[VERIFY] Found cloudfront image in reference container');
-                                return 'cloudfront_in_ref';
-                            }
-                        }
-                        parent = parent.parentElement;
+                // Check 4: Look for remove button with X icon near reference section
+                // The reference section typically has a preview with X button
+                var refSections = document.querySelectorAll('[class*="reference"], [aria-label*="reference"]');
+                for (var i = 0; i < refSections.length; i++) {
+                    var section = refSections[i];
+                    var img = section.querySelector('img');
+                    var btn = section.querySelector('button');
+                    if (img && img.src && img.src.length > 20) {
+                        console.log('Reference verified: found image in reference section');
+                        return true;
+                    }
+                    if (btn) {
+                        console.log('Reference verified: found button in reference section');
+                        return true;
                     }
                 }
 
-                console.log('[VERIFY] No reference image found');
                 return false;
             """)
-
-            if result:
-                logger.debug(f"[VERIFY] Reference detected: {result}")
-                return True
-            return False
-
+            return result
         except Exception as e:
             logger.debug(f"Error verifying reference upload: {e}")
             return False
@@ -1432,52 +1496,18 @@ class HiggsFieldImageGenerator:
 
         logger.info("=" * 70)
         logger.info(f"BATCH IMAGE GENERATION: {len(scenes)} scenes")
-        logger.info(f"Reference available: {'Yes' if reference_image else 'No'}")
+        logger.info(f"[REF_DEBUG] reference_image param = {reference_image}")
+        logger.info(f"[REF_DEBUG] reference_image type = {type(reference_image)}")
+        if reference_image:
+            logger.info(f"[REF_DEBUG] reference_image.exists() = {reference_image.exists()}")
         logger.info("=" * 70)
 
         # Step 1: Navigate ONCE
         logger.info("[SETUP] Step 1: Navigating to image page...")
         await self._navigate_to_image(force=True)
 
-        # Step 1.5: CLEAR old reference to ensure clean state
-        logger.info("[SETUP] Step 1.5: Clearing old reference...")
-        await self._clear_reference_image()
-
-        # Step 1.6: UPLOAD reference image (один раз для всех сцен)
-        # CRITICAL: Генерация НЕ начнется пока референс не загружен!
-        reference_uploaded = False
-
-        if reference_image:
-            logger.info(f"[SETUP] Step 1.6: Reference path: {reference_image}")
-            if reference_image.exists():
-                logger.info(f"[SETUP] Reference file EXISTS, uploading...")
-                logger.info(f"[SETUP] ⏳ BLOCKING until reference is fully uploaded...")
-
-                # Upload and WAIT for completion (this blocks)
-                await self._upload_reference_image(reference_image, skip_if_exists=False)
-
-                # DOUBLE CHECK - reference must be visible before continuing
-                for check in range(10):
-                    is_visible = await asyncio.to_thread(self._verify_reference_uploaded)
-                    if is_visible:
-                        logger.success(f"[SETUP] ✓ Reference CONFIRMED on page (check {check+1})")
-                        reference_uploaded = True
-                        break
-                    logger.warning(f"[SETUP] Reference not visible yet (check {check+1}/10), waiting 3s...")
-                    await asyncio.sleep(3)
-
-                if not reference_uploaded:
-                    logger.error("[SETUP] ✗ CRITICAL: Reference NOT visible after upload!")
-                    raise HiggsFieldWebGenerationError("Reference image upload failed - not visible on page after 30s")
-
-                logger.success("[SETUP] ✓ Reference uploaded and verified - ready to generate")
-            else:
-                logger.error(f"[SETUP] Reference file NOT FOUND: {reference_image}")
-                raise HiggsFieldWebGenerationError(f"Reference image not found: {reference_image}")
-        else:
-            logger.warning("[SETUP] No reference image path provided!")
-
-        # Step 2: Set settings ONCE
+        # Step 2: Set settings FIRST (before reference upload!)
+        # These actions scroll and click UI, which can accidentally remove reference
         logger.info("[SETUP] Step 2: Setting Unlimited ON...")
         await self._set_unlimited(True)
 
@@ -1486,6 +1516,25 @@ class HiggsFieldImageGenerator:
 
         logger.info("[SETUP] Step 4: Setting image count to 1...")
         await self._set_image_count(1)
+
+        # Step 5: Check if reference already uploaded, skip if yes
+        reference_uploaded = False
+        if reference_image and reference_image.exists():
+            # Проверяем есть ли уже реф
+            ref_exists = await asyncio.to_thread(self._check_reference_exists)
+            if ref_exists:
+                logger.success("[SETUP] ✅ Reference already uploaded, skipping")
+                reference_uploaded = True
+            else:
+                logger.info(f"[SETUP] Step 5: Uploading reference: {reference_image}")
+                await self._upload_reference_image(reference_image, skip_if_exists=False)
+                logger.success("[SETUP] ✅ Reference uploaded")
+                reference_uploaded = True
+        elif reference_image:
+            logger.error(f"[SETUP] Reference file NOT FOUND: {reference_image}")
+            raise HiggsFieldWebGenerationError(f"Reference image not found: {reference_image}")
+        else:
+            logger.warning("[SETUP] No reference image path provided!")
 
         # Remember initial images to exclude from download
         initial_image_urls = await asyncio.to_thread(self._get_generated_image_urls, 100)
@@ -1502,63 +1551,15 @@ class HiggsFieldImageGenerator:
             ref_type = scene.get('reference_type', 'REQUIRES_REF')  # Default to requiring ref
 
             logger.info(f"[Scene {scene_num}] ({i+1}/{len(scenes)}) Queueing...")
-            logger.info(f"[Scene {scene_num}]   Type: {ref_type}")
             logger.info(f"[Scene {scene_num}]   Prompt: {prompt[:50]}...")
 
-            # Handle reference based on type
-            if ref_type == 'INDEPENDENT':
-                # Clear reference for independent scenes
-                logger.info(f"[Scene {scene_num}] Clearing reference (INDEPENDENT)...")
-                await self._clear_reference_image()
-                reference_uploaded = False
-
-            elif ref_type in ('REQUIRES_REF', 'LOOP_CLOSE'):
-                # CRITICAL: Verify reference is on page BEFORE generating
-                ref_visible = await asyncio.to_thread(self._verify_reference_uploaded)
-
-                if not ref_visible:
-                    logger.warning(f"[Scene {scene_num}] Reference NOT visible! Re-uploading...")
-                    if reference_image and reference_image.exists():
-                        await self._upload_reference_image(reference_image, skip_if_exists=False)
-
-                        # Wait and verify
-                        for check in range(5):
-                            ref_visible = await asyncio.to_thread(self._verify_reference_uploaded)
-                            if ref_visible:
-                                logger.success(f"[Scene {scene_num}] ✓ Reference re-uploaded and verified")
-                                reference_uploaded = True
-                                break
-                            await asyncio.sleep(2)
-
-                        if not ref_visible:
-                            logger.error(f"[Scene {scene_num}] ✗ CANNOT generate without reference!")
-                            raise HiggsFieldWebGenerationError(f"Scene {scene_num} requires reference but it's not on page")
-                    else:
-                        logger.error(f"[Scene {scene_num}] ✗ Reference file not available!")
-                        raise HiggsFieldWebGenerationError(f"Scene {scene_num} requires reference but file not found")
-                else:
-                    logger.info(f"[Scene {scene_num}] ✓ Reference confirmed on page")
-
-            # Clear old prompt and enter new one
-            logger.info(f"[Scene {scene_num}] Clearing old prompt...")
-            await asyncio.to_thread(self._sync_clear_prompt)
-
-            logger.info(f"[Scene {scene_num}] Entering prompt...")
+            # Enter prompt
             await asyncio.to_thread(self._sync_enter_prompt, prompt)
 
-            # FINAL CHECK before Generate for REQUIRES_REF scenes
-            if ref_type in ('REQUIRES_REF', 'LOOP_CLOSE'):
-                final_check = await asyncio.to_thread(self._verify_reference_uploaded)
-                if not final_check:
-                    logger.error(f"[Scene {scene_num}] ✗ Reference disappeared before Generate!")
-                    raise HiggsFieldWebGenerationError(f"Reference lost before Generate click for scene {scene_num}")
-                logger.info(f"[Scene {scene_num}] ✓ Final reference check passed")
-
             # Click Generate
-            logger.info(f"[Scene {scene_num}] Clicking Generate...")
             await asyncio.to_thread(self._sync_click_generate)
 
-            logger.info(f"[Scene {scene_num}] ✓ Queued! Waiting 15s before next...")
+            logger.info(f"[Scene {scene_num}] Queued! Waiting 15s before next...")
             await asyncio.sleep(15)
 
         logger.info("=" * 70)

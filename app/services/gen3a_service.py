@@ -84,7 +84,7 @@ class Gen3aService:
             system_instruction=self.system_prompt,
             temperature=0.2,  # Low for precise analysis
             top_p=0.95,
-            max_output_tokens=65536,  # Gemini 3 Pro max
+            max_output_tokens=settings.GEMINI_MAX_OUTPUT_TOKENS,
         )
 
         logger.info("GEN3a Service v1.6.0 initialized:")

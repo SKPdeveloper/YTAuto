@@ -112,6 +112,13 @@ class Settings(BaseSettings):
         description="Temperature для Gemini (0.0-2.0)"
     )
 
+    GEMINI_MAX_OUTPUT_TOKENS: int = Field(
+        default=131072,
+        ge=1024,
+        le=1000000,
+        description="Max output tokens для Gemini 2.5 Pro / 3.0"
+    )
+
     # ========================================================================
     # ELEVENLABS TTS SETTINGS
     # ========================================================================

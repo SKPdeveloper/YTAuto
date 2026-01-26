@@ -58,7 +58,7 @@ class ReferenceType(str, Enum):
 # CONSTANTS — Правила валідації з VAL_GEN2.txt
 # ============================================================================
 
-# Мінімальна кількість motion_elements (оновлено в v1.2)
+# Мінімальна кількість motion_elements
 MIN_MOTION_ELEMENTS: int = 3
 
 # Максимальна кількість слів у video_prompt

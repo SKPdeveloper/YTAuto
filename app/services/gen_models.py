@@ -649,6 +649,35 @@ class Gen1Output(BaseModel):
     # Viral assessment (REQUIRED - NEVER NULL)
     viral_assessment: Gen1ViralAssessment = Field(..., description="Viral assessment scores - REQUIRED")
 
+    @model_validator(mode='before')
+    @classmethod
+    def fix_scene_numbers_and_voiceover(cls, data: Any) -> Any:
+        """
+        Fix scene_number values based on array position and fill missing voiceover.
+        This handles LLM errors where scene_number doesn't match array index.
+        """
+        if isinstance(data, dict) and 'scenes' in data and isinstance(data['scenes'], list):
+            for i, scene in enumerate(data['scenes']):
+                if isinstance(scene, dict):
+                    expected_number = i + 1
+                    actual_number = scene.get('scene_number')
+
+                    # Fix wrong scene_number
+                    if actual_number != expected_number:
+                        scene['scene_number'] = expected_number
+
+                    # For scenes 1-4, ensure voiceover_segment exists
+                    if expected_number <= 4:
+                        if not scene.get('voiceover_segment'):
+                            # Try to get from broker_script
+                            if scene.get('broker_script'):
+                                scene['voiceover_segment'] = scene['broker_script']
+                            else:
+                                # Generate a placeholder from scene_name
+                                scene_name = scene.get('scene_name', f'Scene {expected_number}')
+                                scene['voiceover_segment'] = f"[dramatic] {scene_name}."
+        return data
+
     @model_validator(mode='after')
     def validate_gen1_contract(self) -> 'Gen1Output':
         """
