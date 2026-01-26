@@ -684,202 +684,198 @@ class HiggsFieldImageGenerator:
 
     def _sync_upload_reference(self, image_path: str) -> None:
         """
-        Upload reference image - RELIABLE approach for AdsPower browser.
+        Upload reference image via Drag & Drop simulation.
 
-        Стратегия:
-        1. Найти file input для reference (может быть hidden)
-        2. Сделать его видимым через JS (убрать hidden, sr-only классы)
-        3. Использовать send_keys напрямую
-        4. Вернуть стили обратно
-        5. Дождаться появления превью
+        Стратегия (быстрая):
+        1. Читаем файл как base64
+        2. Создаём Blob и File через JS
+        3. Создаём DataTransfer с файлом
+        4. Симулируем drop событие на dropzone
+        5. Fallback на file input если drop не сработал
         """
         driver = self.browser.driver
 
-        logger.info(f"[REFERENCE] Uploading: {image_path}")
+        logger.info(f"[REFERENCE] Uploading via drag & drop: {image_path}")
 
+        import base64
         from pathlib import Path
         file_path = Path(image_path)
         if not file_path.exists():
             raise HiggsFieldWebGenerationError(f"Reference file not found: {image_path}")
 
-        normalized_path = str(file_path.absolute()).replace('/', '\\')
+        # Читаем файл как base64
+        with open(file_path, 'rb') as f:
+            file_data = base64.b64encode(f.read()).decode('utf-8')
+
+        file_name = file_path.name
+        mime_type = 'image/png' if file_name.lower().endswith('.png') else 'image/jpeg'
 
         try:
-            # Находим file input и делаем его видимым
-            logger.info("[REFERENCE] Finding and exposing file input...")
+            # Метод 1: Drag & Drop через DataTransfer API (быстрый)
+            logger.info("[REFERENCE] Method 1: Drag & Drop simulation...")
 
-            input_found = driver.execute_script("""
-                // Ищем input для reference image
-                var inputs = document.querySelectorAll('input[type="file"][accept*="image"]');
-                var refInput = null;
+            drop_result = driver.execute_script("""
+                var base64Data = arguments[0];
+                var fileName = arguments[1];
+                var mimeType = arguments[2];
 
-                // Приоритет: input с id содержащим 'reference'
+                // Конвертируем base64 в Blob
+                var byteCharacters = atob(base64Data);
+                var byteNumbers = new Array(byteCharacters.length);
+                for (var i = 0; i < byteCharacters.length; i++) {
+                    byteNumbers[i] = byteCharacters.charCodeAt(i);
+                }
+                var byteArray = new Uint8Array(byteNumbers);
+                var blob = new Blob([byteArray], {type: mimeType});
+
+                // Создаём File объект
+                var file = new File([blob], fileName, {type: mimeType, lastModified: Date.now()});
+
+                // Ищем dropzone для reference
+                // Приоритет 1: label с input[type=file] для reference
+                var dropTarget = null;
+                var labels = document.querySelectorAll('label');
+                for (var i = 0; i < labels.length; i++) {
+                    var inp = labels[i].querySelector('input[type="file"]');
+                    if (inp) {
+                        var id = inp.id || '';
+                        if (id.toLowerCase().includes('reference')) {
+                            dropTarget = labels[i];
+                            break;
+                        }
+                    }
+                }
+
+                // Приоритет 2: Любой контейнер с dropzone классом
+                if (!dropTarget) {
+                    dropTarget = document.querySelector('[class*="dropzone"], [class*="drop-zone"], [class*="upload-area"]');
+                }
+
+                // Приоритет 3: Первый label с file input
+                if (!dropTarget) {
+                    for (var i = 0; i < labels.length; i++) {
+                        var inp = labels[i].querySelector('input[type="file"]');
+                        if (inp) {
+                            dropTarget = labels[i];
+                            break;
+                        }
+                    }
+                }
+
+                if (!dropTarget) {
+                    return {success: false, error: 'no_dropzone'};
+                }
+
+                // Создаём DataTransfer
+                var dataTransfer = new DataTransfer();
+                dataTransfer.items.add(file);
+
+                // Симулируем drag & drop события
+                var rect = dropTarget.getBoundingClientRect();
+                var centerX = rect.left + rect.width / 2;
+                var centerY = rect.top + rect.height / 2;
+
+                var eventOptions = {
+                    bubbles: true,
+                    cancelable: true,
+                    dataTransfer: dataTransfer,
+                    clientX: centerX,
+                    clientY: centerY
+                };
+
+                // dragenter
+                var dragEnterEvent = new DragEvent('dragenter', eventOptions);
+                dropTarget.dispatchEvent(dragEnterEvent);
+
+                // dragover (несколько раз для надёжности)
+                for (var j = 0; j < 3; j++) {
+                    var dragOverEvent = new DragEvent('dragover', eventOptions);
+                    dropTarget.dispatchEvent(dragOverEvent);
+                }
+
+                // drop
+                var dropEvent = new DragEvent('drop', eventOptions);
+                dropTarget.dispatchEvent(dropEvent);
+
+                // Также пробуем установить files на input напрямую
+                var inputs = document.querySelectorAll('input[type="file"]');
                 for (var i = 0; i < inputs.length; i++) {
                     var inp = inputs[i];
                     var id = inp.id || '';
-                    var name = inp.name || '';
-                    if (id.toLowerCase().includes('reference') || name.toLowerCase().includes('reference')) {
-                        refInput = inp;
+                    if (id.toLowerCase().includes('reference')) {
+                        try {
+                            inp.files = dataTransfer.files;
+                            // Trigger change event
+                            var changeEvent = new Event('change', {bubbles: true});
+                            inp.dispatchEvent(changeEvent);
+                        } catch(e) {
+                            // Some browsers don't allow setting .files directly
+                        }
                         break;
                     }
                 }
 
-                // Fallback: первый image input
-                if (!refInput && inputs.length > 0) {
-                    refInput = inputs[0];
-                }
+                return {success: true, target: dropTarget.tagName};
+            """, file_data, file_name, mime_type)
 
-                if (!refInput) return null;
+            if drop_result and drop_result.get('success'):
+                logger.info(f"[REFERENCE] Drop event dispatched to: {drop_result.get('target')}")
+                time.sleep(2)
 
-                // Сохраняем оригинальные стили
-                var origStyle = refInput.getAttribute('style') || '';
-                var origClass = refInput.getAttribute('class') || '';
+                # Проверяем сразу
+                if self._verify_reference_uploaded():
+                    logger.success("[REFERENCE] Drag & drop SUCCESS!")
+                    return
 
-                // Делаем input видимым и доступным
-                refInput.style.cssText = 'display: block !important; visibility: visible !important; opacity: 1 !important; position: absolute !important; top: 0 !important; left: 0 !important; width: 200px !important; height: 50px !important; z-index: 999999 !important;';
-                refInput.className = '';
+            logger.warning("[REFERENCE] Drag & drop didn't work, trying file input fallback...")
 
-                // Убираем hidden с родительских элементов (до 5 уровней)
-                var parent = refInput.parentElement;
-                var hiddenParents = [];
-                for (var lvl = 0; lvl < 5 && parent; lvl++) {
-                    if (parent.classList.contains('hidden') || parent.style.display === 'none') {
-                        hiddenParents.push({
-                            el: parent,
-                            origClass: parent.className,
-                            origStyle: parent.style.cssText
-                        });
-                        parent.classList.remove('hidden');
-                        parent.style.display = 'block';
+            # Метод 2: Fallback - прямая установка через hidden input
+            normalized_path = str(file_path.absolute()).replace('/', '\\')
+
+            # Делаем input видимым
+            driver.execute_script("""
+                var inputs = document.querySelectorAll('input[type="file"]');
+                for (var i = 0; i < inputs.length; i++) {
+                    var inp = inputs[i];
+                    inp.style.cssText = 'display: block !important; visibility: visible !important; opacity: 1 !important; position: absolute !important; top: 0 !important; left: 0 !important; width: 200px !important; height: 50px !important; z-index: 999999 !important;';
+
+                    // Убираем hidden с родителей
+                    var parent = inp.parentElement;
+                    for (var lvl = 0; lvl < 5 && parent; lvl++) {
+                        if (parent.classList.contains('hidden')) {
+                            parent.classList.remove('hidden');
+                            parent.style.display = 'block';
+                        }
+                        parent = parent.parentElement;
                     }
-                    parent = parent.parentElement;
                 }
-
-                // Сохраняем данные для восстановления
-                window.__refInputData = {
-                    input: refInput,
-                    origStyle: origStyle,
-                    origClass: origClass,
-                    hiddenParents: hiddenParents
-                };
-
-                return refInput.id || 'found';
             """)
-
-            if not input_found:
-                raise HiggsFieldWebGenerationError("Reference file input not found on page")
-
-            logger.info(f"[REFERENCE] Input found: {input_found}")
-
-            # Находим input и отправляем файл
             time.sleep(0.5)
 
-            # Пробуем найти input
+            # Находим и отправляем файл
             ref_input = None
             try:
                 ref_input = driver.find_element(By.ID, "image-form-reference")
             except:
-                pass
+                inputs = driver.find_elements(By.CSS_SELECTOR, 'input[type="file"]')
+                if inputs:
+                    ref_input = inputs[0]
 
-            if not ref_input:
-                try:
-                    inputs = driver.find_elements(By.CSS_SELECTOR, 'input[type="file"][accept*="image"]')
-                    if inputs:
-                        ref_input = inputs[0]
-                except:
-                    pass
+            if ref_input:
+                logger.info("[REFERENCE] Sending file via send_keys (fallback)...")
+                ref_input.send_keys(normalized_path)
+                time.sleep(3)
 
-            if not ref_input:
-                raise HiggsFieldWebGenerationError("Cannot find exposed file input")
-
-            # Отправляем файл
-            logger.info("[REFERENCE] Sending file via send_keys...")
-            ref_input.send_keys(normalized_path)
-
-            # Ждём загрузки
-            logger.info("[REFERENCE] Waiting for upload to complete...")
-            time.sleep(5)
-
-            # Восстанавливаем оригинальные стили
-            driver.execute_script("""
-                if (window.__refInputData) {
-                    var data = window.__refInputData;
-
-                    // Восстанавливаем input
-                    if (data.input) {
-                        data.input.style.cssText = data.origStyle;
-                        data.input.className = data.origClass;
-                    }
-
-                    // Восстанавливаем родителей
-                    if (data.hiddenParents) {
-                        for (var i = 0; i < data.hiddenParents.length; i++) {
-                            var p = data.hiddenParents[i];
-                            p.el.className = p.origClass;
-                            p.el.style.cssText = p.origStyle;
-                        }
-                    }
-
-                    delete window.__refInputData;
-                }
-            """)
-
-            # Проверяем загрузку - ждём появления blob: картинки или X кнопки
-            logger.info("[REFERENCE] Verifying upload...")
-            for attempt in range(6):
-                time.sleep(5)
-
-                verified = driver.execute_script("""
-                    // Проверка 1: blob: картинка
-                    var imgs = document.querySelectorAll('img');
-                    for (var i = 0; i < imgs.length; i++) {
-                        var src = imgs[i].src || '';
-                        if (src.startsWith('blob:')) {
-                            var rect = imgs[i].getBoundingClientRect();
-                            if (rect.width > 30 && rect.height > 30 && rect.width < 300) {
-                                return 'blob_found';
-                            }
-                        }
-                    }
-
-                    // Проверка 2: X кнопка рядом с превью
-                    var buttons = document.querySelectorAll('button');
-                    for (var i = 0; i < buttons.length; i++) {
-                        var btn = buttons[i];
-                        var rect = btn.getBoundingClientRect();
-                        if (rect.width > 10 && rect.width < 50 && rect.height > 10 && rect.height < 50) {
-                            var svg = btn.querySelector('svg path');
-                            if (svg) {
-                                var d = svg.getAttribute('d') || '';
-                                if (d.includes('M6 18') || d.includes('M18 6') || d.includes('M3.81') || d.includes('M4.11')) {
-                                    return 'x_button_found';
-                                }
-                            }
-                        }
-                    }
-
-                    // Проверка 3: input.files
-                    var inputs = document.querySelectorAll('input[type="file"]');
-                    for (var i = 0; i < inputs.length; i++) {
-                        if (inputs[i].files && inputs[i].files.length > 0) {
-                            return 'files_found';
-                        }
-                    }
-
-                    return null;
-                """)
-
-                if verified:
-                    logger.success(f"[REFERENCE] Upload VERIFIED: {verified}")
+            # Верификация
+            for attempt in range(4):
+                time.sleep(3)
+                if self._verify_reference_uploaded():
+                    logger.success(f"[REFERENCE] Upload VERIFIED on attempt {attempt + 1}")
                     return
+                logger.debug(f"[REFERENCE] Verification attempt {attempt + 1}/4...")
 
-                logger.debug(f"[REFERENCE] Verification attempt {attempt + 1}/6...")
+            logger.warning("[REFERENCE] Upload verification failed, continuing anyway...")
 
-            logger.warning("[REFERENCE] Upload verification failed, but continuing...")
-
-        except NoSuchElementException:
-            logger.error("[REFERENCE] Input not found")
-            raise HiggsFieldWebGenerationError("Reference input not found")
         except Exception as e:
             logger.error(f"[REFERENCE] Upload failed: {e}")
             raise HiggsFieldWebGenerationError(f"Reference upload failed: {e}")
