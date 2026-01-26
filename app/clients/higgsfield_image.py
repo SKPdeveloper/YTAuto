@@ -827,54 +827,96 @@ class HiggsFieldImageGenerator:
                     logger.success("[REFERENCE] Drag & drop SUCCESS!")
                     return
 
-            logger.warning("[REFERENCE] Drag & drop didn't work, trying file input fallback...")
+            logger.warning("[REFERENCE] Drag & drop didn't work, trying CDP file upload...")
 
-            # Метод 2: Fallback - прямая установка через hidden input
+            # Метод 2: CDP DOM.setFileInputFiles - прямая установка файла через DevTools Protocol
             normalized_path = str(file_path.absolute()).replace('/', '\\')
 
-            # Делаем input видимым
-            driver.execute_script("""
-                var inputs = document.querySelectorAll('input[type="file"]');
-                for (var i = 0; i < inputs.length; i++) {
-                    var inp = inputs[i];
-                    inp.style.cssText = 'display: block !important; visibility: visible !important; opacity: 1 !important; position: absolute !important; top: 0 !important; left: 0 !important; width: 200px !important; height: 50px !important; z-index: 999999 !important;';
-
-                    // Убираем hidden с родителей
-                    var parent = inp.parentElement;
-                    for (var lvl = 0; lvl < 5 && parent; lvl++) {
-                        if (parent.classList.contains('hidden')) {
-                            parent.classList.remove('hidden');
-                            parent.style.display = 'block';
-                        }
-                        parent = parent.parentElement;
-                    }
-                }
-            """)
-            time.sleep(0.5)
-
-            # Находим и отправляем файл
-            ref_input = None
             try:
-                ref_input = driver.find_element(By.ID, "image-form-reference")
-            except:
-                inputs = driver.find_elements(By.CSS_SELECTOR, 'input[type="file"]')
-                if inputs:
-                    ref_input = inputs[0]
+                # Находим input элемент
+                ref_input = None
+                try:
+                    ref_input = driver.find_element(By.ID, "image-form-reference")
+                except:
+                    inputs = driver.find_elements(By.CSS_SELECTOR, 'input[type="file"][accept*="image"]')
+                    if inputs:
+                        ref_input = inputs[0]
 
-            if ref_input:
-                logger.info("[REFERENCE] Sending file via send_keys (fallback)...")
-                ref_input.send_keys(normalized_path)
-                time.sleep(3)
+                if ref_input:
+                    logger.info("[REFERENCE] Using CDP DOM.setFileInputFiles...")
 
-            # Верификация
-            for attempt in range(4):
+                    # CDP команда для установки файлов напрямую
+                    driver.execute_cdp_cmd('DOM.setFileInputFiles', {
+                        'files': [normalized_path],
+                        'objectId': driver.execute_cdp_cmd('Runtime.evaluate', {
+                            'expression': 'document.getElementById("image-form-reference") || document.querySelector(\'input[type="file"][accept*="image"]\')',
+                            'returnByValue': False
+                        })['result'].get('objectId')
+                    })
+
+                    logger.info("[REFERENCE] CDP setFileInputFiles executed")
+                    time.sleep(2)
+
+                    # Trigger change event
+                    driver.execute_script("""
+                        var inp = document.getElementById('image-form-reference') || document.querySelector('input[type="file"][accept*="image"]');
+                        if (inp) {
+                            inp.dispatchEvent(new Event('change', {bubbles: true}));
+                            inp.dispatchEvent(new Event('input', {bubbles: true}));
+                        }
+                    """)
+                    time.sleep(2)
+
+            except Exception as cdp_error:
+                logger.warning(f"[REFERENCE] CDP method failed: {cdp_error}")
+
+                # Метод 3: Последний fallback - expose input и send_keys
+                logger.info("[REFERENCE] Trying exposed input + send_keys...")
+
+                driver.execute_script("""
+                    var inputs = document.querySelectorAll('input[type="file"]');
+                    for (var i = 0; i < inputs.length; i++) {
+                        var inp = inputs[i];
+                        // Полностью переопределяем стили
+                        inp.setAttribute('style', 'display: block !important; visibility: visible !important; opacity: 1 !important; position: fixed !important; top: 100px !important; left: 100px !important; width: 300px !important; height: 100px !important; z-index: 2147483647 !important; background: white !important;');
+                        inp.removeAttribute('class');
+
+                        // Убираем hidden со всех родителей
+                        var parent = inp.parentElement;
+                        while (parent && parent !== document.body) {
+                            parent.style.display = 'block';
+                            parent.style.visibility = 'visible';
+                            parent.style.opacity = '1';
+                            parent.classList.remove('hidden', 'sr-only', 'invisible');
+                            parent = parent.parentElement;
+                        }
+                    }
+                """)
+                time.sleep(1)
+
+                ref_input = None
+                try:
+                    ref_input = driver.find_element(By.ID, "image-form-reference")
+                except:
+                    inputs = driver.find_elements(By.CSS_SELECTOR, 'input[type="file"]')
+                    if inputs:
+                        ref_input = inputs[0]
+
+                if ref_input:
+                    logger.info("[REFERENCE] Sending file via send_keys...")
+                    ref_input.send_keys(normalized_path)
+                    time.sleep(3)
+
+            # Верификация - ОБЯЗАТЕЛЬНАЯ
+            for attempt in range(6):
                 time.sleep(3)
                 if self._verify_reference_uploaded():
                     logger.success(f"[REFERENCE] Upload VERIFIED on attempt {attempt + 1}")
                     return
-                logger.debug(f"[REFERENCE] Verification attempt {attempt + 1}/4...")
+                logger.debug(f"[REFERENCE] Verification attempt {attempt + 1}/6...")
 
-            logger.warning("[REFERENCE] Upload verification failed, continuing anyway...")
+            # КРИТИЧНО: Если референс не загружен - выбросить исключение!
+            raise HiggsFieldWebGenerationError("Reference upload FAILED after all attempts - cannot proceed without reference")
 
         except Exception as e:
             logger.error(f"[REFERENCE] Upload failed: {e}")
