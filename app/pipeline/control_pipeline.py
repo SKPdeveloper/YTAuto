@@ -85,14 +85,20 @@ class ControlPipeline:
             # Stage 6: Generate videos
             await self._generate_videos()
 
-            # Stage 7: Assemble final video
+            # Stage 7: Gen3a Video Analysis
+            await self._run_gen3a_analysis()
+
+            # Stage 8: Gen3b Manifest Generation
+            await self._run_gen3b_manifest()
+
+            # Stage 9: Assemble final video
             await self._assemble_final()
 
             # Clear forms at the end
             logger.info("[PIPELINE] Clearing forms at end...")
             await self.orchestrator.visual_engine._client.clear_all_forms()
 
-            # Stage 8: Video Approval (перед Topaz)
+            # Stage 10: Video Approval (перед Topaz)
             approval_result = await self._video_approval()
 
             if approval_result == "rejected":
@@ -100,9 +106,12 @@ class ControlPipeline:
                 logger.warning("[PIPELINE] Video rejected by user")
                 return project_id
 
-            # Stage 9: Topaz upscaling (если approved)
+            # Stage 11: Topaz upscaling (если approved)
             if approval_result == "approved":
                 await self._run_topaz_upscale()
+
+            # Stage 12: YouTube upload (optional)
+            await self._upload_to_youtube()
 
             await self._notify_stage("COMPLETED", 100)
 
@@ -200,7 +209,7 @@ class ControlPipeline:
         await self.orchestrator._save_project_state(self.project)
 
     async def _process_remaining_scenes(self):
-        """Generate and validate images for scenes 2-6."""
+        """Generate and validate images for scenes 2-6 with retry logic."""
 
         if not self.project:
             return
@@ -211,14 +220,22 @@ class ControlPipeline:
         primary_scene = self.project.scenes[0]
         reference_image = primary_scene.image_path
 
-        # Collect scenes to generate
-        scenes_to_generate = []
-        for scene in self.project.scenes[1:]:
-            scene_dir = settings.get_scene_dir(self.project.project_id, scene.scene_number)
-            if not (scene_dir / "image.png").exists():
-                scenes_to_generate.append(scene)
+        max_batch_retries = 2
 
-        if scenes_to_generate:
+        for batch_attempt in range(1, max_batch_retries + 1):
+            # Collect scenes WITHOUT images
+            scenes_to_generate = []
+            for scene in self.project.scenes[1:]:
+                scene_dir = settings.get_scene_dir(self.project.project_id, scene.scene_number)
+                if not (scene_dir / "image.png").exists():
+                    scenes_to_generate.append(scene)
+
+            if not scenes_to_generate:
+                logger.success("[PIPELINE] All scenes have images!")
+                break
+
+            logger.info(f"[PIPELINE] Batch attempt {batch_attempt}/{max_batch_retries}: {len(scenes_to_generate)} scenes need images")
+
             # Prepare scenes data
             scenes_data = [{
                 'scene_number': s.scene_number,
@@ -231,20 +248,48 @@ class ControlPipeline:
                 logger.info(f"Using reference URL: {self.selected_reference_url[:60]}...")
 
             # Generate all images in parallel
-            image_paths = await self.orchestrator.visual_engine.generate_all_images_parallel(
-                scenes=scenes_data,
-                project_id=self.project.project_id,
-                reference_image=Path(reference_image) if reference_image else None,
-                reference_url=self.selected_reference_url
-            )
+            try:
+                image_paths = await self.orchestrator.visual_engine.generate_all_images_parallel(
+                    scenes=scenes_data,
+                    project_id=self.project.project_id,
+                    reference_image=Path(reference_image) if reference_image else None,
+                    reference_url=self.selected_reference_url
+                )
 
-            # Assign paths
-            for i, path in enumerate(image_paths):
-                if i < len(scenes_to_generate):
-                    scene = scenes_to_generate[i]
-                    scene.image_path = path
-                    scene.status = SceneStatus.IMAGE_READY
-                    logger.success(f"[Scene {scene.scene_number}] Image generated")
+                # Assign paths
+                generated_count = 0
+                for i, path in enumerate(image_paths):
+                    if path and i < len(scenes_to_generate):
+                        scene = scenes_to_generate[i]
+                        scene.image_path = path
+                        scene.status = SceneStatus.IMAGE_READY
+                        generated_count += 1
+                        logger.success(f"[Scene {scene.scene_number}] Image generated")
+
+                logger.info(f"[PIPELINE] Generated {generated_count}/{len(scenes_to_generate)} images in batch {batch_attempt}")
+
+                # Check if all scenes got images
+                missing_scenes = [s for s in self.project.scenes[1:] if not s.image_path]
+                if missing_scenes:
+                    logger.warning(f"[PIPELINE] Missing images for scenes: {[s.scene_number for s in missing_scenes]}")
+                    if batch_attempt < max_batch_retries:
+                        logger.info("[PIPELINE] Retrying missing scenes...")
+                        await asyncio.sleep(5)
+                else:
+                    break
+
+            except Exception as e:
+                logger.error(f"[PIPELINE] Batch generation failed: {e}")
+                if batch_attempt < max_batch_retries:
+                    logger.info("[PIPELINE] Retrying entire batch...")
+                    await asyncio.sleep(10)
+                else:
+                    raise
+
+        # Final check - log which scenes have images
+        for scene in self.project.scenes:
+            has_image = scene.image_path and Path(scene.image_path).exists()
+            logger.info(f"[Scene {scene.scene_number}] has_image={has_image}, path={scene.image_path}")
 
         # Validate images
         await self._notify_stage("VALIDATING_IMAGES", 50)
@@ -613,6 +658,126 @@ class ControlPipeline:
 
         return action
 
+    async def _run_gen3a_analysis(self):
+        """Run Gen3a video analysis (Gemini Vision)."""
+        if not self.project:
+            return
+
+        await self._notify_stage("GEN3A_ANALYSIS", 75)
+
+        from app.services.gen3a_service import Gen3aService
+
+        project_dir = settings.PROJECTS_DIR / self.project.project_id
+
+        # Collect video paths
+        video_paths = []
+        for scene in sorted(self.project.scenes, key=lambda s: s.scene_number):
+            if scene.video_path and Path(scene.video_path).exists():
+                video_paths.append(Path(scene.video_path))
+
+        if not video_paths:
+            logger.warning("[PIPELINE] No videos found for Gen3a analysis, skipping")
+            return
+
+        logger.info(f"[PIPELINE] Running Gen3a analysis on {len(video_paths)} videos...")
+
+        try:
+            service = Gen3aService()
+
+            # Load briefs
+            project_brief = None
+            brief_path = project_dir / "project_brief.json"
+            if brief_path.exists():
+                with open(brief_path, 'r', encoding='utf-8') as f:
+                    project_brief = json.load(f)
+
+            # Find music and voiceover paths
+            music_path = project_dir / "music" / "background.mp3"
+            if not music_path.exists():
+                music_path = None
+
+            voiceover_path = project_dir / "voiceover.mp3"
+            if not voiceover_path.exists():
+                voiceover_path = None
+
+            # Run analysis
+            analysis = await service.analyze_videos(
+                video_paths=video_paths,
+                gen1_brief=project_brief,
+                gen2_brief=project_brief,
+                music_path=music_path,
+                voiceover_path=voiceover_path,
+                project_dir=project_dir
+            )
+
+            if analysis:
+                # Save analysis
+                output_path = project_dir / "gen3a_analysis.json"
+                with open(output_path, 'w', encoding='utf-8') as f:
+                    json.dump(analysis.model_dump() if hasattr(analysis, 'model_dump') else analysis, f, indent=2, ensure_ascii=False)
+
+                logger.success(f"[PIPELINE] Gen3a analysis saved: {output_path}")
+            else:
+                logger.warning("[PIPELINE] Gen3a analysis returned empty result")
+
+        except Exception as e:
+            logger.error(f"[PIPELINE] Gen3a analysis failed: {e}")
+            # Don't raise - continue without analysis
+
+    async def _run_gen3b_manifest(self):
+        """Run Gen3b manifest generation."""
+        if not self.project:
+            return
+
+        await self._notify_stage("GEN3B_MANIFEST", 80)
+
+        from app.services.gen3b_service import Gen3bService
+
+        project_dir = settings.PROJECTS_DIR / self.project.project_id
+
+        # Check if Gen3a analysis exists
+        gen3a_path = project_dir / "gen3a_analysis.json"
+        if not gen3a_path.exists():
+            logger.warning("[PIPELINE] No Gen3a analysis found, skipping Gen3b")
+            return
+
+        logger.info("[PIPELINE] Running Gen3b manifest generation...")
+
+        try:
+            service = Gen3bService()
+
+            # Load Gen3a analysis
+            with open(gen3a_path, 'r', encoding='utf-8') as f:
+                gen3a_data = json.load(f)
+
+            # Load project brief
+            project_brief = None
+            brief_path = project_dir / "project_brief.json"
+            if brief_path.exists():
+                with open(brief_path, 'r', encoding='utf-8') as f:
+                    project_brief = json.load(f)
+
+            # Generate manifest
+            manifest = await service.generate_manifest(
+                gen3a_output=gen3a_data,
+                project_brief=project_brief,
+                project_dir=project_dir
+            )
+
+            if manifest:
+                # Save manifest
+                output_path = project_dir / "gen3b_manifest.json"
+                with open(output_path, 'w', encoding='utf-8') as f:
+                    json.dump(manifest.model_dump() if hasattr(manifest, 'model_dump') else manifest, f, indent=2, ensure_ascii=False)
+
+                logger.success(f"[PIPELINE] Gen3b manifest saved: {output_path}")
+            else:
+                logger.warning("[PIPELINE] Gen3b manifest generation returned empty result")
+
+        except Exception as e:
+            logger.error(f"[PIPELINE] Gen3b manifest generation failed: {e}")
+            # Don't raise - continue without manifest
+
     async def _run_topaz_upscale(self):
         """Run Topaz Video AI upscaling."""
         if not self.project:
@@ -676,3 +841,135 @@ class ControlPipeline:
         except Exception as e:
             logger.error(f"[PIPELINE] Topaz error: {e}")
             # Don't raise - continue without upscaling
+
+    async def _upload_to_youtube(self):
+        """Upload final video to YouTube."""
+        if not self.project:
+            return
+
+        await self._notify_stage("YOUTUBE_UPLOAD", 98)
+
+        project_dir = settings.PROJECTS_DIR / self.project.project_id
+
+        # Find best available video (prefer 4K)
+        video_path = None
+        for name in ["final_4k.mp4", "final.mp4"]:
+            path = project_dir / name
+            if path.exists():
+                video_path = path
+                break
+
+        if not video_path:
+            logger.warning("[PIPELINE] No video found for YouTube upload")
+            return
+
+        # Load project brief for metadata
+        brief_path = project_dir / "project_brief.json"
+        if not brief_path.exists():
+            logger.warning("[PIPELINE] No project_brief.json for YouTube metadata")
+            return
+
+        with open(brief_path, 'r', encoding='utf-8') as f:
+            brief = json.load(f)
+
+        # Extract YouTube metadata
+        youtube_data = brief.get('youtube', {})
+        title = youtube_data.get('title', self.project.title or 'Untitled')
+        description = youtube_data.get('description', '')
+        tags = youtube_data.get('tags', [])
+
+        logger.info(f"[PIPELINE] Preparing YouTube upload...")
+        logger.info(f"  Title: {title}")
+        logger.info(f"  Video: {video_path.name} ({video_path.stat().st_size / 1024 / 1024:.1f} MB)")
+
+        # Request upload approval from UI
+        result = await self._request_approval("youtube_upload", {
+            "title": title,
+            "description": description[:200] + "..." if len(description) > 200 else description,
+            "video_path": str(video_path),
+            "video_size_mb": round(video_path.stat().st_size / 1024 / 1024, 1),
+        })
+
+        action = result.get("action", "skip")
+        if action == "skip":
+            logger.info("[PIPELINE] YouTube upload skipped by user")
+            return
+
+        if action != "upload":
+            logger.info(f"[PIPELINE] YouTube upload cancelled: {action}")
+            return
+
+        try:
+            # Import YouTube API
+            import sys
+            sys.path.insert(0, str(settings.BASE_DIR / "src"))
+            from publisher.youtube_api import YouTubeAPI
+            from publisher.models import ChannelConfig, PrivacyStatus
+
+            # Load channel config
+            channels_dir = settings.BASE_DIR / "config" / "channels"
+            default_channel = channels_dir / "default"
+
+            if not default_channel.exists():
+                logger.warning("[PIPELINE] No default YouTube channel configured")
+                return
+
+            # Load channel config
+            channel_config_path = default_channel / "channel.json"
+            token_path = default_channel / "token.json"
+            secrets_path = settings.BASE_DIR / "config" / "client_secrets.json"
+
+            if not all(p.exists() for p in [channel_config_path, secrets_path]):
+                logger.warning("[PIPELINE] YouTube channel not fully configured")
+                return
+
+            with open(channel_config_path, 'r', encoding='utf-8') as f:
+                channel_data = json.load(f)
+
+            channel_config = ChannelConfig(**channel_data)
+
+            # Initialize YouTube API
+            api = YouTubeAPI(
+                channel_config=channel_config,
+                client_secrets_path=secrets_path,
+                token_path=token_path
+            )
+
+            # Authenticate
+            if not api.authenticate():
+                logger.error("[PIPELINE] YouTube authentication failed")
+                return
+
+            # Upload video
+            logger.info("[PIPELINE] Uploading to YouTube...")
+            success, video_id, error = api.upload_video(
+                video_path=video_path,
+                title=title,
+                description=description,
+                tags=tags,
+                privacy_status=PrivacyStatus.PUBLIC,
+            )
+
+            if success and video_id:
+                video_url = f"https://youtube.com/watch?v={video_id}"
+                logger.success(f"[PIPELINE] YouTube upload complete: {video_url}")
+
+                # Notify UI
+                await broadcast_youtube_success(video_url)
+            else:
+                logger.error(f"[PIPELINE] YouTube upload failed: {error}")
+
+        except ImportError as e:
+            logger.warning(f"[PIPELINE] YouTube module not available: {e}")
+        except Exception as e:
+            logger.error(f"[PIPELINE] YouTube upload error: {e}")
+            # Don't raise - pipeline is essentially complete
+
+
+async def broadcast_youtube_success(video_url: str):
+    """Broadcast YouTube upload success to WebSocket clients."""
+    try:
+        from app.api.control_routes import broadcast_event
+        await broadcast_event("youtube_uploaded", {"video_url": video_url})
+    except Exception:
+        pass

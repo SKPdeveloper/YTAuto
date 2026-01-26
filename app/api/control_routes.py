@@ -621,6 +621,25 @@ async def on_approval_required(approval_type: str, data: dict):
         logger.info(f"Video approval result: {result}")
         return {"action": result}
 
+    # YOUTUBE UPLOAD - wait for user confirmation
+    if approval_type == 'youtube_upload':
+        logger.info("Waiting for YouTube upload confirmation...")
+
+        state.approval_event = asyncio.Event()
+        state.video_approval_result = None
+
+        await broadcast_event("youtube_upload_required", {
+            "type": "youtube_upload",
+            **data
+        })
+
+        # Wait for user action
+        await state.approval_event.wait()
+
+        result = state.video_approval_result or "skip"
+        logger.info(f"YouTube upload result: {result}")
+        return {"action": result}
+
     # Primary image selection - wait for user
     state.awaiting_approval = True
     state.approval_type = approval_type
