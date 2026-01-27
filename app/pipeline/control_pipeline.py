@@ -86,6 +86,9 @@ class ControlPipeline:
             # Stage 6: Generate videos
             await self._generate_videos()
 
+            # Stage 6.5: Generate audio (voiceover + music) - REQUIRED for Gen3a
+            await self._generate_audio()
+
             # Stage 7: Gen3a Video Analysis
             await self._run_gen3a_analysis()
 
@@ -787,6 +790,114 @@ class ControlPipeline:
         logger.info(f"[PIPELINE] Video approval result: {action}")
 
         return action
+
+    async def _generate_audio(self):
+        """Generate voiceover and music for the project."""
+        if not self.project:
+            return
+
+        await self._notify_stage("GENERATING_AUDIO", 72)
+
+        project_dir = settings.PROJECTS_DIR / self.project.project_id
+        voiceover_path = project_dir / "voiceover.mp3"
+        music_dir = project_dir / "music"
+        music_path = music_dir / "background.mp3"
+
+        # Load project brief
+        brief_path = project_dir / "project_brief.json"
+        if not brief_path.exists():
+            logger.warning("[PIPELINE] No project_brief.json for audio generation")
+            return
+
+        with open(brief_path, 'r', encoding='utf-8') as f:
+            project_brief = json.load(f)
+
+        # ==========================================
+        # STEP 1: Generate Voiceover (ElevenLabs)
+        # ==========================================
+        if not voiceover_path.exists():
+            try:
+                from app.services.audio_engine import AudioEngine
+
+                logger.info("[PIPELINE] Generating voiceover...")
+                await self.notify_log("🎙️ Generating voiceover...", "info")
+
+                audio_engine = AudioEngine()
+
+                # Get full voiceover script
+                voiceover_config = project_brief.get("voiceover", {})
+                full_script = voiceover_config.get("full_script", "")
+
+                if not full_script:
+                    # Fallback: combine scene voiceovers
+                    scenes = project_brief.get("scenes", [])
+                    full_script = " ".join(
+                        s.get("voiceover_segment", s.get("voiceover", ""))
+                        for s in scenes
+                    )
+
+                if full_script:
+                    # Get voice settings
+                    voice_settings = voiceover_config.get("settings", {})
+                    voice_id = voice_settings.get("voice_id", "Adam")
+
+                    result_path = await audio_engine.generate_voiceover(
+                        text=full_script,
+                        voice_id=voice_id,
+                        output_path=voiceover_path,
+                    )
+
+                    if result_path and result_path.exists():
+                        logger.success(f"[PIPELINE] Voiceover generated: {result_path}")
+                    else:
+                        logger.warning("[PIPELINE] Voiceover generation returned no file")
+                else:
+                    logger.warning("[PIPELINE] No voiceover script found in brief")
+
+            except Exception as e:
+                logger.error(f"[PIPELINE] Voiceover generation failed: {e}")
+        else:
+            logger.info(f"[PIPELINE] Voiceover already exists: {voiceover_path}")
+
+        # ==========================================
+        # STEP 2: Generate Music (if MusicGenerator available)
+        # ==========================================
+        if not music_path.exists():
+            try:
+                from app.services.music_generator import MusicGenerator
+
+                logger.info("[PIPELINE] Generating background music...")
+                await self.notify_log("🎵 Generating background music...", "info")
+
+                music_dir.mkdir(parents=True, exist_ok=True)
+                music_generator = MusicGenerator()
+
+                # Get music config from brief
+                audio_config = project_brief.get("audio", {})
+                bg_music = audio_config.get("background_music", {})
+
+                prompt = bg_music.get("reference", f"{bg_music.get('genre', 'cinematic')} {bg_music.get('style', 'orchestral')} background music")
+                duration = bg_music.get("duration_seconds", 60)
+
+                result_path = await music_generator.generate(
+                    prompt=prompt,
+                    duration=duration,
+                    output_path=music_path,
+                )
+
+                if result_path and result_path.exists():
+                    logger.success(f"[PIPELINE] Music generated: {result_path}")
+                else:
+                    logger.warning("[PIPELINE] Music generation returned no file")
+
+            except ImportError:
+                logger.warning("[PIPELINE] MusicGenerator not available, skipping music")
+            except Exception as e:
+                logger.error(f"[PIPELINE] Music generation failed: {e}")
+        else:
+            logger.info(f"[PIPELINE] Music already exists: {music_path}")
+
+        logger.success("[PIPELINE] Audio generation complete")
 
     async def _run_gen3a_analysis(self):
         """Run Gen3a video analysis (Gemini Vision)."""
