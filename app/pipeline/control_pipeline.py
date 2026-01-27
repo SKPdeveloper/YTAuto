@@ -514,8 +514,10 @@ class ControlPipeline:
 
         # ================================================================
         # INFINITE RETRY - keep generating until ALL 6 videos are ready
+        # FALLBACK: If scene 6 fails, use reversed scene 1
         # ================================================================
         retry_round = 0
+        scene_6_fallback_used = False
 
         while True:
             retry_round += 1
@@ -538,35 +540,108 @@ class ControlPipeline:
                 logger.success(f"[PIPELINE] ✅ ALL {len(self.project.scenes)} VIDEOS READY!")
                 break
 
+            # FALLBACK: After 3 rounds, if only scene 6 is missing - use reversed scene 1
+            scene_6_missing = any(s.scene_number == 6 for s in scenes_needing_video)
+            only_scene_6_missing = len(scenes_needing_video) == 1 and scene_6_missing
+
+            if retry_round > 3 and scene_6_missing and not scene_6_fallback_used:
+                logger.warning(f"[PIPELINE] Scene 6 failed {retry_round} times - using FALLBACK: reversed Scene 1")
+                await self.notify_log("🔄 Scene 6 fallback: creating from reversed Scene 1", "warning")
+
+                fallback_success = await self._create_scene6_from_reversed_scene1()
+                if fallback_success:
+                    scene_6_fallback_used = True
+                    # Update scene 6 status
+                    scene_6 = next((s for s in self.project.scenes if s.scene_number == 6), None)
+                    if scene_6:
+                        scene_6_dir = settings.PROJECTS_DIR / self.project.project_id / "scene_6"
+                        scene_6.video_path = str(scene_6_dir / "video.mp4")
+                        scene_6.status = SceneStatus.VIDEO_READY
+                    continue
+
+            # If only scene 6 missing and fallback already used, something went wrong
+            if only_scene_6_missing and scene_6_fallback_used:
+                logger.error("[PIPELINE] Scene 6 fallback was used but video still missing!")
+                break
+
             logger.warning(f"[PIPELINE] Video round {retry_round}: Missing {len(scenes_needing_video)} videos: {[s.scene_number for s in scenes_needing_video]}")
             await self.notify_log(f"🔄 Video round {retry_round}: Generating {len(scenes_needing_video)} videos...", "warning")
 
-            # Generate missing videos
-            scenes_data = [{
-                'scene_number': s.scene_number,
-                'image_path': s.image_path,
-                'video_prompt': s.motion_prompt,
-            } for s in scenes_needing_video]
+            # Generate missing videos (exclude scene 6 if fallback will be used)
+            scenes_to_generate = scenes_needing_video
+            if retry_round > 3 and scene_6_missing:
+                scenes_to_generate = [s for s in scenes_needing_video if s.scene_number != 6]
 
-            try:
-                video_paths = await self.orchestrator.visual_engine.generate_all_videos_parallel(
-                    scenes=scenes_data,
-                    project_id=self.project.project_id,
-                )
+            if scenes_to_generate:
+                scenes_data = [{
+                    'scene_number': s.scene_number,
+                    'image_path': s.image_path,
+                    'video_prompt': s.motion_prompt,
+                } for s in scenes_to_generate]
 
-                # Update scene statuses
-                for i, path in enumerate(video_paths):
-                    if path and i < len(scenes_needing_video):
-                        scene = scenes_needing_video[i]
-                        scene.video_path = str(path)
-                        scene.status = SceneStatus.VIDEO_READY
-                        logger.success(f"[Scene {scene.scene_number}] Video ready: {path}")
+                try:
+                    video_paths = await self.orchestrator.visual_engine.generate_all_videos_parallel(
+                        scenes=scenes_data,
+                        project_id=self.project.project_id,
+                    )
 
-            except Exception as e:
-                logger.error(f"Video generation failed: {e}, will retry...")
+                    # Update scene statuses
+                    for i, path in enumerate(video_paths):
+                        if path and i < len(scenes_to_generate):
+                            scene = scenes_to_generate[i]
+                            scene.video_path = str(path)
+                            scene.status = SceneStatus.VIDEO_READY
+                            logger.success(f"[Scene {scene.scene_number}] Video ready: {path}")
+
+                except Exception as e:
+                    logger.error(f"Video generation failed: {e}, will retry...")
 
             await self.orchestrator._save_project_state(self.project)
             await asyncio.sleep(5)
+
+    async def _create_scene6_from_reversed_scene1(self) -> bool:
+        """
+        FALLBACK: Create scene 6 video by reversing scene 1.
+        Scene 6 is LOOP_CLOSE - it should mirror scene 1 for seamless loop.
+        """
+        try:
+            project_dir = settings.PROJECTS_DIR / self.project.project_id
+            scene_1_video = project_dir / "scene_1" / "video.mp4"
+            scene_6_dir = project_dir / "scene_6"
+            scene_6_video = scene_6_dir / "video.mp4"
+
+            if not scene_1_video.exists():
+                logger.error("[FALLBACK] Scene 1 video not found!")
+                return False
+
+            scene_6_dir.mkdir(parents=True, exist_ok=True)
+
+            # Use ffmpeg to reverse video
+            from app.core.config import settings as app_settings
+            ffmpeg_path = app_settings.FFMPEG_PATH or "ffmpeg"
+
+            import subprocess
+            cmd = [
+                str(ffmpeg_path), "-y",
+                "-i", str(scene_1_video),
+                "-vf", "reverse",
+                "-af", "areverse",
+                str(scene_6_video)
+            ]
+
+            logger.info(f"[FALLBACK] Reversing scene 1: {' '.join(cmd)}")
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+
+            if result.returncode == 0 and scene_6_video.exists():
+                logger.success(f"[FALLBACK] ✅ Scene 6 created from reversed Scene 1: {scene_6_video}")
+                return True
+            else:
+                logger.error(f"[FALLBACK] FFmpeg failed: {result.stderr}")
+                return False
+
+        except Exception as e:
+            logger.error(f"[FALLBACK] Error creating scene 6: {e}")
+            return False
 
     async def _assemble_final(self):
         """Assemble final video from scenes with audio."""
