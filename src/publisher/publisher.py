@@ -252,10 +252,11 @@ class Publisher:
             if brief.youtube.pinned_comment:
                 logger.info("Adding pinned comment...")
 
-                success, comment_id, error = youtube.add_comment(
+                # Use add_and_pin_comment with AdsPower if profile configured
+                success, comment_id, error = youtube.add_and_pin_comment(
                     video_id=video_id,
                     comment_text=brief.youtube.pinned_comment,
-                    pin=True,
+                    adspower_profile_id=channel_config.adspower_profile_id,
                 )
 
                 if success:

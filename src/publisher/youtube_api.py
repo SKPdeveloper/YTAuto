@@ -9,10 +9,65 @@ import os
 import time
 import json
 import httplib2
+import random
 from pathlib import Path
 from typing import Optional, Tuple, Callable
 from datetime import datetime, timezone
 from contextlib import contextmanager
+
+
+# ============================================================================
+# HUMAN-LIKE BEHAVIOR HELPERS
+# ============================================================================
+
+def human_delay(min_sec: float = 0.5, max_sec: float = 2.0) -> None:
+    """Random delay to simulate human thinking/reaction time"""
+    time.sleep(random.uniform(min_sec, max_sec))
+
+
+def human_typing_delay() -> None:
+    """Short delay between typing actions"""
+    time.sleep(random.uniform(0.05, 0.15))
+
+
+def human_scroll(driver, direction: str = "random") -> None:
+    """Perform human-like scroll with random amount"""
+    if direction == "random":
+        direction = random.choice(["up", "down"])
+
+    scroll_amount = random.randint(50, 200)
+    if direction == "up":
+        scroll_amount = -scroll_amount
+
+    driver.execute_script(f"window.scrollBy(0, {scroll_amount});")
+    time.sleep(random.uniform(0.3, 0.8))
+
+
+def human_mouse_move(actions, element=None) -> None:
+    """Move mouse in a more natural way with slight randomness"""
+    if element:
+        # Move to element with small random offset
+        offset_x = random.randint(-5, 5)
+        offset_y = random.randint(-5, 5)
+        try:
+            actions.move_to_element_with_offset(element, offset_x, offset_y).perform()
+        except:
+            actions.move_to_element(element).perform()
+    time.sleep(random.uniform(0.1, 0.3))
+
+
+def human_click(actions, element) -> None:
+    """Human-like click with pre-movement and slight delay"""
+    human_mouse_move(actions, element)
+    human_delay(0.2, 0.5)  # Think before clicking
+    element.click()
+    human_delay(0.3, 0.7)  # Pause after click
+
+
+def human_before_action() -> None:
+    """Random pause before important action (simulates thinking)"""
+    if random.random() < 0.3:  # 30% chance of extra pause
+        time.sleep(random.uniform(0.5, 1.5))
 
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -1036,3 +1091,1142 @@ class YouTubeAPI:
         except Exception as e:
             details["error"] = str(e)
             return False, details
+
+    # ========================================================================
+    # COMMENT PINNING VIA ADSPOWER (Browser Automation)
+    # ========================================================================
+
+    def pin_comment_via_adspower(
+        self,
+        video_id: str,
+        adspower_profile_id: str,
+        comment_text: Optional[str] = None,
+        base_url: str = "http://local.adspower.net:50325",
+        timeout: int = 60,
+    ) -> Tuple[bool, Optional[str]]:
+        """
+        Pin a comment on a video using AdsPower browser automation.
+
+        Since YouTube API doesn't support comment pinning, we use browser automation
+        to navigate to YouTube Studio and pin the comment.
+
+        Args:
+            video_id: YouTube video ID
+            adspower_profile_id: AdsPower profile ID to use
+            comment_text: Optional text to identify the comment (pins first channel comment if not specified)
+            base_url: AdsPower API base URL
+            timeout: Max time to wait for elements (seconds)
+
+        Returns:
+            Tuple of (success, error_message)
+        """
+        import httpx
+        from selenium import webdriver
+        from selenium.webdriver.chrome.service import Service
+        from selenium.webdriver.chrome.options import Options
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+        from selenium.common.exceptions import TimeoutException, NoSuchElementException
+
+        logger.info(f"Starting comment pin via AdsPower for video: {video_id}")
+
+        driver = None
+        try:
+            # Start AdsPower profile
+            with httpx.Client(timeout=60) as client:
+                start_resp = client.get(f"{base_url}/api/v1/browser/start?user_id={adspower_profile_id}")
+                start_data = start_resp.json()
+
+                if start_data.get("code") != 0:
+                    error = f"Failed to start AdsPower profile: {start_data.get('msg')}"
+                    logger.error(error)
+                    return False, error
+
+                selenium_addr = start_data["data"]["ws"]["selenium"]
+                webdriver_path = start_data["data"]["webdriver"]
+
+                logger.info("AdsPower browser started, connecting Selenium...")
+
+                # Connect to AdsPower browser
+                chrome_options = Options()
+                chrome_options.add_experimental_option("debuggerAddress", selenium_addr)
+
+                service = Service(executable_path=webdriver_path)
+                driver = webdriver.Chrome(service=service, options=chrome_options)
+
+                wait = WebDriverWait(driver, timeout)
+
+                # Screenshots directory for debugging
+                screenshots_dir = self._uploads_dir.parent / "debug_screenshots"
+                screenshots_dir.mkdir(parents=True, exist_ok=True)
+
+                # Navigate to YouTube Studio comments page
+                studio_url = f"https://studio.youtube.com/video/{video_id}/comments"
+                logger.info(f"Opening YouTube Studio: {studio_url}")
+                driver.get(studio_url)
+
+                # Wait for page to load
+                logger.info("Waiting for page to load...")
+                time.sleep(5)
+
+                # Save screenshot for debugging
+                screenshot_path = screenshots_dir / f"pin_comment_{video_id}_1_initial.png"
+                driver.save_screenshot(str(screenshot_path))
+                logger.debug(f"Screenshot saved: {screenshot_path}")
+
+                # Check current URL - might have redirected
+                current_url = driver.current_url
+                logger.info(f"Current URL: {current_url}")
+
+                # Check if we need to handle any consent dialogs or popups
+                try:
+                    # YouTube consent
+                    consent_buttons = driver.find_elements(By.XPATH,
+                        "//button[contains(., 'Accept') or contains(., 'Agree') or contains(., 'I agree')]")
+                    for btn in consent_buttons:
+                        if btn.is_displayed():
+                            btn.click()
+                            time.sleep(2)
+                            break
+                except:
+                    pass
+
+                # Check for "Got it" or tutorial dialogs and popups
+                try:
+                    popup_buttons = driver.find_elements(By.XPATH,
+                        "//button[contains(., 'Got it') or contains(., 'Dismiss') or contains(., 'Close') or contains(., 'OK')]")
+                    for btn in popup_buttons:
+                        if btn.is_displayed():
+                            logger.info(f"Closing popup: {btn.text}")
+                            btn.click()
+                            time.sleep(1)
+                except:
+                    pass
+
+                # Also try clicking any overlay close buttons
+                try:
+                    close_buttons = driver.find_elements(By.CSS_SELECTOR,
+                        "[aria-label='Close'], .close-button, .dismiss-button")
+                    for btn in close_buttons:
+                        if btn.is_displayed():
+                            btn.click()
+                            time.sleep(1)
+                except:
+                    pass
+
+                # Wait for comments section to load
+                logger.info("Waiting for comments to load...")
+                time.sleep(5)
+
+                # Save another screenshot after waiting
+                screenshot_path = screenshots_dir / f"pin_comment_{video_id}_2_after_wait.png"
+                driver.save_screenshot(str(screenshot_path))
+
+                # Log page source for debugging
+                page_title = driver.title
+                logger.info(f"Page title: {page_title}")
+
+                # Find the comment to pin
+                comment_found = False
+
+                # Try to find comment rows with multiple selector strategies
+                try:
+                    # First, try to find any element that indicates comments loaded
+                    comment_selectors = [
+                        "ytcp-comment-thread",
+                        "#comment-thread",
+                        "[class*='comment']",
+                        "ytcp-comments-section",
+                        "#comments-section",
+                    ]
+
+                    comment_threads = []
+                    for selector in comment_selectors:
+                        try:
+                            elements = driver.find_elements(By.CSS_SELECTOR, selector)
+                            if elements:
+                                logger.info(f"Found {len(elements)} elements with selector: {selector}")
+                                comment_threads = elements
+                                break
+                        except:
+                            continue
+
+                    # If no comments found, try waiting longer
+                    if not comment_threads:
+                        logger.info("No comments found yet, waiting longer...")
+                        time.sleep(10)
+
+                        # Try again with broader selectors
+                        for selector in comment_selectors:
+                            try:
+                                elements = driver.find_elements(By.CSS_SELECTOR, selector)
+                                if elements:
+                                    comment_threads = elements
+                                    break
+                            except:
+                                continue
+
+                    # Save screenshot
+                    screenshot_path = screenshots_dir / f"pin_comment_{video_id}_3_comments.png"
+                    driver.save_screenshot(str(screenshot_path))
+
+                    if not comment_threads:
+                        # Log HTML for debugging
+                        html_path = screenshots_dir / f"pin_comment_{video_id}_page.html"
+                        with open(html_path, "w", encoding="utf-8") as f:
+                            f.write(driver.page_source)
+                        logger.info(f"Page HTML saved to: {html_path}")
+
+                        return False, f"No comments found. Screenshots saved to {screenshots_dir}"
+
+                    logger.info(f"Found {len(comment_threads)} comment elements")
+
+                    target_comment = None
+
+                    if comment_text:
+                        # Find comment by text
+                        for thread in comment_threads:
+                            try:
+                                # Try different text selectors
+                                text_found = False
+                                for text_sel in ["#content-text", ".comment-text", "[slot='main']", "span", "p"]:
+                                    try:
+                                        text_element = thread.find_element(By.CSS_SELECTOR, text_sel)
+                                        if comment_text[:30] in text_element.text:
+                                            target_comment = thread
+                                            logger.info(f"Found comment by text match: {text_element.text[:50]}")
+                                            text_found = True
+                                            break
+                                    except:
+                                        continue
+                                if text_found:
+                                    break
+                            except:
+                                continue
+
+                    if not target_comment and comment_threads:
+                        # Use first comment
+                        target_comment = comment_threads[0]
+                        logger.info("Using first comment element")
+
+                    # Import ActionChains for hover
+                    from selenium.webdriver.common.action_chains import ActionChains
+                    actions = ActionChains(driver)
+
+                    # Hover over comment to reveal menu button
+                    logger.info("Hovering over comment to reveal menu...")
+                    actions.move_to_element(target_comment).perform()
+                    time.sleep(2)
+
+                    # Screenshot after hover
+                    screenshot_path = screenshots_dir / f"pin_comment_{video_id}_4_hover.png"
+                    driver.save_screenshot(str(screenshot_path))
+
+                    # Find and click the 3-dot menu button (vertical dots ⋮)
+                    menu_button = None
+
+                    # The 3-dot menu is usually the last icon button in the comment row
+                    # Look for it specifically
+                    try:
+                        # Find all icon buttons in the comment
+                        icon_buttons = target_comment.find_elements(By.CSS_SELECTOR, "ytcp-icon-button")
+                        logger.info(f"Found {len(icon_buttons)} icon buttons in comment")
+
+                        # The 3-dot menu is typically the last one or has more-vert icon
+                        for btn in reversed(icon_buttons):  # Start from last
+                            try:
+                                icon = btn.get_attribute("icon") or ""
+                                if "more" in icon.lower() or "vert" in icon.lower():
+                                    menu_button = btn
+                                    logger.info(f"Found 3-dot menu by icon attribute: {icon}")
+                                    break
+                            except:
+                                continue
+
+                        # If not found by icon, use the last button (usually the menu)
+                        if not menu_button and icon_buttons:
+                            menu_button = icon_buttons[-1]
+                            logger.info("Using last icon button as menu")
+                    except Exception as e:
+                        logger.debug(f"Error finding icon buttons: {e}")
+
+                    # Fallback selectors
+                    if not menu_button:
+                        menu_selectors = [
+                            "[icon='icons:more-vert']",
+                            "#overflow-menu-button",
+                            "button[aria-label*='More']",
+                            ".dropdown-trigger",
+                        ]
+                        for selector in menu_selectors:
+                            try:
+                                menu_button = target_comment.find_element(By.CSS_SELECTOR, selector)
+                                if menu_button.is_displayed():
+                                    logger.info(f"Found menu button with selector: {selector}")
+                                    break
+                                menu_button = None
+                            except:
+                                continue
+
+                    if not menu_button:
+                        # Try clicking directly on the comment row area where menu should be
+                        screenshot_path = screenshots_dir / f"pin_comment_{video_id}_5_no_menu.png"
+                        driver.save_screenshot(str(screenshot_path))
+                        return False, f"Could not find comment menu button. Screenshots saved."
+
+                    logger.info("Clicking menu button...")
+                    menu_button.click()
+                    time.sleep(2)
+
+                    # Screenshot of opened menu
+                    screenshot_path = screenshots_dir / f"pin_comment_{video_id}_6_menu_open.png"
+                    driver.save_screenshot(str(screenshot_path))
+
+                    # Find and click "Pin" option
+                    pin_clicked = False
+                    pin_selectors = [
+                        "//ytcp-ve[contains(., 'Pin')]",
+                        "//tp-yt-paper-item[contains(., 'Pin')]",
+                        "//*[contains(@class, 'item')][contains(., 'Pin')]",
+                        "//div[contains(text(), 'Pin')]",
+                        "//span[contains(text(), 'Pin')]",
+                        "//yt-formatted-string[contains(text(), 'Pin')]",
+                    ]
+
+                    for selector in pin_selectors:
+                        try:
+                            pin_options = driver.find_elements(By.XPATH, selector)
+                            for pin_option in pin_options:
+                                if pin_option.is_displayed() and "pin" in pin_option.text.lower():
+                                    pin_option.click()
+                                    pin_clicked = True
+                                    logger.info(f"Clicked Pin option: {pin_option.text}")
+                                    break
+                            if pin_clicked:
+                                break
+                        except:
+                            continue
+
+                    if not pin_clicked:
+                        # Try clicking any visible menu item that contains "Pin"
+                        try:
+                            # Get all potential menu items
+                            all_items = driver.find_elements(By.CSS_SELECTOR,
+                                "tp-yt-paper-item, paper-item, ytcp-ve, .menu-item, [role='menuitem']")
+                            logger.info(f"Found {len(all_items)} potential menu items")
+
+                            for item in all_items:
+                                try:
+                                    item_text = item.text.strip().lower()
+                                    if item.is_displayed() and "pin" in item_text:
+                                        logger.info(f"Clicking menu item: {item.text}")
+                                        item.click()
+                                        pin_clicked = True
+                                        break
+                                except:
+                                    continue
+                        except Exception as e:
+                            logger.debug(f"Error searching menu items: {e}")
+
+                    if not pin_clicked:
+                        screenshot_path = screenshots_dir / f"pin_comment_{video_id}_7_no_pin.png"
+                        driver.save_screenshot(str(screenshot_path))
+                        return False, f"Could not find Pin option in menu. Screenshots saved."
+
+                    time.sleep(2)
+
+                    # Handle confirmation dialog if present
+                    try:
+                        confirm_button = driver.find_element(By.XPATH,
+                            "//button[contains(., 'Pin') or contains(., 'Confirm') or contains(., 'Yes')]"
+                        )
+                        confirm_button.click()
+                        logger.info("Confirmed pin action")
+                        time.sleep(1)
+                    except NoSuchElementException:
+                        pass  # No confirmation needed
+
+                    logger.success(f"Comment pinned successfully for video {video_id}")
+                    return True, None
+
+                except TimeoutException:
+                    return False, "Timeout waiting for comments to load"
+
+        except Exception as e:
+            error = f"AdsPower pin comment error: {e}"
+            logger.error(error)
+            return False, error
+
+        finally:
+            # Don't close the browser - leave it for user to verify
+            # if driver:
+            #     driver.quit()
+            pass
+
+    def add_and_pin_comment(
+        self,
+        video_id: str,
+        comment_text: str,
+        adspower_profile_id: Optional[str] = None,
+    ) -> Tuple[bool, Optional[str], Optional[str]]:
+        """
+        Add a comment and pin it.
+
+        If adspower_profile_id is provided, uses browser automation for both
+        adding and pinning (recommended - avoids API auth issues).
+
+        Args:
+            video_id: YouTube video ID
+            comment_text: Comment text to add
+            adspower_profile_id: AdsPower profile for browser automation
+
+        Returns:
+            Tuple of (success, comment_id, error_message)
+        """
+        if not comment_text:
+            return True, None, None
+
+        # If AdsPower profile provided, use full browser automation
+        if adspower_profile_id:
+            logger.info("Adding and pinning comment via AdsPower browser...")
+            success, error = self.add_and_pin_comment_via_adspower(
+                video_id=video_id,
+                comment_text=comment_text,
+                adspower_profile_id=adspower_profile_id,
+            )
+            if success:
+                return True, "browser_comment", None
+            else:
+                return False, None, error
+
+        # Fallback: try API (may fail with 401)
+        logger.info("Adding comment via API (no AdsPower profile)...")
+        success, comment_id, error = self.add_comment(
+            video_id=video_id,
+            comment_text=comment_text,
+            pin=False,
+        )
+        return success, comment_id, error
+
+    def add_and_pin_comment_via_adspower(
+        self,
+        video_id: str,
+        comment_text: str,
+        adspower_profile_id: str,
+        base_url: str = "http://local.adspower.net:50325",
+        timeout: int = 60,
+    ) -> Tuple[bool, Optional[str]]:
+        """
+        Add a comment and pin it using AdsPower browser automation.
+
+        Opens YouTube video page, adds comment, then goes to Studio to pin it.
+
+        Args:
+            video_id: YouTube video ID
+            comment_text: Comment text to add
+            adspower_profile_id: AdsPower profile ID
+            base_url: AdsPower API base URL
+            timeout: Max time to wait for elements
+
+        Returns:
+            Tuple of (success, error_message)
+        """
+        import httpx
+        from selenium import webdriver
+        from selenium.webdriver.chrome.service import Service
+        from selenium.webdriver.chrome.options import Options
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.common.keys import Keys
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+        from selenium.common.exceptions import TimeoutException, NoSuchElementException
+        from selenium.webdriver.common.action_chains import ActionChains
+
+        logger.info(f"Adding and pinning comment via AdsPower for video: {video_id}")
+
+        driver = None
+        try:
+            # Start AdsPower profile
+            with httpx.Client(timeout=60) as client:
+                start_resp = client.get(f"{base_url}/api/v1/browser/start?user_id={adspower_profile_id}")
+                start_data = start_resp.json()
+
+                if start_data.get("code") != 0:
+                    error = f"Failed to start AdsPower profile: {start_data.get('msg')}"
+                    logger.error(error)
+                    return False, error
+
+                selenium_addr = start_data["data"]["ws"]["selenium"]
+                webdriver_path = start_data["data"]["webdriver"]
+
+                logger.info("AdsPower browser started, connecting Selenium...")
+
+                chrome_options = Options()
+                chrome_options.add_experimental_option("debuggerAddress", selenium_addr)
+
+                service = Service(executable_path=webdriver_path)
+                driver = webdriver.Chrome(service=service, options=chrome_options)
+
+                wait = WebDriverWait(driver, timeout)
+                actions = ActionChains(driver)
+
+                # Screenshots directory
+                screenshots_dir = self._uploads_dir.parent / "debug_screenshots"
+                screenshots_dir.mkdir(parents=True, exist_ok=True)
+
+                # ============================================================
+                # STEP 1: Go to YouTube video watch page and add comment
+                # ============================================================
+                # Use regular watch URL (not shorts) for better comment UI
+                video_url = f"https://www.youtube.com/watch?v={video_id}"
+                logger.info(f"Opening video page: {video_url}")
+                driver.get(video_url)
+                human_delay(5, 8)  # Human-like wait for page load
+
+                # Verify we're on the right page
+                current_url = driver.current_url
+                logger.info(f"Current URL: {current_url}")
+
+                if "youtube.com/watch" not in current_url and "youtube.com/shorts" not in current_url:
+                    logger.warning(f"Unexpected URL: {current_url}, retrying navigation...")
+                    driver.get(video_url)
+                    human_delay(5, 8)
+
+                # Handle cookie consent if appears
+                try:
+                    consent_buttons = driver.find_elements(By.XPATH,
+                        "//button[contains(., 'Accept') or contains(., 'Agree') or contains(., 'Reject')]")
+                    for btn in consent_buttons:
+                        if btn.is_displayed():
+                            human_before_action()
+                            btn.click()
+                            logger.info("Handled consent dialog")
+                            human_delay(1, 3)
+                            break
+                except:
+                    pass
+
+                # Human-like: look around the page first
+                human_delay(1, 2)
+                human_scroll(driver, "down")  # Scroll down a bit
+                human_delay(0.5, 1.5)
+                human_scroll(driver, "up")    # Scroll back up slightly
+                human_delay(0.5, 1)
+
+                # Screenshot
+                screenshot_path = screenshots_dir / f"add_comment_{video_id}_1_video.png"
+                driver.save_screenshot(str(screenshot_path))
+
+                # Scroll down to comments section with human-like behavior
+                logger.info("Scrolling to comments section...")
+                # Multiple smaller scrolls instead of one big jump
+                for _ in range(random.randint(2, 4)):
+                    scroll_amount = random.randint(150, 300)
+                    driver.execute_script(f"window.scrollBy(0, {scroll_amount});")
+                    human_delay(0.4, 1.0)
+
+                human_delay(1, 2)  # Pause to "read" comments
+
+                # Screenshot after scroll
+                screenshot_path = screenshots_dir / f"add_comment_{video_id}_2_scrolled.png"
+                driver.save_screenshot(str(screenshot_path))
+
+                # Find comment input placeholder and click to activate
+                logger.info("Looking for comment input...")
+                input_activated = False
+
+                # First, look for the placeholder that says "Add a comment..."
+                placeholder_selectors = [
+                    "#simplebox-placeholder",
+                    "#placeholder-area",
+                    "ytd-comment-simplebox-renderer #placeholder-area",
+                    "[placeholder*='Add a comment']",
+                    "yt-formatted-string#placeholder-area",
+                ]
+
+                for selector in placeholder_selectors:
+                    try:
+                        placeholders = driver.find_elements(By.CSS_SELECTOR, selector)
+                        for ph in placeholders:
+                            if ph.is_displayed():
+                                logger.info(f"Found placeholder: {selector}")
+                                # Human-like: move to element, pause, then click
+                                human_mouse_move(actions, ph)
+                                human_before_action()
+                                human_delay(0.3, 0.8)
+                                ph.click()
+                                input_activated = True
+                                human_delay(1, 2.5)
+                                break
+                        if input_activated:
+                            break
+                    except:
+                        continue
+
+                if not input_activated:
+                    screenshot_path = screenshots_dir / f"add_comment_{video_id}_error_no_placeholder.png"
+                    driver.save_screenshot(str(screenshot_path))
+                    return False, f"Could not find comment placeholder. Screenshot saved."
+
+                # Now find the actual editable input area
+                human_delay(1, 2)
+                screenshot_path = screenshots_dir / f"add_comment_{video_id}_3_input_active.png"
+                driver.save_screenshot(str(screenshot_path))
+
+                # Type the comment
+                input_box = None
+                input_selectors = [
+                    "#contenteditable-root",
+                    "div#contenteditable-root[contenteditable='true']",
+                    "ytd-comment-simplebox-renderer #contenteditable-root",
+                ]
+
+                for selector in input_selectors:
+                    try:
+                        elements = driver.find_elements(By.CSS_SELECTOR, selector)
+                        for el in elements:
+                            if el.is_displayed():
+                                input_box = el
+                                logger.info(f"Found input: {selector}")
+                                break
+                        if input_box:
+                            break
+                    except:
+                        continue
+
+                if not input_box:
+                    return False, "Could not find comment input after activation"
+
+                # Human-like: move to input, pause, then click
+                human_mouse_move(actions, input_box)
+                human_delay(0.3, 0.7)
+                input_box.click()
+                human_delay(0.8, 1.5)  # Pause like thinking what to write
+
+                # Use clipboard paste to support emoji - most reliable method
+                # ChromeDriver send_keys doesn't support characters outside BMP (emoji)
+                try:
+                    import pyperclip
+                    pyperclip.copy(comment_text)
+                    human_delay(0.3, 0.8)  # Small pause before paste
+                    # Paste from clipboard using Ctrl+V
+                    actions.key_down(Keys.CONTROL).send_keys('v').key_up(Keys.CONTROL).perform()
+                    logger.info("Typed comment text via clipboard paste (supports emoji)")
+                except ImportError:
+                    logger.warning("pyperclip not installed, trying JavaScript...")
+                    # Fallback to JavaScript with proper event triggering
+                    try:
+                        driver.execute_script("""
+                            var el = arguments[0];
+                            var text = arguments[1];
+                            el.focus();
+                            el.textContent = text;
+                            el.dispatchEvent(new Event('input', { bubbles: true }));
+                            el.dispatchEvent(new Event('change', { bubbles: true }));
+                        """, input_box, comment_text)
+                        logger.info("Typed comment text via JavaScript with events")
+                    except Exception as js_err:
+                        logger.warning(f"JavaScript failed: {js_err}, trying send_keys (may lose emoji)...")
+                        input_box.send_keys(comment_text)
+                        logger.info("Typed comment text via send_keys")
+                except Exception as paste_err:
+                    logger.warning(f"Clipboard paste failed: {paste_err}, trying JavaScript...")
+                    driver.execute_script(
+                        "arguments[0].textContent = arguments[1];",
+                        input_box,
+                        comment_text
+                    )
+                    logger.info("Typed comment text via JavaScript fallback")
+
+                # Human-like: pause to "review" the comment before submitting
+                human_delay(1.5, 3.0)
+
+                # Screenshot after typing
+                screenshot_path = screenshots_dir / f"add_comment_{video_id}_4_typed.png"
+                driver.save_screenshot(str(screenshot_path))
+
+                # Find and click Submit/Comment button
+                submit_button = None
+
+                # Look for the submit button in the comment form
+                submit_selectors = [
+                    "ytd-comment-simplebox-renderer #submit-button",
+                    "#submit-button yt-button-shape button",
+                    "#submit-button button",
+                    "#submit-button",
+                ]
+
+                for selector in submit_selectors:
+                    try:
+                        buttons = driver.find_elements(By.CSS_SELECTOR, selector)
+                        for btn in buttons:
+                            if btn.is_displayed():
+                                # Check if button is enabled (not aria-disabled)
+                                aria_disabled = btn.get_attribute("aria-disabled")
+                                if aria_disabled != "true":
+                                    submit_button = btn
+                                    logger.info(f"Found submit button: {selector}")
+                                    break
+                        if submit_button:
+                            break
+                    except:
+                        continue
+
+                # Try XPath
+                if not submit_button:
+                    try:
+                        xpaths = [
+                            "//ytd-comment-simplebox-renderer//button[@aria-label='Comment']",
+                            "//div[@id='submit-button']//button",
+                            "//tp-yt-paper-button[@aria-label='Comment']",
+                        ]
+                        for xpath in xpaths:
+                            try:
+                                btn = driver.find_element(By.XPATH, xpath)
+                                if btn.is_displayed():
+                                    submit_button = btn
+                                    logger.info(f"Found submit via XPath")
+                                    break
+                            except:
+                                continue
+                    except:
+                        pass
+
+                if not submit_button:
+                    screenshot_path = screenshots_dir / f"add_comment_{video_id}_error_no_submit.png"
+                    driver.save_screenshot(str(screenshot_path))
+                    return False, f"Could not find submit button. Screenshot saved."
+
+                # Human-like: move to button, pause, then click
+                logger.info("Clicking submit button...")
+                human_mouse_move(actions, submit_button)
+                human_delay(0.5, 1.0)  # Hesitate before submitting
+                submit_button.click()
+                human_delay(2, 4)  # Wait for submission
+
+                # Handle "Remember that anyone can see what you write" popup
+                try:
+                    got_it_buttons = driver.find_elements(By.XPATH,
+                        "//button[contains(., 'Got it')] | //yt-button-shape//button[contains(., 'Got it')]")
+                    for btn in got_it_buttons:
+                        if btn.is_displayed():
+                            logger.info("Handling 'Got it' popup...")
+                            btn.click()
+                            time.sleep(3)
+                            break
+                except:
+                    pass
+
+                # Wait for comment to be submitted - need longer wait for YouTube to process
+                logger.info("Waiting for YouTube to process comment...")
+                time.sleep(8)
+
+                # Screenshot after submit
+                screenshot_path = screenshots_dir / f"add_comment_{video_id}_5_submitted.png"
+                driver.save_screenshot(str(screenshot_path))
+
+                # Verify comment was added by checking if our text appears
+                comment_verified = False
+                max_verify_attempts = 3
+
+                for attempt in range(max_verify_attempts):
+                    try:
+                        # Scroll to comments section to refresh view
+                        driver.execute_script("window.scrollTo(0, 400);")
+                        time.sleep(3)
+
+                        page_source = driver.page_source
+                        if comment_text[:30] in page_source:
+                            logger.success(f"Comment verified on page! (attempt {attempt + 1})")
+                            comment_verified = True
+                            break
+                        else:
+                            logger.warning(f"Comment not found yet (attempt {attempt + 1}/{max_verify_attempts})")
+                            time.sleep(5)
+                    except Exception as e:
+                        logger.debug(f"Verification error: {e}")
+                        time.sleep(3)
+
+                if not comment_verified:
+                    # Take screenshot and return error - don't proceed to pin random comment
+                    screenshot_path = screenshots_dir / f"add_comment_{video_id}_error_not_verified.png"
+                    driver.save_screenshot(str(screenshot_path))
+                    return False, f"Comment was not verified on page after {max_verify_attempts} attempts. May have been blocked by YouTube moderation. Screenshot saved."
+
+                logger.success("Comment added and verified!")
+
+                # ============================================================
+                # STEP 2: Go to YouTube Studio to pin the comment
+                # ============================================================
+                logger.info("Now going to YouTube Studio to pin comment...")
+                logger.info(f"Will verify comment author matches: {self.channel_config.channel_name}")
+
+                # Use existing pin method with channel name for author verification
+                pin_success, pin_error = self._pin_comment_in_studio(
+                    driver=driver,
+                    video_id=video_id,
+                    comment_text=comment_text,
+                    screenshots_dir=screenshots_dir,
+                    timeout=timeout,
+                    channel_name=self.channel_config.channel_name,
+                )
+
+                if not pin_success:
+                    return False, f"Comment added but pin failed: {pin_error}"
+
+                logger.success("Comment added and pinned successfully!")
+                return True, None
+
+        except Exception as e:
+            error = f"AdsPower add/pin comment error: {e}"
+            logger.error(error)
+            return False, error
+
+        finally:
+            pass  # Don't close browser
+
+    def _pin_comment_in_studio(
+        self,
+        driver,
+        video_id: str,
+        comment_text: str,
+        screenshots_dir: Path,
+        timeout: int = 60,
+        channel_name: Optional[str] = None,
+    ) -> Tuple[bool, Optional[str]]:
+        """
+        Pin a comment in YouTube Studio (helper method, uses existing driver).
+
+        IMPORTANT: Only pins comments that match BOTH:
+        1. The exact comment text (first 30 chars)
+        2. The channel owner (our channel)
+
+        Never pins random/other people's comments.
+        """
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+        from selenium.common.exceptions import TimeoutException, NoSuchElementException
+        from selenium.webdriver.common.action_chains import ActionChains
+
+        wait = WebDriverWait(driver, timeout)
+        actions = ActionChains(driver)
+
+        # Get channel name for author verification
+        if not channel_name:
+            channel_name = self.channel_config.channel_name
+        logger.info(f"Will only pin comments from channel: {channel_name}")
+
+        # Navigate to YouTube Studio comments page
+        studio_url = f"https://studio.youtube.com/video/{video_id}/comments"
+        logger.info(f"Opening YouTube Studio: {studio_url}")
+        driver.get(studio_url)
+        human_delay(4, 6)
+
+        # Human-like: look around the page
+        human_scroll(driver, "down")
+        human_delay(0.5, 1)
+        human_scroll(driver, "up")
+        human_delay(1, 2)
+
+        # Refresh page to ensure we see latest comments
+        logger.info("Refreshing page to load latest comments...")
+        driver.refresh()
+        human_delay(4, 6)
+
+        # Handle popups with human-like behavior
+        try:
+            popup_buttons = driver.find_elements(By.XPATH,
+                "//button[contains(., 'Got it') or contains(., 'Dismiss') or contains(., 'Close') or contains(., 'OK')]")
+            for btn in popup_buttons:
+                if btn.is_displayed():
+                    human_delay(0.5, 1.0)
+                    btn.click()
+                    human_delay(0.8, 1.5)
+        except:
+            pass
+
+        human_delay(2, 4)
+
+        # IMPORTANT: Clear any filters that might hide our comment
+        # Look for filter chips with "X" close button and remove them
+        logger.info("Clearing any active filters...")
+        try:
+            # Find filter chips (like "Response status: Unresponded")
+            filter_close_buttons = driver.find_elements(By.CSS_SELECTOR,
+                "[class*='filter'] [aria-label*='Remove'], [class*='chip'] button, ytcp-chip-bar button")
+            for btn in filter_close_buttons:
+                try:
+                    if btn.is_displayed():
+                        logger.info(f"Removing filter: clicking close button")
+                        human_delay(0.3, 0.7)
+                        btn.click()
+                        human_delay(0.8, 1.5)
+                except:
+                    continue
+
+            # Also try clicking the "X" icon on filter badges
+            filter_x_icons = driver.find_elements(By.XPATH,
+                "//span[contains(@class, 'remove') or contains(@class, 'close')]//ancestor::button | " +
+                "//button[contains(@aria-label, 'Remove') or contains(@aria-label, 'Clear')]")
+            for icon in filter_x_icons:
+                try:
+                    if icon.is_displayed():
+                        logger.info("Clicking filter X icon")
+                        human_delay(0.3, 0.6)
+                        icon.click()
+                        human_delay(0.8, 1.2)
+                except:
+                    continue
+
+            # Try clicking directly on chips that have X in them
+            chips_with_x = driver.find_elements(By.XPATH,
+                "//*[contains(text(), '×') or contains(text(), '✕')]/ancestor::*[contains(@class, 'chip') or contains(@class, 'filter')]")
+            for chip in chips_with_x:
+                try:
+                    if chip.is_displayed():
+                        # Find the close button inside
+                        close_btn = chip.find_elements(By.CSS_SELECTOR, "button, [role='button']")
+                        for btn in close_btn:
+                            if btn.is_displayed():
+                                human_delay(0.3, 0.5)
+                                btn.click()
+                                human_delay(0.6, 1.0)
+                                break
+                except:
+                    continue
+
+        except Exception as e:
+            logger.debug(f"Filter clearing error (non-fatal): {e}")
+
+        # Try to find and click any visible "✕" or close icons in the filter area
+        try:
+            # Look for elements containing ✕ character specifically
+            close_elements = driver.find_elements(By.XPATH,
+                "//*[text()='✕' or text()='×' or text()='X']")
+            for el in close_elements:
+                try:
+                    if el.is_displayed():
+                        parent = el.find_element(By.XPATH, "./..")
+                        if parent.is_displayed():
+                            logger.info("Found ✕ element, clicking parent")
+                            human_delay(0.4, 0.8)
+                            parent.click()
+                            human_delay(1.5, 2.5)
+                except:
+                    continue
+        except:
+            pass
+
+        human_delay(1.5, 3)
+
+        # Screenshot after clearing filters
+        screenshot_path = screenshots_dir / f"pin_{video_id}_studio.png"
+        driver.save_screenshot(str(screenshot_path))
+
+        # Find comments
+        try:
+            comment_selectors = ["ytcp-comment-thread", "[class*='comment']"]
+            comment_threads = []
+
+            for selector in comment_selectors:
+                elements = driver.find_elements(By.CSS_SELECTOR, selector)
+                if elements:
+                    comment_threads = elements
+                    break
+
+            if not comment_threads:
+                logger.info("No comments found yet, waiting longer...")
+                time.sleep(10)
+                # Refresh and try again
+                driver.refresh()
+                time.sleep(5)
+                for selector in comment_selectors:
+                    elements = driver.find_elements(By.CSS_SELECTOR, selector)
+                    if elements:
+                        comment_threads = elements
+                        break
+
+            if not comment_threads:
+                return False, "No comments found in Studio after refresh"
+
+            logger.info(f"Found {len(comment_threads)} comments")
+
+            # Find our specific comment by BOTH text AND author
+            target_comment = None
+            search_text = comment_text[:30] if comment_text else ""
+
+            if not search_text:
+                return False, "No comment text provided - cannot verify which comment to pin"
+
+            logger.info(f"Looking for comment with text: '{search_text}...'")
+            logger.info(f"And author: '{channel_name}'")
+
+            for thread in comment_threads:
+                try:
+                    thread_text = thread.text
+                    logger.debug(f"Checking comment: {thread_text[:100]}...")
+
+                    # Check if text matches
+                    if search_text not in thread_text:
+                        continue
+
+                    logger.info("Text match found! Verifying author...")
+
+                    # Try to find author name in the comment thread
+                    # In YouTube Studio, the author is usually in a specific element
+                    author_found = False
+                    author_selectors = [
+                        "#author-text",
+                        ".author-text",
+                        "[class*='author']",
+                        "a[href*='channel']",
+                        "#name",
+                    ]
+
+                    for author_sel in author_selectors:
+                        try:
+                            author_elements = thread.find_elements(By.CSS_SELECTOR, author_sel)
+                            for author_el in author_elements:
+                                author_text = author_el.text.strip()
+                                if author_text:
+                                    logger.info(f"Found author: '{author_text}'")
+                                    # Check if this is our channel (case-insensitive, partial match)
+                                    if (channel_name.lower() in author_text.lower() or
+                                        author_text.lower() in channel_name.lower()):
+                                        author_found = True
+                                        logger.info(f"Author verified as our channel!")
+                                        break
+                            if author_found:
+                                break
+                        except:
+                            continue
+
+                    # If we couldn't verify author but text matches,
+                    # check if the comment has "owner" badge or similar indicator
+                    if not author_found:
+                        try:
+                            # Look for owner badge or similar indicators
+                            owner_indicators = thread.find_elements(By.CSS_SELECTOR,
+                                "[class*='owner'], [class*='creator'], [class*='badge']")
+                            for indicator in owner_indicators:
+                                if indicator.is_displayed():
+                                    logger.info("Found owner/creator badge - this is our comment")
+                                    author_found = True
+                                    break
+                        except:
+                            pass
+
+                    # If text matches and either author verified OR we're in the first position
+                    # (owner comments typically appear first in Studio)
+                    if author_found:
+                        target_comment = thread
+                        logger.success("Found our comment with verified authorship!")
+                        break
+                    else:
+                        # Text matches but couldn't verify author
+                        # Log this but continue looking for a better match
+                        logger.warning(f"Text matches but couldn't verify author for this comment")
+                        # Store as potential match but keep looking
+                        if target_comment is None:
+                            target_comment = thread
+                            logger.info("Storing as potential match, continuing search...")
+
+                except Exception as e:
+                    logger.debug(f"Error checking comment: {e}")
+                    continue
+
+            # STRICT CHECK: Never pin a random comment
+            if not target_comment:
+                screenshot_path = screenshots_dir / f"pin_{video_id}_not_found.png"
+                driver.save_screenshot(str(screenshot_path))
+
+                # Log all visible comments for debugging
+                logger.warning("Could not find our comment. Visible comments:")
+                for i, thread in enumerate(comment_threads[:5]):
+                    try:
+                        logger.warning(f"  {i+1}. {thread.text[:100]}...")
+                    except:
+                        pass
+
+                return False, f"Could not find comment with text '{search_text}' from our channel. Screenshot saved."
+
+            logger.info("Proceeding to pin the verified comment...")
+
+            # Human-like: random scroll before action
+            human_before_action()
+            if random.random() < 0.3:
+                human_scroll(driver, "random")
+
+            # Hover to reveal menu with human-like movement
+            human_mouse_move(actions, target_comment)
+            human_delay(1, 2)
+
+            # Find 3-dot menu
+            icon_buttons = target_comment.find_elements(By.CSS_SELECTOR, "ytcp-icon-button")
+            menu_button = None
+
+            for btn in reversed(icon_buttons):
+                icon = btn.get_attribute("icon") or ""
+                if "more" in icon.lower() or "vert" in icon.lower():
+                    menu_button = btn
+                    break
+
+            if not menu_button and icon_buttons:
+                menu_button = icon_buttons[-1]
+
+            if not menu_button:
+                return False, "Could not find menu button"
+
+            # Human-like click on menu
+            logger.info("Clicking menu...")
+            human_mouse_move(actions, menu_button)
+            human_delay(0.3, 0.7)
+            menu_button.click()
+            human_delay(1.5, 2.5)
+
+            # Screenshot of menu
+            screenshot_path = screenshots_dir / f"pin_{video_id}_menu.png"
+            driver.save_screenshot(str(screenshot_path))
+
+            # Find Pin option
+            pin_clicked = False
+            all_items = driver.find_elements(By.CSS_SELECTOR,
+                "tp-yt-paper-item, paper-item, ytcp-ve, [role='menuitem']")
+
+            for item in all_items:
+                try:
+                    if item.is_displayed() and "pin" in item.text.lower():
+                        # Human-like: move to item and click
+                        human_mouse_move(actions, item)
+                        human_delay(0.3, 0.6)
+                        item.click()
+                        pin_clicked = True
+                        logger.info(f"Clicked: {item.text}")
+                        break
+                except:
+                    continue
+
+            if not pin_clicked:
+                return False, "Could not find Pin option"
+
+            human_delay(1.5, 2.5)
+
+            # Handle confirmation
+            try:
+                confirm = driver.find_element(By.XPATH,
+                    "//button[contains(., 'Pin') or contains(., 'Confirm') or contains(., 'Yes')]")
+                human_mouse_move(actions, confirm)
+                human_delay(0.4, 0.8)
+                confirm.click()
+                logger.info("Confirmed pin")
+                human_delay(1.5, 2.5)
+            except:
+                pass
+
+            logger.success("Comment pinned!")
+            return True, None
+
+        except Exception as e:
+            return False, str(e)

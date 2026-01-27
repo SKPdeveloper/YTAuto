@@ -561,6 +561,96 @@ def resume(
 
 
 # ============================================================================
+# COMMENT PINNING
+# ============================================================================
+
+@app.command("test-pin")
+def test_pin_comment(
+    video_id: str = typer.Argument(..., help="YouTube video ID"),
+    channel_id: str = typer.Argument(..., help="Channel ID"),
+    comment: str = typer.Option("Test pinned comment from YTAuto", "--comment", "-c", help="Comment text"),
+):
+    """Test comment pinning via AdsPower browser automation."""
+    config = get_config_manager()
+
+    if not config.channel_exists(channel_id):
+        console.print(f"[red]Channel not found:[/red] {channel_id}")
+        raise typer.Exit(1)
+
+    channel_config = config.load_channel_config(channel_id)
+
+    if not channel_config.adspower_profile_id:
+        console.print(f"[red]AdsPower profile not configured for channel:[/red] {channel_id}")
+        console.print("[dim]Add 'adspower_profile_id' to channel config.json[/dim]")
+        raise typer.Exit(1)
+
+    youtube = YouTubeAPI(
+        channel_config=channel_config,
+        client_secrets_path=config.get_client_secrets_path(channel_id),
+        token_path=config.get_token_path(channel_id),
+    )
+
+    console.print(f"\n[bold]Testing add + pin comment on video:[/bold] {video_id}")
+    console.print(f"[bold]Using AdsPower profile:[/bold] {channel_config.adspower_profile_id}")
+    console.print(f"[bold]Comment:[/bold] {comment}\n")
+
+    console.print("[yellow]AdsPower browser will open to add and pin comment...[/yellow]\n")
+
+    # Use full browser automation for add + pin
+    success, comment_id, error = youtube.add_and_pin_comment(
+        video_id=video_id,
+        comment_text=comment,
+        adspower_profile_id=channel_config.adspower_profile_id,
+    )
+
+    if success:
+        console.print(f"\n[bold green]Comment added and pinned successfully![/bold green]")
+        console.print(f"Video: https://youtube.com/shorts/{video_id}")
+    else:
+        console.print(f"\n[bold red]Failed:[/bold red] {error}")
+        raise typer.Exit(1)
+
+
+@app.command("pin")
+def pin_existing_comment(
+    video_id: str = typer.Argument(..., help="YouTube video ID"),
+    channel_id: str = typer.Argument(..., help="Channel ID"),
+):
+    """Pin an existing comment on a video via AdsPower (pins first comment)."""
+    config = get_config_manager()
+
+    if not config.channel_exists(channel_id):
+        console.print(f"[red]Channel not found:[/red] {channel_id}")
+        raise typer.Exit(1)
+
+    channel_config = config.load_channel_config(channel_id)
+
+    if not channel_config.adspower_profile_id:
+        console.print(f"[red]AdsPower profile not configured for channel:[/red] {channel_id}")
+        raise typer.Exit(1)
+
+    youtube = YouTubeAPI(
+        channel_config=channel_config,
+        client_secrets_path=config.get_client_secrets_path(channel_id),
+        token_path=config.get_token_path(channel_id),
+    )
+
+    console.print(f"\n[bold]Pinning comment on video:[/bold] {video_id}")
+    console.print("[yellow]AdsPower browser will open...[/yellow]\n")
+
+    success, error = youtube.pin_comment_via_adspower(
+        video_id=video_id,
+        adspower_profile_id=channel_config.adspower_profile_id,
+    )
+
+    if success:
+        console.print(f"\n[bold green]Comment pinned![/bold green]")
+    else:
+        console.print(f"\n[bold red]Pin failed:[/bold red] {error}")
+        raise typer.Exit(1)
+
+
+# ============================================================================
 # MAIN ENTRY
 # ============================================================================
 
