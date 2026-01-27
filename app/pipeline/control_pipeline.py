@@ -287,19 +287,31 @@ class ControlPipeline:
                 else:
                     raise
 
-        # Final check - log which scenes have images
-        missing_scenes = []
-        for scene in self.project.scenes:
-            has_image = scene.image_path and Path(scene.image_path).exists()
-            logger.info(f"[Scene {scene.scene_number}] has_image={has_image}, path={scene.image_path}")
-            if not has_image and scene.scene_number > 1:
-                missing_scenes.append(scene)
+        # ================================================================
+        # CRITICAL: ALL 6 IMAGES MUST EXIST BEFORE PROCEEDING
+        # Loop until all scenes have images or max retries exceeded
+        # ================================================================
+        MAX_IMAGE_RETRIES = 5
 
-        # CRITICAL: If scene 6 (LOOP_CLOSE) is missing, generate it separately
-        if missing_scenes:
-            logger.warning(f"[PIPELINE] Missing images for scenes: {[s.scene_number for s in missing_scenes]}")
+        for retry_round in range(1, MAX_IMAGE_RETRIES + 1):
+            # Check which scenes are missing images
+            missing_scenes = []
+            for scene in self.project.scenes:
+                has_image = scene.image_path and Path(scene.image_path).exists()
+                if not has_image:
+                    missing_scenes.append(scene)
+                logger.info(f"[Scene {scene.scene_number}] has_image={has_image}, path={scene.image_path}")
+
+            # All images present - proceed
+            if not missing_scenes:
+                logger.success(f"[PIPELINE] ✅ ALL {len(self.project.scenes)} IMAGES READY!")
+                break
+
+            logger.warning(f"[PIPELINE] Round {retry_round}/{MAX_IMAGE_RETRIES}: Missing {len(missing_scenes)} images: {[s.scene_number for s in missing_scenes]}")
+
+            # Generate missing images individually
             for scene in missing_scenes:
-                logger.info(f"[PIPELINE] Generating missing scene {scene.scene_number} individually...")
+                logger.info(f"[PIPELINE] Generating missing scene {scene.scene_number} (round {retry_round})...")
                 try:
                     ref_image = Path(reference_image) if reference_image else None
                     image_path = await self.orchestrator.visual_engine.generate_scene_image(
@@ -312,9 +324,20 @@ class ControlPipeline:
                     if image_path:
                         scene.image_path = str(image_path)
                         scene.status = SceneStatus.IMAGE_READY
-                        logger.success(f"[Scene {scene.scene_number}] Image generated individually: {image_path}")
+                        logger.success(f"[Scene {scene.scene_number}] ✅ Image generated: {image_path}")
                 except Exception as e:
-                    logger.error(f"[Scene {scene.scene_number}] Individual generation failed: {e}")
+                    logger.error(f"[Scene {scene.scene_number}] Generation failed: {e}")
+
+            await asyncio.sleep(5)  # Brief pause before next check
+
+        # FINAL CHECK - BLOCK if any images still missing
+        final_missing = [s for s in self.project.scenes if not (s.image_path and Path(s.image_path).exists())]
+        if final_missing:
+            missing_nums = [s.scene_number for s in final_missing]
+            error_msg = f"PIPELINE BLOCKED: Missing images for scenes {missing_nums} after {MAX_IMAGE_RETRIES} attempts"
+            logger.error(f"[PIPELINE] ❌ {error_msg}")
+            await self.notify_log(f"❌ {error_msg}", "error")
+            raise RuntimeError(error_msg)
 
         # Validate images
         await self._notify_stage("VALIDATING_IMAGES", 50)
@@ -490,6 +513,24 @@ class ControlPipeline:
         if not self.project:
             return
 
+        # ================================================================
+        # CRITICAL: BLOCK VIDEO GENERATION IF ANY IMAGE IS MISSING
+        # ALL 6 images MUST exist before we start generating videos
+        # ================================================================
+        missing_images = []
+        for scene in self.project.scenes:
+            has_image = scene.image_path and Path(scene.image_path).exists()
+            if not has_image:
+                missing_images.append(scene.scene_number)
+
+        if missing_images:
+            error_msg = f"BLOCKED: Cannot generate videos - missing images for scenes: {missing_images}"
+            logger.error(f"[PIPELINE] ❌ {error_msg}")
+            await self.notify_log(f"❌ {error_msg}", "error")
+            raise RuntimeError(error_msg)
+
+        logger.success(f"[PIPELINE] ✅ All {len(self.project.scenes)} images verified. Starting video generation...")
+
         await self._notify_stage("GENERATING_VIDEOS", 70)
 
         logger.info("Generating videos for all scenes (SimpleVideoGenerator)...")
@@ -498,10 +539,6 @@ class ControlPipeline:
             # Prepare scenes data for batch generation
             scenes_data = []
             for scene in self.project.scenes:
-                if not scene.image_path:
-                    logger.warning(f"[Scene {scene.scene_number}] No image, skipping video")
-                    continue
-
                 # DEBUG: Log image path for each scene
                 logger.info(f"[DEBUG] Scene {scene.scene_number}: image_path = {scene.image_path}")
 
