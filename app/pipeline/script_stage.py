@@ -219,6 +219,14 @@ class ScriptStage(BasePipelineStage):
                 # Validate merged brief for ALL required fields
                 is_valid, missing_fields = router.validate_merged_brief(glaze_project)
 
+                # Send merge status to websocket
+                await self._notify_merge_status(
+                    attempt=merge_attempt,
+                    is_valid=is_valid,
+                    missing_fields=missing_fields,
+                    total_fields=214  # Approximate total fields in merged brief
+                )
+
                 if is_valid:
                     await self.notify_log(f"✅ MERGE валідація PASSED (спроба {merge_attempt})", "success")
                     merge_valid = True
@@ -421,3 +429,17 @@ class ScriptStage(BasePipelineStage):
             logger.info(f"[{self.project_id}] Saved gen1_output.json and gen2_output.json")
         except Exception as e:
             logger.warning(f"[{self.project_id}] Failed to save GEN outputs: {e}")
+
+    async def _notify_merge_status(self, attempt: int, is_valid: bool, missing_fields: list, total_fields: int) -> None:
+        """Send merge status to websocket for UI display."""
+        try:
+            from app.server.websocket import broadcast_event
+            await broadcast_event("merge_status", {
+                "total_attempts": attempt,
+                "success": is_valid,
+                "fields_ok": total_fields - len(missing_fields),
+                "fields_total": total_fields,
+                "missing_fields": missing_fields[:5] if missing_fields else []  # First 5 only
+            })
+        except Exception as e:
+            logger.warning(f"Failed to send merge status notification: {e}")

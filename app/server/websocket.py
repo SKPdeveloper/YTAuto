@@ -293,3 +293,17 @@ def get_connection_manager() -> ConnectionManager:
     if _manager is None:
         _manager = ConnectionManager()
     return _manager
+
+
+async def broadcast_event(event: str, data: Dict[str, Any]) -> None:
+    """
+    Helper function to broadcast event to all WebSocket clients.
+
+    This is a convenience wrapper around the ConnectionManager's broadcast method.
+    Can be imported and used directly:
+
+        from app.server.websocket import broadcast_event
+        await broadcast_event("my_event", {"key": "value"})
+    """
+    manager = get_connection_manager()
+    await manager.broadcast(event, data)

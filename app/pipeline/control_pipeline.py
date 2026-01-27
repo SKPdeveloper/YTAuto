@@ -313,6 +313,7 @@ class ControlPipeline:
 
             logger.warning(f"[PIPELINE] Round {retry_round}: Missing {len(missing_scenes)} images: {[s.scene_number for s in missing_scenes]}")
             await self.notify_log(f"🔄 Round {retry_round}: Generating {len(missing_scenes)} missing images...", "warning")
+            await self._notify_image_retry(retry_round, missing_scenes)
 
             # Generate missing images individually
             for scene in missing_scenes:
@@ -334,6 +335,9 @@ class ControlPipeline:
                     logger.error(f"[Scene {scene.scene_number}] Generation failed: {e}, will retry...")
 
             await asyncio.sleep(5)
+
+        # Notify UI about all scenes
+        await self._notify_all_scenes()
 
         # Validate images
         await self._notify_stage("VALIDATING_IMAGES", 50)
@@ -541,6 +545,7 @@ class ControlPipeline:
             # All videos present - proceed
             if not scenes_needing_video:
                 logger.success(f"[PIPELINE] ✅ ALL {len(self.project.scenes)} VIDEOS READY!")
+                await self._notify_all_scenes()
                 break
 
             # FALLBACK: After 3 rounds, if only scene 6 is missing - use reversed scene 1
@@ -569,6 +574,7 @@ class ControlPipeline:
 
             logger.warning(f"[PIPELINE] Video round {retry_round}: Missing {len(scenes_needing_video)} videos: {[s.scene_number for s in scenes_needing_video]}")
             await self.notify_log(f"🔄 Video round {retry_round}: Generating {len(scenes_needing_video)} videos...", "warning")
+            await self._notify_video_retry(retry_round, scenes_needing_video)
 
             # Generate missing videos (exclude scene 6 if fallback will be used)
             scenes_to_generate = scenes_needing_video
@@ -739,6 +745,70 @@ class ControlPipeline:
         data["scene_num"] = scene_num
         if self.on_scene_updated:
             await self.on_scene_updated(scene_num, data)
+
+    async def notify_log(self, message: str, level: str = "info"):
+        """Send log message to websocket clients."""
+        from app.server.websocket import broadcast_event
+        await broadcast_event("log", {
+            "message": message,
+            "level": level,
+            "source": "control_pipeline"
+        })
+
+    async def _notify_merge_status(self, attempt: int, is_valid: bool, missing_fields: list, total_fields: int):
+        """Notify about merge GEN1+GEN2 status."""
+        from app.server.websocket import broadcast_event
+        await broadcast_event("merge_status", {
+            "total_attempts": attempt,
+            "success": is_valid,
+            "fields_ok": total_fields - len(missing_fields),
+            "fields_total": total_fields,
+            "missing_fields": missing_fields[:5]  # First 5 only
+        })
+
+    async def _notify_image_retry(self, attempt: int, missing_scenes: list):
+        """Notify about image generation retry."""
+        from app.server.websocket import broadcast_event
+        from app.api.control_routes import get_state
+        state = get_state()
+        state.image_retry_count = attempt
+        await broadcast_event("image_retry", {
+            "attempt": attempt,
+            "missing": [s.scene_number for s in missing_scenes]
+        })
+
+    async def _notify_video_retry(self, attempt: int, missing_scenes: list):
+        """Notify about video generation retry."""
+        from app.server.websocket import broadcast_event
+        from app.api.control_routes import get_state
+        state = get_state()
+        state.video_retry_count = attempt
+        await broadcast_event("video_retry", {
+            "attempt": attempt,
+            "missing": [s.scene_number for s in missing_scenes]
+        })
+
+    async def _notify_all_scenes(self):
+        """Send full update of all scenes with image/video paths."""
+        if not self.project:
+            return
+        from app.server.websocket import broadcast_event
+        from app.api.control_routes import get_state
+        state = get_state()
+        scenes_data = []
+        for scene in self.project.scenes:
+            scene_dir = settings.PROJECTS_DIR / self.project.project_id / f"scene_{scene.scene_number}"
+            image_url = f"/projects/{self.project.project_id}/scene_{scene.scene_number}/image.png" if scene.image_path else None
+            video_url = f"/projects/{self.project.project_id}/scene_{scene.scene_number}/video.mp4" if (scene_dir / "video.mp4").exists() else None
+            scenes_data.append({
+                "scene_num": scene.scene_number,
+                "image_url": image_url,
+                "video_url": video_url,
+                "reference_type": scene.reference_type,
+                "status": scene.status.value if hasattr(scene.status, 'value') else str(scene.status)
+            })
+        state.all_scenes = scenes_data  # Update state for persistence
+        await broadcast_event("all_scenes_update", {"scenes": scenes_data})
 
     # ========================================================================
     # VIDEO APPROVAL & TOPAZ

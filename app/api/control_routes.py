@@ -44,6 +44,11 @@ class ControlState:
         self.scene_images: list = []
         self.approved_scenes: set = set()  # Manually approved scene numbers
 
+        # All 6 scenes with image/video pairs
+        self.all_scenes: list = []
+        self.image_retry_count: int = 0
+        self.video_retry_count: int = 0
+
         # Approval events for async coordination
         self.approval_event: Optional[asyncio.Event] = None
         self.selected_image_index: Optional[int] = None
@@ -208,6 +213,10 @@ async def get_current_state():
         # Video approval (pre-upscale)
         "awaiting_video_approval": state.awaiting_video_approval,
         "video_approval_project_id": state.video_approval_project_id,
+        # All scenes with image/video pairs
+        "all_scenes": state.all_scenes,
+        "image_retry_count": state.image_retry_count,
+        "video_retry_count": state.video_retry_count,
     }
 
 
@@ -354,25 +363,7 @@ async def confirm_scenes():
 # VIDEO APPROVAL (pre-Topaz)
 # ============================================================================
 
-class VideoApprovalRequest(BaseModel):
-    action: str  # 'approved', 'skip_upscale', 'rejected'
-
-
-@router.post("/video-approval")
-async def video_approval(request: VideoApprovalRequest):
-    """Approve/reject video before Topaz upscaling."""
-    if not state.awaiting_video_approval:
-        raise HTTPException(status_code=400, detail="No video approval pending")
-
-    state.video_approval_result = request.action
-
-    # Signal the waiting pipeline
-    if state.approval_event:
-        state.approval_event.set()
-
-    logger.info(f"Video approval: {request.action}")
-
-    return {"status": request.action}
+# VideoApprovalRequest removed - use VideoApprovalDecision at /video-approval instead
 
 
 class TopazRequest(BaseModel):
@@ -604,7 +595,7 @@ async def on_approval_required(approval_type: str, data: dict):
 
         state.awaiting_video_approval = True
         state.video_approval_data = data
-        state.approval_event = asyncio.Event()
+        state.video_approval_event = asyncio.Event()  # Use video_approval_event to match submit_video_approval
         state.video_approval_result = None
 
         await broadcast_event("video_approval_required", {
@@ -613,7 +604,7 @@ async def on_approval_required(approval_type: str, data: dict):
         })
 
         # Wait for user action
-        await state.approval_event.wait()
+        await state.video_approval_event.wait()
 
         state.awaiting_video_approval = False
 

@@ -82,6 +82,30 @@
         box-shadow: 0 0 0 3px #fff;
     }
 
+    /* 9:16 aspect ratio for vertical video candidates */
+    .candidate-image {
+        aspect-ratio: 9/16;
+        object-fit: cover;
+        width: 100%;
+        max-height: 450px;
+    }
+
+    .scene-pair {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+    }
+
+    .merge-status {
+        font-family: monospace;
+        padding: 4px 8px;
+        border-radius: 4px;
+    }
+
+    .merge-status.ok { background: #22c55e20; color: #22c55e; }
+    .merge-status.retry { background: #eab30820; color: #eab308; }
+    .merge-status.fail { background: #ef444420; color: #ef4444; }
+
     .progress-brutal {
         height: 4px;
         background: #333;
@@ -199,22 +223,21 @@
             </button>
         </div>
 
-        <div class="grid grid-cols-2 gap-4">
+        <div class="grid grid-cols-4 gap-4">
             <template x-for="(img, idx) in candidateImages" :key="idx">
                 <div
                     @click="selectImage(idx)"
                     :class="{'selected': selectedImage === idx}"
                     class="image-grid-item relative cursor-pointer"
                 >
-                    <img :src="img.url" class="w-full h-72 object-cover grayscale hover:grayscale-0 transition-all">
-                    <div class="absolute bottom-0 left-0 right-0 bg-black/80 p-3">
-                        <div class="flex justify-between text-xs uppercase tracking-wide">
-                            <span>SCORE: <span class="font-bold" x-text="img.score + '%'"></span></span>
-                            <span>GRADE: <span class="font-bold" x-text="img.grade"></span></span>
+                    <img :src="img.url" class="candidate-image grayscale hover:grayscale-0 transition-all">
+                    <div class="absolute bottom-0 left-0 right-0 bg-black/80 p-2">
+                        <div class="text-center text-xs uppercase tracking-wide">
+                            <span class="font-bold">#<span x-text="idx + 1"></span></span>
                         </div>
                     </div>
-                    <div x-show="selectedImage === idx" class="absolute top-3 right-3 bg-white text-black px-2 py-1 text-xs font-black uppercase">
-                        SELECTED
+                    <div x-show="selectedImage === idx" class="absolute top-2 right-2 bg-white text-black px-2 py-1 text-xs font-black uppercase">
+                        OK
                     </div>
                 </div>
             </template>
@@ -231,95 +254,111 @@
         </div>
     </div>
 
-    <!-- SCENES 2-6 DISPLAY (READ-ONLY) -->
-    <div class="brutal-card p-6" x-show="sceneImages.length > 0">
-        <div class="mb-6">
-            <h2 class="text-xl font-black uppercase tracking-wide">SCENES 2-6 // AUTO-GENERATING</h2>
-            <p class="text-gray-500 text-xs uppercase mt-1">IMAGES GENERATING AUTOMATICALLY</p>
+    <!-- MERGE STATUS -->
+    <div class="brutal-card p-4" x-show="mergeStatus.total_attempts > 0">
+        <div class="flex items-center justify-between">
+            <div>
+                <h2 class="text-lg font-black uppercase tracking-wide">MERGE GEN1+GEN2</h2>
+            </div>
+            <div class="flex items-center space-x-4">
+                <span class="merge-status" :class="mergeStatus.success ? 'ok' : 'retry'">
+                    <span x-text="mergeStatus.success ? 'OK' : 'RETRY'"></span>
+                </span>
+                <span class="text-gray-500 text-sm">
+                    ATTEMPT <span class="text-white font-bold" x-text="mergeStatus.total_attempts"></span>
+                </span>
+                <span class="text-gray-500 text-sm">
+                    FIELDS: <span class="text-white font-bold" x-text="mergeStatus.fields_ok"></span>/<span x-text="mergeStatus.fields_total"></span>
+                </span>
+            </div>
         </div>
-
-        <div class="grid grid-cols-5 gap-3">
-            <template x-for="scene in sceneImages" :key="scene.scene_num">
-                <div class="text-center">
-                    <div class="text-xs uppercase tracking-wide text-gray-500 mb-2">
-                        SCENE <span class="text-white font-bold" x-text="scene.scene_num"></span>
-                    </div>
-                    <div
-                        :class="{
-                            'border-white': scene.status === 'approved' || scene.status === 'ready',
-                            'border-yellow-500 blink': scene.status === 'generating',
-                            'border-gray-600': scene.status === 'pending'
-                        }"
-                        class="image-grid-item relative"
-                    >
-                        <img :src="scene.url" class="w-full h-32 object-cover">
-                    </div>
-                    <div class="text-xs mt-2 uppercase tracking-wide"
-                         :class="{
-                            'text-green-500': scene.status === 'approved' || scene.status === 'ready',
-                            'text-yellow-500 blink': scene.status === 'generating',
-                            'text-gray-500': scene.status === 'pending'
-                         }"
-                         x-text="scene.status">
-                    </div>
-                </div>
-            </template>
+        <div x-show="mergeStatus.missing_fields.length > 0" class="mt-2 text-xs text-red-400">
+            MISSING: <span x-text="mergeStatus.missing_fields.join(', ')"></span>
         </div>
     </div>
 
-    <!-- VIDEO PREVIEWS (READ-ONLY) -->
-    <div class="brutal-card p-6" x-show="videoPreviews.length > 0">
+    <!-- ALL 6 SCENES: IMAGE + VIDEO PAIRS -->
+    <div class="brutal-card p-6" x-show="allScenes.length > 0">
         <div class="flex items-center justify-between mb-6">
             <div>
-                <h2 class="text-xl font-black uppercase tracking-wide">VIDEO PREVIEWS</h2>
+                <h2 class="text-xl font-black uppercase tracking-wide">ALL SCENES</h2>
                 <p class="text-gray-500 text-xs uppercase mt-1">
-                    <span x-text="videoPreviews.filter(v => v.status === 'ready' || v.status === 'downloaded').length"></span> /
-                    <span x-text="videoPreviews.length"></span> READY
+                    IMAGES: <span class="text-white" x-text="allScenes.filter(s => s.image_url).length"></span>/6 |
+                    VIDEOS: <span class="text-white" x-text="allScenes.filter(s => s.video_url).length"></span>/6
                 </p>
+            </div>
+            <div class="flex items-center space-x-4">
+                <span class="text-xs text-gray-500">IMG RETRIES: <span class="text-yellow-400 font-bold" x-text="imageRetryCount"></span></span>
+                <span class="text-xs text-gray-500">VID RETRIES: <span class="text-yellow-400 font-bold" x-text="videoRetryCount"></span></span>
             </div>
         </div>
 
-        <div class="grid grid-cols-3 gap-4">
-            <template x-for="video in videoPreviews" :key="video.scene_num">
+        <div class="grid grid-cols-6 gap-3">
+            <template x-for="scene in allScenes" :key="scene.scene_num">
                 <div class="text-center">
-                    <div class="text-xs uppercase tracking-wide text-gray-500 mb-2">
-                        SCENE <span class="text-white font-bold" x-text="video.scene_num"></span>
-                        <span class="ml-2" :class="{
-                            'text-green-500': video.status === 'ready' || video.status === 'downloaded',
-                            'text-yellow-500 blink': video.status === 'generating',
-                            'text-gray-500': video.status === 'pending'
-                        }" x-text="video.status"></span>
+                    <div class="text-xs uppercase tracking-wide mb-2" :class="{
+                        'text-green-400': scene.image_url && scene.video_url,
+                        'text-yellow-400': scene.image_url && !scene.video_url,
+                        'text-gray-500': !scene.image_url
+                    }">
+                        <span class="font-bold" x-text="'S' + scene.scene_num"></span>
+                        <span x-show="scene.reference_type" class="ml-1 text-gray-600" x-text="scene.reference_type.substring(0,3)"></span>
                     </div>
-                    <div class="border-2 border-gray-700 hover:border-white transition-colors">
-                        <video
-                            :src="video.video_url"
-                            class="w-full h-40 object-cover"
-                            controls
-                            muted
-                        ></video>
+                    <!-- Image -->
+                    <div class="border border-gray-700 mb-1" :class="{'border-green-500': scene.image_url}">
+                        <img
+                            :src="scene.image_url || '/static/placeholder.svg'"
+                            class="w-full object-cover"
+                            style="aspect-ratio: 9/16; max-height: 180px;"
+                            :class="{'opacity-30': !scene.image_url}"
+                        >
+                    </div>
+                    <!-- Video -->
+                    <div class="border border-gray-700" :class="{'border-green-500': scene.video_url}">
+                        <template x-if="scene.video_url">
+                            <video :src="scene.video_url" class="w-full" style="max-height: 100px;" muted controls></video>
+                        </template>
+                        <template x-if="!scene.video_url">
+                            <div class="h-16 flex items-center justify-center text-gray-600 text-xs">NO VIDEO</div>
+                        </template>
                     </div>
                 </div>
             </template>
         </div>
     </div>
 
-    <!-- FINAL VIDEO -->
-    <div class="brutal-card p-6" x-show="finalVideoPath">
+    <!-- FINAL VIDEO APPROVAL (2nd and LAST user interaction) -->
+    <div class="brutal-card p-6" x-show="finalVideoPath || awaitingVideoApproval">
         <div class="flex items-center justify-between mb-6">
             <div>
                 <h2 class="text-xl font-black uppercase tracking-wide">FINAL VIDEO</h2>
-                <p class="text-gray-500 text-xs uppercase mt-1" x-text="finalVideoPath"></p>
+                <p class="text-gray-500 text-xs uppercase mt-1">
+                    <template x-if="awaitingVideoApproval">
+                        <span class="text-yellow-400 blink">APPROVAL REQUIRED BEFORE TOPAZ</span>
+                    </template>
+                    <template x-if="!awaitingVideoApproval && finalVideoPath">
+                        <span x-text="finalVideoPath"></span>
+                    </template>
+                </p>
             </div>
-            <div class="flex space-x-3">
+            <div class="flex space-x-3" x-show="awaitingVideoApproval">
+                <button @click="approveVideo()" class="brutal-btn bg-green-600 hover:bg-green-500">
+                    APPROVE → TOPAZ
+                </button>
+                <button @click="skipTopaz()" class="brutal-btn bg-gray-600 hover:bg-gray-500">
+                    SKIP TOPAZ
+                </button>
+            </div>
+            <div class="flex space-x-3" x-show="!awaitingVideoApproval && finalVideoPath">
                 <button
                     @click="startTopazProcessing()"
                     :disabled="topazProcessing"
                     class="brutal-btn"
                     :class="{'bg-yellow-500': topazProcessing}"
                 >
-                    <span x-text="topazProcessing ? 'PROCESSING...' : 'POSTPROCESS (TOPAZ)'"></span>
+                    <span x-text="topazProcessing ? 'PROCESSING...' : 'REPROCESS (TOPAZ)'"></span>
                 </button>
-                <a :href="'/projects/' + currentProject + '/final.mp4'" download class="brutal-btn bg-green-500 text-white">
+                <a :href="'/projects/' + currentProject + '/final.mp4'" download class="brutal-btn bg-gray-700">
                     DOWNLOAD
                 </a>
             </div>
@@ -329,20 +368,21 @@
             <video
                 :src="'/projects/' + currentProject + '/final.mp4'"
                 controls
-                class="w-full border-2 border-white"
+                class="w-full border-2"
+                :class="awaitingVideoApproval ? 'border-yellow-500' : 'border-white'"
                 style="max-height: 500px"
             ></video>
         </div>
 
         <!-- Topaz Enhanced Video -->
-        <div x-show="topazVideoPath" class="mt-6 border-t-2 border-gray-700 pt-6">
+        <div x-show="topazVideoPath" class="mt-6 border-t-2 border-green-500 pt-6">
             <div class="flex items-center justify-between mb-4">
                 <div>
-                    <h3 class="text-lg font-bold uppercase">ENHANCED VIDEO</h3>
-                    <p class="text-green-500 text-xs uppercase">TOPAZ VIDEO AI</p>
+                    <h3 class="text-lg font-bold uppercase text-green-400">ENHANCED VIDEO</h3>
+                    <p class="text-green-500 text-xs uppercase">TOPAZ VIDEO AI - READY FOR PUBLISH</p>
                 </div>
                 <a :href="topazVideoPath" download class="brutal-btn bg-green-500 text-white">
-                    DOWNLOAD ENHANCED
+                    DOWNLOAD FINAL
                 </a>
             </div>
             <video
@@ -469,9 +509,20 @@ function controlPanel() {
         approvalType: '',
         candidateImages: [],
         selectedImage: null,
-        sceneImages: [],
-        videoPreviews: [],
-        videoProgress: { found: 0, total: 0, elapsed: 0 },
+        // New: all 6 scenes with image+video pairs
+        allScenes: [],
+        imageRetryCount: 0,
+        videoRetryCount: 0,
+        // Merge status
+        mergeStatus: {
+            total_attempts: 0,
+            success: false,
+            fields_ok: 0,
+            fields_total: 0,
+            missing_fields: []
+        },
+        // Video approval before Topaz
+        awaitingVideoApproval: false,
         logs: [],
         logIdCounter: 0,
         ws: null,
@@ -507,6 +558,7 @@ function controlPanel() {
                 this.currentStage = data.current_stage;
                 this.progress = data.progress;
                 this.awaitingApproval = data.awaiting_approval;
+                this.awaitingVideoApproval = data.awaiting_video_approval;
 
                 // Restore project and video paths
                 if (data.project_id) {
@@ -519,6 +571,17 @@ function controlPanel() {
                     this.topazVideoPath = data.topaz_video_path;
                 }
 
+                // Restore all scenes data
+                if (data.all_scenes && data.all_scenes.length > 0) {
+                    this.allScenes = data.all_scenes;
+                }
+                if (data.image_retry_count) {
+                    this.imageRetryCount = data.image_retry_count;
+                }
+                if (data.video_retry_count) {
+                    this.videoRetryCount = data.video_retry_count;
+                }
+
                 if (data.approval_type === 'primary' && data.candidate_images.length > 0) {
                     this.candidateImages = data.candidate_images;
                 }
@@ -528,6 +591,9 @@ function controlPanel() {
 
                 if (data.awaiting_approval) {
                     this.addLog('info', 'RESTORED STATE: AWAITING ' + data.approval_type.toUpperCase() + ' APPROVAL');
+                }
+                if (data.awaiting_video_approval) {
+                    this.addLog('warning', 'RESTORED STATE: VIDEO APPROVAL REQUIRED');
                 }
                 if (data.project_id && data.final_video_path) {
                     this.addLog('info', 'RESTORED PROJECT: ' + data.project_id);
@@ -602,30 +668,45 @@ function controlPanel() {
                     break;
 
                 case 'scene_updated':
-                    const idx = this.sceneImages.findIndex(s => s.scene_num === payload.scene_num);
-                    if (idx !== -1) this.sceneImages[idx] = payload;
-                    break;
-
-                case 'video_preview':
-                    // New video ready for preview
-                    const existingIdx = this.videoPreviews.findIndex(v => v.scene_num === payload.scene_num);
-                    if (existingIdx !== -1) {
-                        this.videoPreviews[existingIdx] = payload;
+                    // Update allScenes array
+                    const sceneIdx = this.allScenes.findIndex(s => s.scene_num === payload.scene_num);
+                    if (sceneIdx !== -1) {
+                        this.allScenes[sceneIdx] = {...this.allScenes[sceneIdx], ...payload};
                     } else {
-                        this.videoPreviews.push(payload);
+                        this.allScenes.push(payload);
+                        this.allScenes.sort((a, b) => a.scene_num - b.scene_num);
                     }
-                    this.addLog(`[Scene ${payload.scene_num}] Video ready for preview`);
                     break;
 
-                case 'video_progress':
-                    this.videoProgress = payload;
+                case 'all_scenes_update':
+                    // Full update of all scenes
+                    this.allScenes = payload.scenes || [];
                     break;
 
-                case 'video_regenerating':
-                    const vidIdx = this.videoPreviews.findIndex(v => v.scene_num === payload.scene_num);
-                    if (vidIdx !== -1) {
-                        this.videoPreviews[vidIdx].status = 'regenerating';
+                case 'merge_status':
+                    // Merge GEN1+GEN2 status
+                    this.mergeStatus = payload;
+                    if (payload.success) {
+                        this.addLog('success', `MERGE OK: ${payload.fields_ok}/${payload.fields_total} FIELDS`);
+                    } else {
+                        this.addLog('warning', `MERGE RETRY #${payload.total_attempts}: ${payload.missing_fields.length} MISSING`);
                     }
+                    break;
+
+                case 'image_retry':
+                    this.imageRetryCount = payload.attempt || 0;
+                    this.addLog('warning', `IMAGE RETRY #${payload.attempt}: ${payload.missing.length} MISSING`);
+                    break;
+
+                case 'video_retry':
+                    this.videoRetryCount = payload.attempt || 0;
+                    this.addLog('warning', `VIDEO RETRY #${payload.attempt}: ${payload.missing.length} MISSING`);
+                    break;
+
+                case 'video_approval_required':
+                    this.awaitingVideoApproval = true;
+                    this.finalVideoPath = payload.video_path;
+                    this.addLog('warning', 'VIDEO APPROVAL REQUIRED BEFORE TOPAZ');
                     break;
 
                 case 'pipeline_completed':
@@ -653,7 +734,7 @@ function controlPanel() {
                     break;
 
                 case 'log':
-                    this.addLog(payload.type || 'info', payload.message.toUpperCase());
+                    this.addLog(payload.level || 'info', payload.message.toUpperCase());
                     break;
             }
         },
@@ -738,7 +819,33 @@ function controlPanel() {
             }
         },
 
-        // Scene approval functions removed - auto-approve mode
+        async approveVideo() {
+            try {
+                await fetch('/api/control/video-approval', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ decision: 'approved' })
+                });
+                this.awaitingVideoApproval = false;
+                this.addLog('success', 'VIDEO APPROVED → STARTING TOPAZ');
+            } catch(e) {
+                this.addLog('error', 'VIDEO APPROVAL FAILED');
+            }
+        },
+
+        async skipTopaz() {
+            try {
+                await fetch('/api/control/video-approval', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ decision: 'skip_upscale' })
+                });
+                this.awaitingVideoApproval = false;
+                this.addLog('info', 'TOPAZ SKIPPED');
+            } catch(e) {
+                this.addLog('error', 'SKIP FAILED');
+            }
+        },
 
         async startTopazProcessing() {
             if (!this.currentProject) return;
