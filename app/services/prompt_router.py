@@ -16,7 +16,7 @@ Flow:
 import json
 import re
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime
 
 from google import genai
@@ -114,6 +114,9 @@ from app.services.glaze_models import (
     CameraIntent,
     # Publish config for multi-channel support
     PublishConfig,
+    # GEN1 metadata for brief completeness
+    ProjectMetadata,
+    ProjectConcept,
 )
 from app.services.validation_models import (
     Gen1ValidationResponse,
@@ -1785,6 +1788,23 @@ CRITICAL REQUIREMENTS:
             # Additional data from GEN1 and GEN2
             share_trigger=share_trigger_data,
             visual_summary=visual_summary_data,
+            # GEN1 Metadata (version, status, title, concept) - for brief completeness
+            gen1_metadata=ProjectMetadata(
+                version=gen1.metadata.version,
+                status=gen1.metadata.status,
+                title=gen1.metadata.title,
+                concept=ProjectConcept(
+                    category=gen1.metadata.concept.category,
+                    subject=gen1.metadata.concept.subject,
+                    food_material=gen1.metadata.concept.food_material,
+                    architectural_style=gen1.metadata.concept.architectural_style,
+                    originality_note=gen1.metadata.concept.originality_note,
+                ) if gen1.metadata.concept else None,
+                target_duration_seconds=gen1.metadata.target_duration_seconds,
+                scene_count=gen1.metadata.scene_count,
+            ),
+            # GEN2 Global Settings - negative_prompt CRITICAL for image generation
+            negative_prompt=gen2.global_settings.negative_prompt if gen2.global_settings else "tilt-shift, miniature, diorama, toy, cartoon, anime, illustration, drawing, painting, sketch",
         )
 
         # Log merge summary
@@ -1822,6 +1842,107 @@ CRITICAL REQUIREMENTS:
         logger.info("=" * 70)
 
         return project
+
+    def validate_merged_brief(self, project: GlazeCityProject) -> Tuple[bool, List[str]]:
+        """
+        Validate that merged brief has ALL required fields.
+
+        This function checks for missing fields that may be lost during merge.
+        Per user request: if any field is missing, merge should be retried.
+
+        Returns:
+            Tuple of (is_valid, list of missing/empty fields)
+        """
+        missing_fields = []
+
+        # ===== GEN1 METADATA VALIDATION =====
+        if not project.gen1_metadata:
+            missing_fields.append("gen1_metadata")
+        else:
+            if not project.gen1_metadata.version:
+                missing_fields.append("gen1_metadata.version")
+            if not project.gen1_metadata.status:
+                missing_fields.append("gen1_metadata.status")
+            if not project.gen1_metadata.title:
+                missing_fields.append("gen1_metadata.title")
+            if not project.gen1_metadata.concept:
+                missing_fields.append("gen1_metadata.concept")
+            elif project.gen1_metadata.concept:
+                if not project.gen1_metadata.concept.category:
+                    missing_fields.append("gen1_metadata.concept.category")
+                if not project.gen1_metadata.concept.subject:
+                    missing_fields.append("gen1_metadata.concept.subject")
+                if not project.gen1_metadata.concept.food_material:
+                    missing_fields.append("gen1_metadata.concept.food_material")
+
+        # ===== NEGATIVE PROMPT VALIDATION (CRITICAL) =====
+        if not project.negative_prompt:
+            missing_fields.append("negative_prompt (CRITICAL for image quality)")
+
+        # ===== PROPERTY VALIDATION =====
+        if not project.property.name:
+            missing_fields.append("property.name")
+
+        # ===== ARCHITECTURAL IDENTITY VALIDATION =====
+        if not project.architectural_identity.style_code:
+            missing_fields.append("architectural_identity.style_code")
+        if not project.architectural_identity.style_description:
+            missing_fields.append("architectural_identity.style_description")
+
+        # ===== FOOD IDENTITY VALIDATION =====
+        if not project.food_identity.primary_food:
+            missing_fields.append("food_identity.primary_food")
+        if not project.food_identity.food_dna.walls_become:
+            missing_fields.append("food_identity.food_dna.walls_become")
+
+        # ===== LIGHTING MASTER VALIDATION =====
+        if not project.lighting_master.preset:
+            missing_fields.append("lighting_master.preset")
+        if not project.lighting_master.prompt_snippet:
+            missing_fields.append("lighting_master.prompt_snippet")
+
+        # ===== HOOK VALIDATION =====
+        if not project.hook.type:
+            missing_fields.append("hook.type")
+        if not project.hook.psychological_trigger:
+            missing_fields.append("hook.psychological_trigger")
+
+        # ===== YOUTUBE VALIDATION =====
+        if not project.youtube.title:
+            missing_fields.append("youtube.title")
+        if not project.youtube.description:
+            missing_fields.append("youtube.description")
+
+        # ===== VOICEOVER VALIDATION =====
+        if not project.voiceover.full_script:
+            missing_fields.append("voiceover.full_script")
+
+        # ===== SCENES VALIDATION =====
+        if len(project.scenes) != 6:
+            missing_fields.append(f"scenes (expected 6, got {len(project.scenes)})")
+
+        for scene in project.scenes:
+            if not scene.image_prompt:
+                missing_fields.append(f"scene_{scene.scene_number}.image_prompt")
+            if not scene.video_prompt:
+                missing_fields.append(f"scene_{scene.scene_number}.video_prompt")
+            if not scene.visual_concept:
+                missing_fields.append(f"scene_{scene.scene_number}.visual_concept")
+
+        # ===== EASTER EGG VALIDATION =====
+        if not project.easter_egg.object:
+            missing_fields.append("easter_egg.object")
+
+        is_valid = len(missing_fields) == 0
+
+        if is_valid:
+            logger.success("[VALIDATE_BRIEF] All required fields present!")
+        else:
+            logger.warning(f"[VALIDATE_BRIEF] Missing {len(missing_fields)} fields:")
+            for field in missing_fields:
+                logger.warning(f"  ❌ {field}")
+
+        return (is_valid, missing_fields)
 
     # =========================================================================
     # FULL PIPELINE: GEN1 -> Delivery -> GEN2 -> Merge

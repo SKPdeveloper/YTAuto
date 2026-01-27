@@ -182,16 +182,79 @@ class ScriptStage(BasePipelineStage):
             await self.notify_progress(55, "✅ GEN2 завершено. Об'єднання результатів...")
             await self.notify_log("═══ ЕТАП 3: MERGE (Об'єднання) ═══", "info")
 
-            # Merge GEN1 + GEN2 into GlazeProject
-            glaze_project = router.merge_outputs(gen1_output, gen2_output, self.project.project_id)
+            # ================================================================
+            # MERGE with validation and retry
+            # If any field is missing after merge, retry GEN1+GEN2 generation
+            # ================================================================
+            MAX_MERGE_RETRIES = 3
+            glaze_project = None
+            merge_valid = False
 
-            if not glaze_project:
-                await self.notify_log("❌ Помилка об'єднання GEN1 + GEN2", "error")
+            for merge_attempt in range(1, MAX_MERGE_RETRIES + 1):
+                await self.notify_log(f"[MERGE] Спроба {merge_attempt}/{MAX_MERGE_RETRIES}...", "info")
+
+                # Merge GEN1 + GEN2 into GlazeProject
+                glaze_project = router.merge_outputs(gen1_output, gen2_output, self.project.project_id)
+
+                if not glaze_project:
+                    await self.notify_log(f"❌ Помилка об'єднання GEN1 + GEN2 (спроба {merge_attempt})", "error")
+                    if merge_attempt < MAX_MERGE_RETRIES:
+                        await self.notify_log("🔄 Regenerating GEN1+GEN2...", "warning")
+                        # Regenerate GEN1
+                        gen1_output = await router.run_gen1(
+                            topic=self.project.topic,
+                            num_scenes=self.project.num_scenes,
+                            style=self.project.style or "cinematic food fantasy",
+                            target_audience=self.project.target_audience or "YouTube Shorts viewers",
+                            project_id=self.project.project_id,
+                        )
+                        if gen1_output:
+                            delivery_payload = router.create_delivery_payload(gen1_output, self.project.project_id)
+                            gen2_output = await router.run_gen2(
+                                payload=delivery_payload,
+                                project_id=self.project.project_id,
+                            )
+                    continue
+
+                # Validate merged brief for ALL required fields
+                is_valid, missing_fields = router.validate_merged_brief(glaze_project)
+
+                if is_valid:
+                    await self.notify_log(f"✅ MERGE валідація PASSED (спроба {merge_attempt})", "success")
+                    merge_valid = True
+                    break
+                else:
+                    await self.notify_log(f"⚠️ MERGE валідація FAILED (спроба {merge_attempt})", "warning")
+                    await self.notify_log(f"❌ Відсутні поля: {len(missing_fields)}", "warning")
+                    for field in missing_fields[:5]:  # Show first 5 missing fields
+                        await self.notify_log(f"  → {field}", "warning")
+                    if len(missing_fields) > 5:
+                        await self.notify_log(f"  → ... та ще {len(missing_fields) - 5} полів", "warning")
+
+                    if merge_attempt < MAX_MERGE_RETRIES:
+                        await self.notify_log("🔄 Regenerating GEN1+GEN2 to fix missing fields...", "warning")
+                        # Regenerate GEN1
+                        gen1_output = await router.run_gen1(
+                            topic=self.project.topic,
+                            num_scenes=self.project.num_scenes,
+                            style=self.project.style or "cinematic food fantasy",
+                            target_audience=self.project.target_audience or "YouTube Shorts viewers",
+                            project_id=self.project.project_id,
+                        )
+                        if gen1_output:
+                            delivery_payload = router.create_delivery_payload(gen1_output, self.project.project_id)
+                            gen2_output = await router.run_gen2(
+                                payload=delivery_payload,
+                                project_id=self.project.project_id,
+                            )
+
+            if not glaze_project or not merge_valid:
+                await self.notify_log(f"❌ MERGE FAILED після {MAX_MERGE_RETRIES} спроб", "error")
                 return StageResult(
                     success=False,
                     stage_name=self.name,
                     status=StageStatus.FAILED,
-                    message="Failed to merge GEN1 + GEN2 outputs"
+                    message=f"Merge validation failed after {MAX_MERGE_RETRIES} attempts - missing required fields"
                 )
 
             # Log merge analysis to client

@@ -730,6 +730,25 @@ class SeriesInfo(BaseModel):
 # META - Метаінформація
 # ============================================================================
 
+class ProjectConcept(BaseModel):
+    """Концепція проекту з GEN1 metadata."""
+    category: str = Field(default="", description="Категорія контенту (LUXURY_LISTINGS, etc)")
+    subject: str = Field(default="", description="Основний об'єкт")
+    food_material: str = Field(default="", description="Харчовий матеріал")
+    architectural_style: str = Field(default="", description="Архітектурний стиль")
+    originality_note: str = Field(default="", description="Що робить унікальним")
+
+
+class ProjectMetadata(BaseModel):
+    """Метадані проекту з GEN1 (version, status, title, concept)."""
+    version: str = Field(default="3.0", description="Версія схеми")
+    status: str = Field(default="PRODUCTION_READY", description="Статус виводу")
+    title: str = Field(default="", description="Короткий заголовок")
+    concept: Optional[ProjectConcept] = Field(default=None, description="Концепція проекту")
+    target_duration_seconds: int = Field(default=10, description="Цільова тривалість")
+    scene_count: int = Field(default=6, description="Кількість сцен")
+
+
 class ProjectMeta(BaseModel):
     """Метаінформація проекту - most fields have defaults."""
     total_scenes: int = Field(default=6, description="Кількість сцен")
@@ -811,6 +830,15 @@ class GlazeCityProject(BaseModel):
 
     # YouTube - REQUIRED, NEVER NULL
     youtube: ViralMetadata
+
+    # GEN1 Metadata (version, status, title, concept) - for brief completeness
+    gen1_metadata: Optional[ProjectMetadata] = Field(default=None, description="Метадані з GEN1 (version, status, title, concept)")
+
+    # GEN2 Global Settings - negative_prompt is CRITICAL for image generation
+    negative_prompt: str = Field(
+        default="tilt-shift, miniature, diorama, toy, cartoon, anime, illustration, drawing, painting, sketch",
+        description="Глобальний negative prompt з GEN2 - CRITICAL для якості зображень"
+    )
 
     @model_validator(mode='before')
     @classmethod
@@ -999,6 +1027,8 @@ __all__ = [
     "ViralAudit",
     # Series & Meta
     "SeriesInfo",
+    "ProjectConcept",
+    "ProjectMetadata",
     "ProjectMeta",
     # Main
     "GlazeCityProject",
