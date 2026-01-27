@@ -231,3 +231,29 @@ class OAuthToken(BaseModel):
         "https://www.googleapis.com/auth/youtube.force-ssl"
     ])
     expiry: Optional[datetime] = None
+
+
+# ============================================================================
+# UPLOAD STATE (for resumable uploads)
+# ============================================================================
+
+class UploadState(BaseModel):
+    """State for resumable video uploads"""
+    project_id: str
+    channel_id: str
+    video_path: str
+    resumable_uri: Optional[str] = None
+    bytes_uploaded: int = 0
+    total_bytes: int = 0
+    started_at: datetime = Field(default_factory=datetime.now)
+    last_updated: datetime = Field(default_factory=datetime.now)
+    retry_count: int = 0
+
+    # Video metadata (to recreate request if needed)
+    title: str
+    description: str
+    tags: List[str] = Field(default_factory=list)
+    category_id: str = "24"
+    privacy_status: str = "private"
+    scheduled_datetime: Optional[datetime] = None
+    made_for_kids: bool = False

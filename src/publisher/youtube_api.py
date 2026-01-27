@@ -28,7 +28,23 @@ from .models import (
     ProxyConfig,
     OAuthToken,
     PrivacyStatus,
+    UploadState,
 )
+
+
+# Retry settings for resumable uploads
+MAX_RETRIES = 999  # Practically unlimited - will retry for days
+INITIAL_RETRY_DELAY = 5  # seconds
+MAX_RETRY_DELAY = 1800  # 30 minutes max between retries
+RETRIABLE_EXCEPTIONS = (
+    IOError,
+    ConnectionError,
+    ConnectionResetError,
+    TimeoutError,
+    BrokenPipeError,
+    OSError,
+)
+RETRIABLE_STATUS_CODES = [500, 502, 503, 504, 408]  # Added 408 Request Timeout
 
 
 # OAuth scopes required for publishing
@@ -70,6 +86,55 @@ class YouTubeAPI:
         self._credentials: Optional[Credentials] = None
         self._youtube = None
         self._http = None
+
+        # Upload state directory
+        self._uploads_dir = self.token_path.parent.parent / "uploads"
+        self._uploads_dir.mkdir(parents=True, exist_ok=True)
+
+    # ========================================================================
+    # UPLOAD STATE MANAGEMENT
+    # ========================================================================
+
+    def _get_upload_state_path(self, project_id: str) -> Path:
+        """Get path for upload state file"""
+        return self._uploads_dir / f"{project_id}_upload.json"
+
+    def _save_upload_state(self, state: UploadState) -> None:
+        """Save upload state to disk"""
+        state.last_updated = datetime.now()
+        state_path = self._get_upload_state_path(state.project_id)
+        with open(state_path, "w", encoding="utf-8") as f:
+            f.write(state.model_dump_json(indent=2))
+        logger.debug(f"Saved upload state: {state.bytes_uploaded}/{state.total_bytes} bytes")
+
+    def _load_upload_state(self, project_id: str) -> Optional[UploadState]:
+        """Load upload state from disk if exists"""
+        state_path = self._get_upload_state_path(project_id)
+        if state_path.exists():
+            try:
+                with open(state_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                state = UploadState(**data)
+                logger.info(f"Found existing upload state: {state.bytes_uploaded}/{state.total_bytes} bytes")
+                return state
+            except Exception as e:
+                logger.warning(f"Failed to load upload state: {e}")
+        return None
+
+    def _delete_upload_state(self, project_id: str) -> None:
+        """Delete upload state file after successful upload"""
+        state_path = self._get_upload_state_path(project_id)
+        if state_path.exists():
+            state_path.unlink()
+            logger.debug(f"Deleted upload state for {project_id}")
+
+    def _calculate_retry_delay(self, retry_count: int) -> float:
+        """Calculate exponential backoff delay"""
+        import random
+        delay = min(INITIAL_RETRY_DELAY * (2 ** retry_count), MAX_RETRY_DELAY)
+        # Add jitter
+        delay = delay + random.uniform(0, delay * 0.1)
+        return delay
 
     # ========================================================================
     # PROXY SETUP
@@ -554,14 +619,18 @@ class YouTubeAPI:
         title: str,
         description: str,
         tags: list = None,
-        category_id: str = "22",
+        category_id: str = "24",
         privacy_status: PrivacyStatus = PrivacyStatus.PUBLIC,
         scheduled_datetime: Optional[datetime] = None,
         made_for_kids: bool = False,
         progress_callback: Optional[Callable[[int, int], None]] = None,
+        project_id: Optional[str] = None,
     ) -> Tuple[bool, Optional[str], Optional[str]]:
         """
-        Upload video to YouTube.
+        Upload video to YouTube with resumable upload support.
+
+        Handles network interruptions with automatic retry and resume capability.
+        Upload state is saved to disk, allowing recovery after crashes.
 
         Args:
             video_path: Path to video file
@@ -573,6 +642,7 @@ class YouTubeAPI:
             scheduled_datetime: For scheduled publish
             made_for_kids: COPPA compliance
             progress_callback: Callback(bytes_uploaded, total_bytes)
+            project_id: Project ID for state tracking (enables resume)
 
         Returns:
             Tuple of (success, video_id, error_message)
@@ -580,89 +650,274 @@ class YouTubeAPI:
         if not video_path.exists():
             return False, None, f"Video file not found: {video_path}"
 
-        try:
-            with self._proxy_env():
-                youtube = self.get_youtube_client()
+        video_path = Path(video_path)
+        total_bytes = video_path.stat().st_size
 
-                # Build request body
-                body = {
-                    "snippet": {
-                        "title": title[:100],  # YouTube limit
-                        "description": description[:5000],  # YouTube limit
-                        "tags": (tags or [])[:500],  # YouTube limit
-                        "categoryId": category_id,
-                        "defaultLanguage": "en-US",  # English (United States)
-                        "defaultAudioLanguage": "en-US",  # English (United States)
-                    },
-                    "status": {
-                        "privacyStatus": privacy_status.value if isinstance(privacy_status, PrivacyStatus) else privacy_status,
-                        "selfDeclaredMadeForKids": made_for_kids,
-                        "containsSyntheticMedia": True,  # Altered content = Yes
-                    },
-                }
+        # Check for existing upload state
+        existing_state = None
+        if project_id:
+            existing_state = self._load_upload_state(project_id)
+            if existing_state:
+                # Verify it's the same file
+                if existing_state.video_path != str(video_path):
+                    logger.warning("Video path changed, starting fresh upload")
+                    existing_state = None
+                elif existing_state.resumable_uri:
+                    logger.info(f"Resuming upload from {existing_state.bytes_uploaded}/{total_bytes} bytes")
 
-                # Handle scheduled publish
-                if scheduled_datetime and privacy_status == PrivacyStatus.PRIVATE:
-                    body["status"]["publishAt"] = scheduled_datetime.astimezone(timezone.utc).isoformat()
+        # Create upload state
+        state = existing_state or UploadState(
+            project_id=project_id or f"upload_{int(time.time())}",
+            channel_id=self.channel_config.channel_id,
+            video_path=str(video_path),
+            total_bytes=total_bytes,
+            title=title,
+            description=description,
+            tags=tags or [],
+            category_id=category_id,
+            privacy_status=privacy_status.value if isinstance(privacy_status, PrivacyStatus) else privacy_status,
+            scheduled_datetime=scheduled_datetime,
+            made_for_kids=made_for_kids,
+        )
 
-                # Create media upload
-                media = MediaFileUpload(
-                    str(video_path),
-                    chunksize=1024 * 1024,  # 1MB chunks
-                    resumable=True,
-                    mimetype="video/mp4",
+        retry_count = state.retry_count
+
+        while retry_count < MAX_RETRIES:
+            try:
+                result = self._execute_upload(
+                    state=state,
+                    progress_callback=progress_callback,
                 )
 
-                # Create insert request
+                if result[0]:  # Success
+                    # Clean up state file
+                    if project_id:
+                        self._delete_upload_state(project_id)
+                    return result
+
+                # Non-retriable error
+                return result
+
+            except RETRIABLE_EXCEPTIONS as e:
+                retry_count += 1
+                state.retry_count = retry_count
+
+                if retry_count >= MAX_RETRIES:
+                    logger.error(f"Max retries ({MAX_RETRIES}) exceeded")
+                    if project_id:
+                        self._save_upload_state(state)
+                    return False, None, f"Upload failed after {MAX_RETRIES} retries: {e}"
+
+                delay = self._calculate_retry_delay(retry_count)
+                logger.warning(f"Network error: {e}. Retry {retry_count}/{MAX_RETRIES} in {delay:.1f}s")
+
+                # Save state before sleeping
+                if project_id:
+                    self._save_upload_state(state)
+
+                time.sleep(delay)
+
+            except HttpError as e:
+                if e.resp.status in RETRIABLE_STATUS_CODES:
+                    retry_count += 1
+                    state.retry_count = retry_count
+
+                    if retry_count >= MAX_RETRIES:
+                        logger.error(f"Max retries ({MAX_RETRIES}) exceeded")
+                        if project_id:
+                            self._save_upload_state(state)
+                        return False, None, f"Upload failed after {MAX_RETRIES} retries: {e}"
+
+                    delay = self._calculate_retry_delay(retry_count)
+                    logger.warning(f"Server error {e.resp.status}. Retry {retry_count}/{MAX_RETRIES} in {delay:.1f}s")
+
+                    if project_id:
+                        self._save_upload_state(state)
+
+                    time.sleep(delay)
+                else:
+                    # Non-retriable HTTP error
+                    error_msg = str(e)
+                    if e.resp.status == 403:
+                        error_msg = "Quota exceeded or permission denied"
+                    elif e.resp.status == 400:
+                        error_msg = f"Invalid request: {getattr(e, 'error_details', str(e))}"
+                    logger.error(f"Upload failed: {error_msg}")
+                    return False, None, error_msg
+
+            except Exception as e:
+                logger.error(f"Unexpected upload error: {e}")
+                if project_id:
+                    self._save_upload_state(state)
+                return False, None, str(e)
+
+        return False, None, "Upload failed: max retries exceeded"
+
+    def _execute_upload(
+        self,
+        state: UploadState,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> Tuple[bool, Optional[str], Optional[str]]:
+        """
+        Execute the actual upload with progress tracking.
+
+        This method handles the chunk-by-chunk upload and can resume
+        from a previously saved resumable_uri.
+        """
+        with self._proxy_env():
+            youtube = self.get_youtube_client()
+
+            video_path = Path(state.video_path)
+            privacy_status = state.privacy_status
+
+            # Build request body
+            body = {
+                "snippet": {
+                    "title": state.title[:100],
+                    "description": state.description[:5000],
+                    "tags": state.tags[:500] if state.tags else [],
+                    "categoryId": state.category_id,
+                    "defaultLanguage": "en-US",
+                    "defaultAudioLanguage": "en-US",
+                },
+                "status": {
+                    "privacyStatus": privacy_status,
+                    "selfDeclaredMadeForKids": state.made_for_kids,
+                    "containsSyntheticMedia": True,
+                },
+            }
+
+            # Handle scheduled publish
+            if state.scheduled_datetime and privacy_status == "private":
+                body["status"]["publishAt"] = state.scheduled_datetime.astimezone(timezone.utc).isoformat()
+
+            # Create media upload
+            media = MediaFileUpload(
+                str(video_path),
+                chunksize=1024 * 1024,  # 1MB chunks
+                resumable=True,
+                mimetype="video/mp4",
+            )
+
+            # Create or resume request
+            if state.resumable_uri:
+                # Resume existing upload
+                logger.info(f"Resuming upload from {state.bytes_uploaded} bytes")
+                request = youtube.videos().insert(
+                    part="snippet,status",
+                    body=body,
+                    media_body=media,
+                )
+                # Set the resumable URI to continue
+                request.resumable_uri = state.resumable_uri
+                media.resumable_progress = state.bytes_uploaded
+            else:
+                # Start new upload
+                logger.info(f"Starting new upload: {video_path.name}")
+                logger.info(f"Title: {state.title}")
                 request = youtube.videos().insert(
                     part="snippet,status",
                     body=body,
                     media_body=media,
                 )
 
-                logger.info(f"Uploading: {video_path.name}")
-                logger.info(f"Title: {title}")
+            # Execute upload with progress tracking
+            response = None
+            last_save_time = time.time()
+            save_interval = 10  # Save state every 10 seconds
 
-                # Execute with progress tracking
-                response = None
-                while response is None:
-                    status, response = request.next_chunk()
+            while response is None:
+                status, response = request.next_chunk()
 
-                    if status and progress_callback:
+                if status:
+                    # Update state
+                    state.bytes_uploaded = status.resumable_progress
+                    state.resumable_uri = request.resumable_uri
+
+                    # Progress callback
+                    if progress_callback:
                         progress_callback(
                             status.resumable_progress,
-                            status.total_size or video_path.stat().st_size,
+                            status.total_size or state.total_bytes,
                         )
 
-                    if status:
-                        progress_pct = int(status.progress() * 100)
-                        logger.debug(f"Upload progress: {progress_pct}%")
+                    progress_pct = int(status.progress() * 100)
+                    logger.debug(f"Upload progress: {progress_pct}%")
 
-                video_id = response.get("id")
-                video_url = f"https://youtube.com/shorts/{video_id}"
+                    # Periodically save state
+                    current_time = time.time()
+                    if current_time - last_save_time > save_interval:
+                        if state.project_id:
+                            self._save_upload_state(state)
+                        last_save_time = current_time
 
-                logger.success(f"Video uploaded: {video_id}")
-                logger.info(f"URL: {video_url}")
+            video_id = response.get("id")
+            video_url = f"https://youtube.com/shorts/{video_id}"
 
-                return True, video_id, None
+            logger.success(f"Video uploaded: {video_id}")
+            logger.info(f"URL: {video_url}")
 
-        except HttpError as e:
-            error_msg = str(e)
+            return True, video_id, None
 
-            # Parse specific error reasons
-            if e.resp.status == 403:
-                error_msg = "Quota exceeded or permission denied"
-            elif e.resp.status == 400:
-                error_msg = f"Invalid request: {e.error_details}"
-            elif e.resp.status == 500:
-                error_msg = "YouTube server error"
+    def resume_upload(
+        self,
+        project_id: str,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> Tuple[bool, Optional[str], Optional[str]]:
+        """
+        Resume a previously interrupted upload.
 
-            logger.error(f"Upload failed: {error_msg}")
-            return False, None, error_msg
+        Args:
+            project_id: Project ID to resume
+            progress_callback: Progress callback function
 
-        except Exception as e:
-            logger.error(f"Upload error: {e}")
-            return False, None, str(e)
+        Returns:
+            Tuple of (success, video_id, error_message)
+        """
+        state = self._load_upload_state(project_id)
+        if not state:
+            return False, None, f"No upload state found for {project_id}"
+
+        if not Path(state.video_path).exists():
+            return False, None, f"Video file not found: {state.video_path}"
+
+        logger.info(f"Resuming upload for {project_id}")
+        logger.info(f"Progress: {state.bytes_uploaded}/{state.total_bytes} bytes ({int(state.bytes_uploaded/state.total_bytes*100)}%)")
+
+        return self.upload_video(
+            video_path=Path(state.video_path),
+            title=state.title,
+            description=state.description,
+            tags=state.tags,
+            category_id=state.category_id,
+            privacy_status=PrivacyStatus(state.privacy_status),
+            scheduled_datetime=state.scheduled_datetime,
+            made_for_kids=state.made_for_kids,
+            progress_callback=progress_callback,
+            project_id=project_id,
+        )
+
+    def list_pending_uploads(self) -> list:
+        """List all pending/interrupted uploads"""
+        pending = []
+        if self._uploads_dir.exists():
+            for state_file in self._uploads_dir.glob("*_upload.json"):
+                try:
+                    with open(state_file, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    state = UploadState(**data)
+                    pending.append({
+                        "project_id": state.project_id,
+                        "title": state.title,
+                        "progress": f"{int(state.bytes_uploaded/state.total_bytes*100)}%",
+                        "bytes_uploaded": state.bytes_uploaded,
+                        "total_bytes": state.total_bytes,
+                        "started_at": state.started_at,
+                        "last_updated": state.last_updated,
+                    })
+                except Exception as e:
+                    logger.warning(f"Failed to read {state_file}: {e}")
+        return pending
 
     # ========================================================================
     # COMMENTS

@@ -474,6 +474,93 @@ def pending():
 
 
 # ============================================================================
+# UPLOAD COMMANDS (resumable uploads)
+# ============================================================================
+
+@app.command("uploads")
+def list_uploads(
+    channel_id: str = typer.Argument(..., help="Channel ID to check uploads"),
+):
+    """List pending/interrupted uploads that can be resumed."""
+    config = get_config_manager()
+
+    if not config.channel_exists(channel_id):
+        console.print(f"[red]Channel not found:[/red] {channel_id}")
+        raise typer.Exit(1)
+
+    channel_config = config.load_channel_config(channel_id)
+    youtube = YouTubeAPI(
+        channel_config=channel_config,
+        client_secrets_path=config.get_client_secrets_path(channel_id),
+        token_path=config.get_token_path(channel_id),
+    )
+
+    pending = youtube.list_pending_uploads()
+
+    if not pending:
+        console.print("[dim]No pending uploads found.[/dim]")
+        return
+
+    table = Table(title=f"Pending Uploads ({len(pending)})")
+    table.add_column("Project ID", style="cyan")
+    table.add_column("Title")
+    table.add_column("Progress")
+    table.add_column("Last Updated")
+
+    for upload in pending:
+        title = upload["title"][:35] + "..." if len(upload["title"]) > 35 else upload["title"]
+        table.add_row(
+            upload["project_id"],
+            title,
+            upload["progress"],
+            str(upload["last_updated"])[:19] if upload["last_updated"] else "Unknown",
+        )
+
+    console.print(table)
+    console.print("\n[dim]Use 'resume <project_id> <channel_id>' to continue upload[/dim]")
+
+
+@app.command()
+def resume(
+    project_id: str = typer.Argument(..., help="Project ID to resume"),
+    channel_id: str = typer.Argument(..., help="Channel ID"),
+):
+    """Resume an interrupted upload."""
+    config = get_config_manager()
+
+    if not config.channel_exists(channel_id):
+        console.print(f"[red]Channel not found:[/red] {channel_id}")
+        raise typer.Exit(1)
+
+    channel_config = config.load_channel_config(channel_id)
+    youtube = YouTubeAPI(
+        channel_config=channel_config,
+        client_secrets_path=config.get_client_secrets_path(channel_id),
+        token_path=config.get_token_path(channel_id),
+    )
+
+    console.print(f"\n[bold]Resuming upload:[/bold] {project_id}\n")
+
+    def progress_callback(uploaded: int, total: int) -> None:
+        if total > 0:
+            pct = int(uploaded / total * 100)
+            console.print(f"[dim]Progress: {pct}% ({uploaded / 1024 / 1024:.1f} MB / {total / 1024 / 1024:.1f} MB)[/dim]")
+
+    success, video_id, error = youtube.resume_upload(
+        project_id=project_id,
+        progress_callback=progress_callback,
+    )
+
+    if success:
+        console.print(f"\n[bold green]Upload completed![/bold green]")
+        console.print(f"Video ID: {video_id}")
+        console.print(f"URL: https://youtube.com/shorts/{video_id}")
+    else:
+        console.print(f"\n[bold red]Upload failed:[/bold red] {error}")
+        raise typer.Exit(1)
+
+
+# ============================================================================
 # MAIN ENTRY
 # ============================================================================
 

@@ -193,7 +193,7 @@ class Publisher:
                 channel_id=target_channel,
             ))
 
-            # Upload video
+            # Upload video (with resumable support)
             success, video_id, error = youtube.upload_video(
                 video_path=video_path,
                 title=brief.youtube.title,
@@ -204,6 +204,7 @@ class Publisher:
                 scheduled_datetime=scheduled_datetime,
                 made_for_kids=channel_config.settings.made_for_kids,
                 progress_callback=self._progress_callback,
+                project_id=project_id,  # Enable resumable upload
             )
 
             if not success:
