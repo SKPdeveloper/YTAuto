@@ -9,10 +9,10 @@ import os
 import time
 import json
 import httplib2
-import socks
 from pathlib import Path
 from typing import Optional, Tuple, Callable
 from datetime import datetime, timezone
+from contextlib import contextmanager
 
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -75,25 +75,84 @@ class YouTubeAPI:
     # PROXY SETUP
     # ========================================================================
 
-    def _create_http_with_proxy(self) -> httplib2.Http:
-        """Create httplib2.Http with proxy configuration"""
+    def _get_proxy_url(self) -> Optional[str]:
+        """Get proxy URL with authentication if configured"""
+        proxy = self.channel_config.proxy
+
+        if proxy and proxy.enabled:
+            if proxy.username and proxy.password:
+                return f"http://{proxy.username}:{proxy.password}@{proxy.host}:{proxy.port}"
+            else:
+                return f"http://{proxy.host}:{proxy.port}"
+        return None
+
+    def _create_http_with_proxy(self):
+        """
+        Create HTTP client with proxy support.
+
+        Uses a requests-based wrapper that's compatible with googleapiclient.
+        """
+        import requests
+
         proxy = self.channel_config.proxy
 
         if proxy and proxy.enabled:
             logger.info(f"Using proxy: {proxy.host}:{proxy.port}")
+            proxy_url = self._get_proxy_url()
 
-            # Create proxy info
-            proxy_info = httplib2.ProxyInfo(
-                proxy_type=socks.PROXY_TYPE_HTTP,
-                proxy_host=proxy.host,
-                proxy_port=proxy.port,
-                proxy_user=proxy.username,
-                proxy_pass=proxy.password,
-            )
+            # Create a custom Http class that uses requests with proxy
+            class RequestsHttp:
+                """httplib2-compatible wrapper around requests with proxy support"""
 
-            return httplib2.Http(proxy_info=proxy_info)
+                def __init__(self, proxy_url):
+                    self.session = requests.Session()
+                    self.session.proxies = {
+                        'http': proxy_url,
+                        'https': proxy_url,
+                    }
+                    self.session.trust_env = False  # Don't use env proxies
+
+                def request(self, uri, method="GET", body=None, headers=None,
+                           redirections=5, connection_type=None):
+                    """Make HTTP request - compatible with httplib2 interface"""
+                    headers = headers or {}
+
+                    try:
+                        response = self.session.request(
+                            method=method,
+                            url=uri,
+                            data=body,
+                            headers=headers,
+                            allow_redirects=redirections > 0,
+                            timeout=300,
+                        )
+
+                        # Create httplib2-like response object
+                        class HttpResponse(dict):
+                            """httplib2-compatible response object"""
+
+                            def __init__(self, resp):
+                                # Initialize as dict with lowercase headers
+                                super().__init__()
+                                for key, value in resp.headers.items():
+                                    self[key.lower()] = value
+
+                                self.status = resp.status_code
+                                self.reason = resp.reason
+
+                        return HttpResponse(response), response.content
+
+                    except requests.exceptions.RequestException as e:
+                        raise httplib2.HttpLib2Error(str(e))
+
+            return RequestsHttp(proxy_url)
 
         return httplib2.Http()
+
+    @contextmanager
+    def _proxy_env(self):
+        """Context manager for proxy - kept for compatibility"""
+        yield
 
     # ========================================================================
     # OAUTH AUTHENTICATION
@@ -179,11 +238,15 @@ class YouTubeAPI:
         self._credentials = creds
         return True
 
-    def run_oauth_flow(self) -> bool:
+    def run_oauth_flow(self, adspower_profile_id: Optional[str] = None) -> bool:
         """
         Run interactive OAuth flow.
 
         Opens browser for user to authorize access.
+        If adspower_profile_id is provided, uses AdsPower browser instead of system default.
+
+        Args:
+            adspower_profile_id: AdsPower profile ID (e.g., 'j5yrx8v')
 
         Returns:
             True if authorization successful
@@ -198,22 +261,185 @@ class YouTubeAPI:
                 scopes=SCOPES,
             )
 
-            # Run local server to receive OAuth callback
-            creds = flow.run_local_server(
-                port=0,  # Random available port
-                prompt="consent",
-                authorization_prompt_message="Please authorize in the browser...",
-            )
+            if adspower_profile_id:
+                # Use AdsPower browser for OAuth
+                creds = self._run_oauth_with_adspower(flow, adspower_profile_id)
+            else:
+                # Use default system browser
+                creds = flow.run_local_server(
+                    port=0,
+                    prompt="consent",
+                    authorization_prompt_message="Please authorize in the browser...",
+                )
 
-            self._save_credentials(creds)
-            self._credentials = creds
-
-            logger.success("OAuth authorization successful")
-            return True
+            if creds:
+                self._save_credentials(creds)
+                self._credentials = creds
+                logger.success("OAuth authorization successful")
+                return True
+            else:
+                logger.error("OAuth flow did not return credentials")
+                return False
 
         except Exception as e:
             logger.error(f"OAuth flow failed: {e}")
             return False
+
+    def _run_oauth_with_adspower(
+        self,
+        flow: InstalledAppFlow,
+        profile_id: str,
+        base_url: str = "http://local.adspower.net:50325"
+    ) -> Optional[Credentials]:
+        """
+        Run OAuth flow using AdsPower browser.
+
+        Args:
+            flow: OAuth flow instance
+            profile_id: AdsPower profile ID
+            base_url: AdsPower API base URL
+
+        Returns:
+            Credentials if successful, None otherwise
+        """
+        import httpx
+        import socket
+        import threading
+        from wsgiref.simple_server import make_server, WSGIRequestHandler
+        from urllib.parse import urlparse, parse_qs
+
+        logger.info(f"Starting OAuth with AdsPower profile: {profile_id}")
+
+        # Find available port
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(('', 0))
+            port = s.getsockname()[1]
+
+        redirect_uri = f"http://localhost:{port}/"
+        flow.redirect_uri = redirect_uri
+
+        # Generate authorization URL
+        auth_url, state = flow.authorization_url(
+            prompt="consent",
+            access_type="offline",
+        )
+
+        logger.info(f"Authorization URL generated")
+        logger.debug(f"URL: {auth_url}")
+
+        # Storage for the authorization response
+        auth_response = {"code": None, "error": None}
+
+        # Simple WSGI app to capture the callback
+        def wsgi_app(environ, start_response):
+            query = parse_qs(environ.get('QUERY_STRING', ''))
+
+            if 'code' in query:
+                auth_response['code'] = query['code'][0]
+                body = b"""
+                <html><body style="font-family: Arial; text-align: center; padding: 50px;">
+                <h1>Authorization Successful!</h1>
+                <p>You can close this window and return to the terminal.</p>
+                </body></html>
+                """
+            elif 'error' in query:
+                auth_response['error'] = query.get('error', ['Unknown'])[0]
+                body = f"""
+                <html><body style="font-family: Arial; text-align: center; padding: 50px;">
+                <h1>Authorization Failed</h1>
+                <p>Error: {auth_response['error']}</p>
+                </body></html>
+                """.encode()
+            else:
+                body = b"Waiting for authorization..."
+
+            start_response('200 OK', [
+                ('Content-Type', 'text/html'),
+                ('Content-Length', str(len(body)))
+            ])
+            return [body]
+
+        # Silent request handler
+        class SilentHandler(WSGIRequestHandler):
+            def log_message(self, format, *args):
+                pass
+
+        # Start local server in background
+        server = make_server('localhost', port, wsgi_app, handler_class=SilentHandler)
+        server_thread = threading.Thread(target=server.handle_request)
+        server_thread.daemon = True
+        server_thread.start()
+
+        logger.info(f"Callback server started on port {port}")
+
+        # Start AdsPower profile and open URL
+        try:
+            with httpx.Client(timeout=60) as client:
+                # Start browser profile
+                start_resp = client.get(f"{base_url}/api/v1/browser/start?user_id={profile_id}")
+                start_data = start_resp.json()
+
+                if start_data.get("code") != 0:
+                    logger.error(f"Failed to start AdsPower profile: {start_data.get('msg')}")
+                    return None
+
+                selenium_addr = start_data["data"]["ws"]["selenium"]
+                webdriver_path = start_data["data"]["webdriver"]
+
+                logger.info("AdsPower browser started, connecting Selenium...")
+
+                # Connect Selenium and navigate to auth URL
+                from selenium import webdriver
+                from selenium.webdriver.chrome.service import Service
+                from selenium.webdriver.chrome.options import Options
+
+                chrome_options = Options()
+                chrome_options.add_experimental_option("debuggerAddress", selenium_addr)
+                service = Service(executable_path=webdriver_path)
+                driver = webdriver.Chrome(service=service, options=chrome_options)
+
+                logger.info("Opening authorization page in AdsPower browser...")
+                driver.get(auth_url)
+
+                # Wait for authorization (max 5 minutes)
+                logger.info("Waiting for user to authorize in browser...")
+                logger.info("Please complete the authorization in the browser window.")
+
+                timeout = 300  # 5 minutes
+                start_time = time.time()
+
+                while auth_response['code'] is None and auth_response['error'] is None:
+                    if time.time() - start_time > timeout:
+                        logger.error("Authorization timeout")
+                        return None
+                    time.sleep(1)
+
+                # Close browser tab (optional - keep profile open)
+                # driver.quit()
+
+        except Exception as e:
+            logger.error(f"AdsPower OAuth error: {e}")
+            return None
+
+        finally:
+            server.server_close()
+
+        if auth_response['error']:
+            logger.error(f"Authorization error: {auth_response['error']}")
+            return None
+
+        if not auth_response['code']:
+            logger.error("No authorization code received")
+            return None
+
+        # Exchange code for credentials
+        logger.info("Exchanging authorization code for tokens...")
+        try:
+            flow.fetch_token(code=auth_response['code'])
+            return flow.credentials
+        except Exception as e:
+            logger.error(f"Token exchange failed: {e}")
+            return None
 
     # ========================================================================
     # API CLIENT
@@ -233,16 +459,51 @@ class YouTubeAPI:
             if not self.authenticate():
                 raise Exception("Not authenticated")
 
-        # Create HTTP with proxy
-        self._http = self._create_http_with_proxy()
+        proxy = self.channel_config.proxy
 
-        # Build YouTube service
-        self._youtube = build(
-            "youtube",
-            "v3",
-            credentials=self._credentials,
-            http=self._http,
-        )
+        if proxy and proxy.enabled:
+            # Use custom http with proxy - need to handle auth manually
+            self._http = self._create_http_with_proxy()
+
+            # Create authorized http wrapper
+            from google_auth_httplib2 import AuthorizedHttp
+
+            # Wrap our custom http with authorization
+            class AuthorizedRequestsHttp:
+                """Wrapper that adds auth headers to our requests-based http"""
+
+                def __init__(self, credentials, base_http):
+                    self.credentials = credentials
+                    self.base_http = base_http
+
+                def request(self, uri, method="GET", body=None, headers=None,
+                           redirections=5, connection_type=None):
+                    headers = dict(headers) if headers else {}
+
+                    # Add authorization header
+                    if self.credentials.token:
+                        headers['Authorization'] = f'Bearer {self.credentials.token}'
+
+                    return self.base_http.request(
+                        uri, method=method, body=body, headers=headers,
+                        redirections=redirections, connection_type=connection_type
+                    )
+
+            authorized_http = AuthorizedRequestsHttp(self._credentials, self._http)
+
+            # Build YouTube service with authorized proxy http
+            self._youtube = build(
+                "youtube",
+                "v3",
+                http=authorized_http,
+            )
+        else:
+            # No proxy - use standard credentials approach
+            self._youtube = build(
+                "youtube",
+                "v3",
+                credentials=self._credentials,
+            )
 
         return self._youtube
 
@@ -258,23 +519,24 @@ class YouTubeAPI:
             Channel info dict or None
         """
         try:
-            youtube = self.get_youtube_client()
+            with self._proxy_env():
+                youtube = self.get_youtube_client()
 
-            response = youtube.channels().list(
-                part="snippet,statistics",
-                mine=True,
-            ).execute()
+                response = youtube.channels().list(
+                    part="snippet,statistics",
+                    mine=True,
+                ).execute()
 
-            if response.get("items"):
-                channel = response["items"][0]
-                return {
-                    "id": channel["id"],
-                    "title": channel["snippet"]["title"],
-                    "description": channel["snippet"].get("description", ""),
-                    "subscribers": channel["statistics"].get("subscriberCount", "0"),
-                    "videos": channel["statistics"].get("videoCount", "0"),
-                    "views": channel["statistics"].get("viewCount", "0"),
-                }
+                if response.get("items"):
+                    channel = response["items"][0]
+                    return {
+                        "id": channel["id"],
+                        "title": channel["snippet"]["title"],
+                        "description": channel["snippet"].get("description", ""),
+                        "subscribers": channel["statistics"].get("subscriberCount", "0"),
+                        "videos": channel["statistics"].get("videoCount", "0"),
+                        "views": channel["statistics"].get("viewCount", "0"),
+                    }
 
             return None
 
@@ -319,66 +581,70 @@ class YouTubeAPI:
             return False, None, f"Video file not found: {video_path}"
 
         try:
-            youtube = self.get_youtube_client()
+            with self._proxy_env():
+                youtube = self.get_youtube_client()
 
-            # Build request body
-            body = {
-                "snippet": {
-                    "title": title[:100],  # YouTube limit
-                    "description": description[:5000],  # YouTube limit
-                    "tags": (tags or [])[:500],  # YouTube limit
-                    "categoryId": category_id,
-                },
-                "status": {
-                    "privacyStatus": privacy_status.value if isinstance(privacy_status, PrivacyStatus) else privacy_status,
-                    "selfDeclaredMadeForKids": made_for_kids,
-                },
-            }
+                # Build request body
+                body = {
+                    "snippet": {
+                        "title": title[:100],  # YouTube limit
+                        "description": description[:5000],  # YouTube limit
+                        "tags": (tags or [])[:500],  # YouTube limit
+                        "categoryId": category_id,
+                        "defaultLanguage": "en-US",  # English (United States)
+                        "defaultAudioLanguage": "en-US",  # English (United States)
+                    },
+                    "status": {
+                        "privacyStatus": privacy_status.value if isinstance(privacy_status, PrivacyStatus) else privacy_status,
+                        "selfDeclaredMadeForKids": made_for_kids,
+                        "containsSyntheticMedia": True,  # Altered content = Yes
+                    },
+                }
 
-            # Handle scheduled publish
-            if scheduled_datetime and privacy_status == PrivacyStatus.PRIVATE:
-                body["status"]["publishAt"] = scheduled_datetime.astimezone(timezone.utc).isoformat()
+                # Handle scheduled publish
+                if scheduled_datetime and privacy_status == PrivacyStatus.PRIVATE:
+                    body["status"]["publishAt"] = scheduled_datetime.astimezone(timezone.utc).isoformat()
 
-            # Create media upload
-            media = MediaFileUpload(
-                str(video_path),
-                chunksize=1024 * 1024,  # 1MB chunks
-                resumable=True,
-                mimetype="video/mp4",
-            )
+                # Create media upload
+                media = MediaFileUpload(
+                    str(video_path),
+                    chunksize=1024 * 1024,  # 1MB chunks
+                    resumable=True,
+                    mimetype="video/mp4",
+                )
 
-            # Create insert request
-            request = youtube.videos().insert(
-                part="snippet,status",
-                body=body,
-                media_body=media,
-            )
+                # Create insert request
+                request = youtube.videos().insert(
+                    part="snippet,status",
+                    body=body,
+                    media_body=media,
+                )
 
-            logger.info(f"Uploading: {video_path.name}")
-            logger.info(f"Title: {title}")
+                logger.info(f"Uploading: {video_path.name}")
+                logger.info(f"Title: {title}")
 
-            # Execute with progress tracking
-            response = None
-            while response is None:
-                status, response = request.next_chunk()
+                # Execute with progress tracking
+                response = None
+                while response is None:
+                    status, response = request.next_chunk()
 
-                if status and progress_callback:
-                    progress_callback(
-                        status.resumable_progress,
-                        status.total_size or video_path.stat().st_size,
-                    )
+                    if status and progress_callback:
+                        progress_callback(
+                            status.resumable_progress,
+                            status.total_size or video_path.stat().st_size,
+                        )
 
-                if status:
-                    progress_pct = int(status.progress() * 100)
-                    logger.debug(f"Upload progress: {progress_pct}%")
+                    if status:
+                        progress_pct = int(status.progress() * 100)
+                        logger.debug(f"Upload progress: {progress_pct}%")
 
-            video_id = response.get("id")
-            video_url = f"https://youtube.com/shorts/{video_id}"
+                video_id = response.get("id")
+                video_url = f"https://youtube.com/shorts/{video_id}"
 
-            logger.success(f"Video uploaded: {video_id}")
-            logger.info(f"URL: {video_url}")
+                logger.success(f"Video uploaded: {video_id}")
+                logger.info(f"URL: {video_url}")
 
-            return True, video_id, None
+                return True, video_id, None
 
         except HttpError as e:
             error_msg = str(e)
@@ -424,25 +690,26 @@ class YouTubeAPI:
             return True, None, None
 
         try:
-            youtube = self.get_youtube_client()
+            with self._proxy_env():
+                youtube = self.get_youtube_client()
 
-            # Insert comment
-            response = youtube.commentThreads().insert(
-                part="snippet",
-                body={
-                    "snippet": {
-                        "videoId": video_id,
-                        "topLevelComment": {
-                            "snippet": {
-                                "textOriginal": comment_text,
+                # Insert comment
+                response = youtube.commentThreads().insert(
+                    part="snippet",
+                    body={
+                        "snippet": {
+                            "videoId": video_id,
+                            "topLevelComment": {
+                                "snippet": {
+                                    "textOriginal": comment_text,
+                                }
                             }
                         }
                     }
-                }
-            ).execute()
+                ).execute()
 
-            comment_id = response["snippet"]["topLevelComment"]["id"]
-            logger.info(f"Comment added: {comment_id}")
+                comment_id = response["snippet"]["topLevelComment"]["id"]
+                logger.info(f"Comment added: {comment_id}")
 
             # Pin comment if requested (requires channel owner)
             # Note: YouTube API doesn't have direct "pin" - we use the UI for this
@@ -476,6 +743,8 @@ class YouTubeAPI:
         Returns:
             Tuple of (success, details_dict)
         """
+        import requests as req
+
         details = {
             "proxy_ok": False,
             "auth_ok": False,
@@ -485,10 +754,11 @@ class YouTubeAPI:
 
         try:
             # Test proxy connection
-            if self.channel_config.proxy and self.channel_config.proxy.enabled:
-                http = self._create_http_with_proxy()
-                response, content = http.request("https://www.googleapis.com/")
-                details["proxy_ok"] = response.status < 500
+            proxy_url = self._get_proxy_url()
+            if proxy_url:
+                proxies = {"http": proxy_url, "https": proxy_url}
+                response = req.get("https://www.googleapis.com/", proxies=proxies, timeout=15)
+                details["proxy_ok"] = response.status_code < 500
             else:
                 details["proxy_ok"] = True
 
@@ -496,7 +766,7 @@ class YouTubeAPI:
             if self.authenticate():
                 details["auth_ok"] = True
 
-                # Get channel info
+                # Get channel info (uses proxy via _proxy_env context)
                 channel_info = self.get_channel_info()
                 if channel_info:
                     details["channel_info"] = channel_info

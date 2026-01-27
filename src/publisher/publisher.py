@@ -3,10 +3,12 @@ Publisher - Core Publishing Logic for YTAutoPublisher
 
 Orchestrates the entire publishing process:
 1. Read project brief
-2. Clean video metadata
-3. Upload to YouTube
-4. Add pinned comment
-5. Archive project
+2. Auto-schedule if enabled
+3. Clean video metadata
+4. Upload to YouTube (as private with scheduled time)
+5. Add pinned comment
+6. Update publish queue
+7. Archive project
 """
 
 from pathlib import Path
@@ -24,6 +26,7 @@ from .models import (
 from .config_manager import ConfigManager, get_config_manager
 from .metadata_cleaner import MetadataCleaner, get_metadata_cleaner
 from .youtube_api import YouTubeAPI
+from .scheduler import PublicationScheduler, create_scheduler, PublishStatus as QueueStatus
 
 
 class Publisher:
@@ -37,6 +40,7 @@ class Publisher:
         self,
         config_manager: Optional[ConfigManager] = None,
         metadata_cleaner: Optional[MetadataCleaner] = None,
+        scheduler: Optional[PublicationScheduler] = None,
     ):
         """
         Initialize publisher.
@@ -44,9 +48,11 @@ class Publisher:
         Args:
             config_manager: Configuration manager instance
             metadata_cleaner: FFmpeg metadata cleaner instance
+            scheduler: Publication scheduler instance
         """
         self.config = config_manager or get_config_manager()
         self.cleaner = metadata_cleaner or get_metadata_cleaner()
+        self.scheduler = scheduler or create_scheduler()
 
     # ========================================================================
     # PUBLISH SINGLE PROJECT
@@ -100,6 +106,23 @@ class Publisher:
             target_channel = brief.publish_config.target_channel
             status.channel_id = target_channel
 
+            # Step 2b: Auto-schedule if enabled
+            scheduled_datetime = brief.publish_config.scheduled_datetime
+            scheduled_local_str = None
+
+            if brief.publish_config.auto_schedule and not scheduled_datetime:
+                logger.info("Auto-scheduling publication...")
+                scheduled_datetime, scheduled_local_str = self.scheduler.get_next_available_slot(
+                    channel_id=target_channel
+                )
+                logger.info(f"Scheduled for: {scheduled_local_str}")
+
+            # If we have a scheduled datetime, privacy MUST be private (YouTube requirement)
+            privacy_status = brief.publish_config.privacy_status
+            if scheduled_datetime:
+                privacy_status = PrivacyStatus.PRIVATE
+                logger.info(f"Set privacy to PRIVATE for scheduled publish")
+
             # Step 3: Load channel config
             channel_config = self.config.load_channel_config(target_channel)
             if not channel_config:
@@ -142,7 +165,9 @@ class Publisher:
             if dry_run:
                 logger.info("[DRY RUN] Would upload video to YouTube")
                 logger.info(f"  Channel: {channel_config.channel_name}")
-                logger.info(f"  Privacy: {brief.publish_config.privacy_status}")
+                logger.info(f"  Privacy: {privacy_status}")
+                if scheduled_datetime:
+                    logger.info(f"  Scheduled: {scheduled_local_str or scheduled_datetime}")
                 logger.info(f"  Title: {brief.youtube.title}")
                 logger.info(f"  Description: {brief.youtube.description[:100]}...")
                 logger.info(f"  Tags: {brief.youtube.tags}")
@@ -175,8 +200,8 @@ class Publisher:
                 description=brief.youtube.description,
                 tags=brief.youtube.tags,
                 category_id=channel_config.settings.default_category_id,
-                privacy_status=brief.publish_config.privacy_status,
-                scheduled_datetime=brief.publish_config.scheduled_datetime,
+                privacy_status=privacy_status,
+                scheduled_datetime=scheduled_datetime,
                 made_for_kids=channel_config.settings.made_for_kids,
                 progress_callback=self._progress_callback,
             )
@@ -205,6 +230,22 @@ class Publisher:
                 channel_id=target_channel,
                 video_id=video_id,
             ))
+
+            # Update scheduler queue if scheduled
+            if scheduled_datetime:
+                entry = self.scheduler.schedule_project(
+                    channel_id=target_channel,
+                    project_id=project_id,
+                    scheduled_datetime=scheduled_datetime,
+                )
+                entry.video_id = video_id
+                self.scheduler.update_entry_status(
+                    channel_id=target_channel,
+                    project_id=project_id,
+                    status=QueueStatus.SCHEDULED,
+                    video_id=video_id,
+                )
+                logger.info(f"Added to publish queue: {scheduled_local_str or scheduled_datetime}")
 
             # Step 7: Add pinned comment
             if brief.youtube.pinned_comment:

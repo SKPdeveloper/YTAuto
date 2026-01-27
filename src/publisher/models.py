@@ -69,7 +69,7 @@ class ChannelSettings(BaseModel):
     """Channel-specific settings"""
     active: bool = True
     default_privacy: PrivacyStatus = PrivacyStatus.PUBLIC
-    default_category_id: str = "22"  # People & Blogs
+    default_category_id: str = "24"  # Entertainment
     made_for_kids: bool = False
 
 
@@ -106,7 +106,7 @@ class FFmpegConfig(BaseModel):
 
 class UploadConfig(BaseModel):
     """Upload defaults"""
-    default_category_id: str = "22"
+    default_category_id: str = "24"  # Entertainment
     default_privacy: PrivacyStatus = PrivacyStatus.PUBLIC
     made_for_kids: bool = False
     retry_attempts: int = 3
@@ -161,6 +161,7 @@ class ProjectPublishConfig(BaseModel):
     target_channel: str
     scheduled_datetime: Optional[datetime] = None
     privacy_status: PrivacyStatus = PrivacyStatus.PUBLIC
+    auto_schedule: bool = False  # If True, scheduler picks next available slot
 
     class Config:
         use_enum_values = True

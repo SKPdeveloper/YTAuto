@@ -164,8 +164,13 @@ def channel_add(
 @channel_app.command("auth")
 def channel_auth(
     channel_id: str = typer.Argument(..., help="Channel ID to authorize"),
+    adspower: str = typer.Option(None, "--adspower", "-a", help="AdsPower profile ID to use for auth"),
 ):
-    """Run OAuth authorization for existing channel."""
+    """Run OAuth authorization for existing channel.
+
+    Use --adspower to open auth in AdsPower browser instead of system default.
+    Example: channel auth glaze_city --adspower j5yrx8v
+    """
     config = get_config_manager()
 
     if not config.channel_exists(channel_id):
@@ -181,7 +186,12 @@ def channel_auth(
         raise typer.Exit(1)
 
     console.print(f"\n[bold]Authorizing channel:[/bold] {channel_id}")
-    console.print("A browser window will open...\n")
+
+    if adspower:
+        console.print(f"[cyan]Using AdsPower profile:[/cyan] {adspower}")
+        console.print("Authorization page will open in AdsPower browser...\n")
+    else:
+        console.print("A browser window will open...\n")
 
     youtube = YouTubeAPI(
         channel_config=channel_config,
@@ -189,7 +199,7 @@ def channel_auth(
         token_path=config.get_token_path(channel_id),
     )
 
-    if youtube.run_oauth_flow():
+    if youtube.run_oauth_flow(adspower_profile_id=adspower):
         console.print("\n[bold green]Authorization successful![/bold green]")
     else:
         console.print("\n[bold red]Authorization failed![/bold red]")
