@@ -841,6 +841,13 @@ class HiggsFieldWebAdapter:
                 reference_url=reference_url
             )
 
+            # Log how many images were returned vs expected
+            logger.info(f"[VISUAL_ENGINE] Generated {len(generated_images)}/{len(scenes)} images")
+
+            if len(generated_images) < len(scenes):
+                logger.error(f"[VISUAL_ENGINE] MISSING IMAGES! Expected {len(scenes)}, got {len(generated_images)}")
+                logger.error(f"[VISUAL_ENGINE] Scene 6 may be missing! This will cause incomplete final video.")
+
             # FIX: Swap scenes 2 and 6 (indices 0 and 4 in remaining scenes array)
             # Higgsfield returns them in wrong order
             if len(generated_images) == 5:

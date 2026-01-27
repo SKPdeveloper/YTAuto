@@ -288,9 +288,33 @@ class ControlPipeline:
                     raise
 
         # Final check - log which scenes have images
+        missing_scenes = []
         for scene in self.project.scenes:
             has_image = scene.image_path and Path(scene.image_path).exists()
             logger.info(f"[Scene {scene.scene_number}] has_image={has_image}, path={scene.image_path}")
+            if not has_image and scene.scene_number > 1:
+                missing_scenes.append(scene)
+
+        # CRITICAL: If scene 6 (LOOP_CLOSE) is missing, generate it separately
+        if missing_scenes:
+            logger.warning(f"[PIPELINE] Missing images for scenes: {[s.scene_number for s in missing_scenes]}")
+            for scene in missing_scenes:
+                logger.info(f"[PIPELINE] Generating missing scene {scene.scene_number} individually...")
+                try:
+                    ref_image = Path(reference_image) if reference_image else None
+                    image_path = await self.orchestrator.visual_engine.generate_scene_image(
+                        prompt=scene.image_prompt,
+                        scene_number=scene.scene_number,
+                        project_id=self.project.project_id,
+                        reference_image=ref_image,
+                        reference_type=scene.reference_type,
+                    )
+                    if image_path:
+                        scene.image_path = str(image_path)
+                        scene.status = SceneStatus.IMAGE_READY
+                        logger.success(f"[Scene {scene.scene_number}] Image generated individually: {image_path}")
+                except Exception as e:
+                    logger.error(f"[Scene {scene.scene_number}] Individual generation failed: {e}")
 
         # Validate images
         await self._notify_stage("VALIDATING_IMAGES", 50)
