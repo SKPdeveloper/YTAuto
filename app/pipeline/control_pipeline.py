@@ -289,29 +289,31 @@ class ControlPipeline:
 
         # ================================================================
         # CRITICAL: ALL 6 IMAGES MUST EXIST BEFORE PROCEEDING
-        # Loop until all scenes have images or max retries exceeded
+        # INFINITE RETRY - keep generating until ALL images are ready
         # ================================================================
-        MAX_IMAGE_RETRIES = 5
+        retry_round = 0
 
-        for retry_round in range(1, MAX_IMAGE_RETRIES + 1):
+        while True:
+            retry_round += 1
+
             # Check which scenes are missing images
             missing_scenes = []
             for scene in self.project.scenes:
                 has_image = scene.image_path and Path(scene.image_path).exists()
                 if not has_image:
                     missing_scenes.append(scene)
-                logger.info(f"[Scene {scene.scene_number}] has_image={has_image}, path={scene.image_path}")
 
             # All images present - proceed
             if not missing_scenes:
                 logger.success(f"[PIPELINE] ✅ ALL {len(self.project.scenes)} IMAGES READY!")
                 break
 
-            logger.warning(f"[PIPELINE] Round {retry_round}/{MAX_IMAGE_RETRIES}: Missing {len(missing_scenes)} images: {[s.scene_number for s in missing_scenes]}")
+            logger.warning(f"[PIPELINE] Round {retry_round}: Missing {len(missing_scenes)} images: {[s.scene_number for s in missing_scenes]}")
+            await self.notify_log(f"🔄 Round {retry_round}: Generating {len(missing_scenes)} missing images...", "warning")
 
             # Generate missing images individually
             for scene in missing_scenes:
-                logger.info(f"[PIPELINE] Generating missing scene {scene.scene_number} (round {retry_round})...")
+                logger.info(f"[PIPELINE] Generating scene {scene.scene_number} (round {retry_round})...")
                 try:
                     ref_image = Path(reference_image) if reference_image else None
                     image_path = await self.orchestrator.visual_engine.generate_scene_image(
@@ -326,18 +328,9 @@ class ControlPipeline:
                         scene.status = SceneStatus.IMAGE_READY
                         logger.success(f"[Scene {scene.scene_number}] ✅ Image generated: {image_path}")
                 except Exception as e:
-                    logger.error(f"[Scene {scene.scene_number}] Generation failed: {e}")
+                    logger.error(f"[Scene {scene.scene_number}] Generation failed: {e}, will retry...")
 
-            await asyncio.sleep(5)  # Brief pause before next check
-
-        # FINAL CHECK - BLOCK if any images still missing
-        final_missing = [s for s in self.project.scenes if not (s.image_path and Path(s.image_path).exists())]
-        if final_missing:
-            missing_nums = [s.scene_number for s in final_missing]
-            error_msg = f"PIPELINE BLOCKED: Missing images for scenes {missing_nums} after {MAX_IMAGE_RETRIES} attempts"
-            logger.error(f"[PIPELINE] ❌ {error_msg}")
-            await self.notify_log(f"❌ {error_msg}", "error")
-            raise RuntimeError(error_msg)
+            await asyncio.sleep(5)
 
         # Validate images
         await self._notify_stage("VALIDATING_IMAGES", 50)
@@ -514,66 +507,66 @@ class ControlPipeline:
             return
 
         # ================================================================
-        # CRITICAL: BLOCK VIDEO GENERATION IF ANY IMAGE IS MISSING
         # ALL 6 images MUST exist before we start generating videos
         # ================================================================
-        missing_images = []
-        for scene in self.project.scenes:
-            has_image = scene.image_path and Path(scene.image_path).exists()
-            if not has_image:
-                missing_images.append(scene.scene_number)
-
-        if missing_images:
-            error_msg = f"BLOCKED: Cannot generate videos - missing images for scenes: {missing_images}"
-            logger.error(f"[PIPELINE] ❌ {error_msg}")
-            await self.notify_log(f"❌ {error_msg}", "error")
-            raise RuntimeError(error_msg)
-
-        logger.success(f"[PIPELINE] ✅ All {len(self.project.scenes)} images verified. Starting video generation...")
-
         await self._notify_stage("GENERATING_VIDEOS", 70)
-
         logger.info("Generating videos for all scenes (SimpleVideoGenerator)...")
 
-        try:
-            # Prepare scenes data for batch generation
-            scenes_data = []
+        # ================================================================
+        # INFINITE RETRY - keep generating until ALL 6 videos are ready
+        # ================================================================
+        retry_round = 0
+
+        while True:
+            retry_round += 1
+
+            # Check which scenes need videos
+            scenes_needing_video = []
             for scene in self.project.scenes:
-                # DEBUG: Log image path for each scene
-                logger.info(f"[DEBUG] Scene {scene.scene_number}: image_path = {scene.image_path}")
+                scene_dir = settings.PROJECTS_DIR / self.project.project_id / f"scene_{scene.scene_number}"
+                video_path = scene_dir / "video.mp4"
+                has_video = video_path.exists()
 
-                scenes_data.append({
-                    'scene_number': scene.scene_number,
-                    'image_path': scene.image_path,
-                    'video_prompt': scene.motion_prompt,
-                })
+                if not has_video:
+                    if scene.image_path and Path(scene.image_path).exists():
+                        scenes_needing_video.append(scene)
+                    else:
+                        logger.error(f"[Scene {scene.scene_number}] No image! Cannot generate video.")
 
-            if not scenes_data:
-                raise ValueError("No scenes with images to generate videos for")
+            # All videos present - proceed
+            if not scenes_needing_video:
+                logger.success(f"[PIPELINE] ✅ ALL {len(self.project.scenes)} VIDEOS READY!")
+                break
 
-            logger.info(f"Generating {len(scenes_data)} videos...")
+            logger.warning(f"[PIPELINE] Video round {retry_round}: Missing {len(scenes_needing_video)} videos: {[s.scene_number for s in scenes_needing_video]}")
+            await self.notify_log(f"🔄 Video round {retry_round}: Generating {len(scenes_needing_video)} videos...", "warning")
 
-            # Use SimpleVideoGenerator through visual_engine
-            video_paths = await self.orchestrator.visual_engine.generate_all_videos_parallel(
-                scenes=scenes_data,
-                project_id=self.project.project_id,
-            )
+            # Generate missing videos
+            scenes_data = [{
+                'scene_number': s.scene_number,
+                'image_path': s.image_path,
+                'video_prompt': s.motion_prompt,
+            } for s in scenes_needing_video]
 
-            # Update scene statuses
-            for i, path in enumerate(video_paths):
-                if i < len(self.project.scenes):
-                    scene = self.project.scenes[i]
-                    if path:
+            try:
+                video_paths = await self.orchestrator.visual_engine.generate_all_videos_parallel(
+                    scenes=scenes_data,
+                    project_id=self.project.project_id,
+                )
+
+                # Update scene statuses
+                for i, path in enumerate(video_paths):
+                    if path and i < len(scenes_needing_video):
+                        scene = scenes_needing_video[i]
                         scene.video_path = str(path)
                         scene.status = SceneStatus.VIDEO_READY
                         logger.success(f"[Scene {scene.scene_number}] Video ready: {path}")
 
-            await self.orchestrator._save_project_state(self.project)
-            logger.success(f"All videos generated: {len(video_paths)}")
+            except Exception as e:
+                logger.error(f"Video generation failed: {e}, will retry...")
 
-        except Exception as e:
-            logger.error(f"Video generation failed: {e}")
-            raise
+            await self.orchestrator._save_project_state(self.project)
+            await asyncio.sleep(5)
 
     async def _assemble_final(self):
         """Assemble final video from scenes with audio."""
