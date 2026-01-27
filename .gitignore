@@ -90,6 +90,9 @@ topaz/*
 # IDE / EDITORS
 # ============================================================================
 
+# Claude Code
+.claude/settings.local.json
+
 # VSCode
 .vscode/
 *.code-workspace
