@@ -66,6 +66,9 @@ coverage.xml
 projects/
 !projects/.gitkeep
 
+# Assets (sound effects, media files)
+assets/
+
 # Logs
 logs/
 !logs/.gitkeep
