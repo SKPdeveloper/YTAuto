@@ -16,6 +16,7 @@ from app.api.schemas import ProjectData, SceneData, SceneStatus, PipelineStage
 from app.services.prompt_router import PromptRouter
 from app.services.glaze_parser import save_project_brief
 from app.core.paths import get_project_path
+from app.utils.yt_metadata_parser import parse_gen1_to_yt_file
 
 
 class ScriptStage(BasePipelineStage):
@@ -426,7 +427,12 @@ class ScriptStage(BasePipelineStage):
             with open(gen2_path, "w", encoding="utf-8") as f:
                 f.write(gen2.model_dump_json(indent=2))
 
-            logger.info(f"[{self.project_id}] Saved gen1_output.json and gen2_output.json")
+            # Save YT.txt with YouTube metadata for easy copy-paste
+            yt_path = project_dir / "YT.txt"
+            gen1_dict = gen1.model_dump()
+            parse_gen1_to_yt_file(gen1_dict, yt_path)
+
+            logger.info(f"[{self.project_id}] Saved gen1_output.json, gen2_output.json, YT.txt")
         except Exception as e:
             logger.warning(f"[{self.project_id}] Failed to save GEN outputs: {e}")
 
