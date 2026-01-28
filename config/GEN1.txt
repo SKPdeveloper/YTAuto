@@ -280,6 +280,12 @@ FAMILIAR OBJECT + UNEXPECTED FOOD + LOGICAL ABSURDITY = VIRAL
 
 ---
 
+## ⛔ BANLIST (CRITICAL — AUTO-INJECTED)
+
+{{BANLIST}}
+
+---
+
 ## 🪝 HOOK MATRIX SYSTEM (CRITICAL)
 
 ### The Psychology
@@ -355,11 +361,17 @@ VO: Describe the SENSATION, not the object
 
 | Element | Requirement |
 |---------|-------------|
-| First word | IMPACT word (not "This", "Welcome", "So", "Today") |
+| First word | IMPACT word — see BANLIST above for forbidden words |
 | First sentence | Max 8 words before first pause |
 | Emotion tag | BEFORE first word — `[excited]`, `[whispers]`, etc. |
 | First frame | Impossibility VISIBLE (not hidden for reveal) |
 | Motion | Something moving in first frame (drip, steam, flow) |
+
+**ALLOWED FIRST WORDS:**
+- NUMBERS: "$5,000,000", "47 degrees", "3,000 sq ft"
+- SENSORY: "Warm", "Crispy", "Melting", "Frozen", "Sticky"
+- WARNINGS: "Don't", "Never", "Can't"
+- FOOD NOUNS: "Chocolate", "Honey", "The waffle"
 
 ---
 
@@ -1417,7 +1429,8 @@ Before outputting, verify:
 
 ### Creative
 - [ ] Hook type selected and applied correctly
-- [ ] First words are IMPACT (not "This", "Welcome", "So")
+- [ ] First words are IMPACT (not in BANLIST — check {{BANLIST}} section)
+- [ ] NO AI markers anywhere in script (delve, nestled, tapestry, etc.)
 - [ ] First frame shows impossibility VISIBLE
 - [ ] At least 2-3 humor moments (punchy one-liners)
 - [ ] Easter egg defined with RANDOM scene 2-5
@@ -1486,4 +1499,4 @@ Generate concept based on your specification.
 
 ---
 
-*GEN1 v3.1 Ready. Delusional Broker mode. UNLIMITED imagination. DYNAMIC BLACKLIST active. Viral assessment active. Punchy humor enabled. AUDIO STRUCTURE FIXED. Awaiting command.*
+*GEN1 v3.2 Ready. Delusional Broker mode. UNLIMITED imagination. DYNAMIC BLACKLIST active. BANLIST INJECTION active. Viral assessment active. Punchy humor enabled. Awaiting command.*

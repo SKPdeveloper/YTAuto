@@ -47,9 +47,120 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 from loguru import logger
+
+
+# ============================================================================
+# BANLIST LOADER — Динамічне завантаження банлисту
+# ============================================================================
+
+def _load_banlist_from_file(banlist_path: Optional[Path] = None) -> Dict[str, Set[str]]:
+    """
+    Завантажує та парсить ban_list.txt.
+
+    Формат файлу:
+    - Рядки що починаються з # — заголовки секцій (ігноруються як коментарі)
+    - Пусті рядки — роздільники
+    - Інші рядки — заборонені слова/фрази
+
+    Returns:
+        Dict з категоріями:
+        - "first_words": Заборонені перші слова хука
+        - "first_phrases": Заборонені початкові фрази
+        - "commands": Команди (викликають захисну реакцію)
+        - "fillers": Філери (мертвий ефір)
+        - "ai_markers": ШІ-маркери (КРИТИЧНО)
+        - "overused_adjectives": Перевикористані прикметники
+        - "generic_luxury": Generic luxury слова
+    """
+    if banlist_path is None:
+        banlist_path = Path(__file__).parent.parent.parent / "config" / "ban_list.txt"
+
+    result: Dict[str, Set[str]] = {
+        "first_words": set(),
+        "first_phrases": set(),
+        "commands": set(),
+        "fillers": set(),
+        "ai_markers": set(),
+        "overused_adjectives": set(),
+        "generic_luxury": set(),
+    }
+
+    if not banlist_path.exists():
+        logger.warning(f"Banlist file not found: {banlist_path}. Using empty banlist.")
+        return result
+
+    try:
+        with open(banlist_path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except Exception as e:
+        logger.error(f"Failed to read banlist: {e}")
+        return result
+
+    # Парсинг секцій
+    current_section: Optional[str] = None
+    section_map = {
+        "заборонені перші слова": "first_words",
+        "заборонені початкові фрази": "first_phrases",
+        "команди": "commands",
+        "філери": "fillers",
+        "ші-маркери": "ai_markers",
+        "перевикористані прикметники": "overused_adjectives",
+        "generic luxury": "generic_luxury",
+    }
+
+    for line in content.split("\n"):
+        line = line.strip()
+
+        # Пуста лінія
+        if not line:
+            continue
+
+        # Заголовок секції (коментар)
+        if line.startswith("#"):
+            header = line.lstrip("#").strip().lower()
+            for key, section_name in section_map.items():
+                if key in header:
+                    current_section = section_name
+                    break
+            continue
+
+        # Додаємо слово/фразу до поточної секції
+        if current_section and line:
+            result[current_section].add(line.lower())
+
+    # Логуємо результат
+    total = sum(len(v) for v in result.values())
+    logger.debug(
+        f"Loaded banlist: {total} items "
+        f"(first_words: {len(result['first_words'])}, "
+        f"ai_markers: {len(result['ai_markers'])}, "
+        f"fillers: {len(result['fillers'])})"
+    )
+
+    return result
+
+
+# Глобальний кеш банлисту (завантажується один раз)
+_BANLIST_CACHE: Optional[Dict[str, Set[str]]] = None
+
+
+def get_banlist() -> Dict[str, Set[str]]:
+    """Отримати банліст (з кешуванням)."""
+    global _BANLIST_CACHE
+    if _BANLIST_CACHE is None:
+        _BANLIST_CACHE = _load_banlist_from_file()
+    return _BANLIST_CACHE
+
+
+def reload_banlist() -> Dict[str, Set[str]]:
+    """Перезавантажити банліст (скидає кеш)."""
+    global _BANLIST_CACHE
+    _BANLIST_CACHE = _load_banlist_from_file()
+    return _BANLIST_CACHE
 
 
 # ============================================================================
@@ -162,11 +273,41 @@ class EnergyLevel(str, Enum):
 
 
 # ============================================================================
-# CONSTANTS — Правила валідації з VAL_GEN1.txt
+# CONSTANTS — Правила валідації з VAL_GEN1.txt + ban_list.txt
 # ============================================================================
 
-# Заборонені перші слова для hook.first_words (VAL_GEN1 рядок 122)
-BANNED_FIRST_WORDS: Set[str] = {"Welcome", "So", "Today"}
+# Заборонені перші слова для hook.first_words — ДИНАМІЧНО з ban_list.txt
+# Fallback значення якщо банліст не завантажено
+BANNED_FIRST_WORDS_FALLBACK: Set[str] = {"welcome", "so", "today", "hello", "hi", "hey", "this", "let", "here"}
+
+def get_banned_first_words() -> Set[str]:
+    """Отримати заборонені перші слова з банлисту."""
+    banlist = get_banlist()
+    words = banlist.get("first_words", set())
+    return words if words else BANNED_FIRST_WORDS_FALLBACK
+
+def get_banned_first_phrases() -> Set[str]:
+    """Отримати заборонені початкові фрази з банлисту."""
+    return get_banlist().get("first_phrases", set())
+
+def get_ai_markers() -> Set[str]:
+    """Отримати заборонені AI маркери з банлисту."""
+    return get_banlist().get("ai_markers", set())
+
+def get_fillers() -> Set[str]:
+    """Отримати заборонені філери з банлисту."""
+    return get_banlist().get("fillers", set())
+
+def get_overused_adjectives() -> Set[str]:
+    """Отримати перевикористані прикметники з банлисту."""
+    return get_banlist().get("overused_adjectives", set())
+
+def get_generic_luxury() -> Set[str]:
+    """Отримати generic luxury слова з банлисту."""
+    return get_banlist().get("generic_luxury", set())
+
+# Legacy alias for backwards compatibility
+BANNED_FIRST_WORDS: Set[str] = BANNED_FIRST_WORDS_FALLBACK
 
 # Заборонені camera movements (VAL_GEN1 рядок 239-244)
 BANNED_CAMERA_MOVEMENTS: Set[str] = {"DRIFT", "FLOAT", "GLIDE"}
@@ -570,23 +711,40 @@ class Gen1Validator:
         """
         Перевірка hook.first_words на заборонені слова та наявність emotion tag.
 
-        Правила (VAL_GEN1.txt рядки 121-123):
-        1. Не може починатися з "This", "Welcome", "So", "Today"
-        2. Повинен містити emotion tag як [excited], [whispers], etc.
+        Правила (з ban_list.txt):
+        1. Не може починатися із заборонених слів (welcome, hello, so, today, etc.)
+        2. Не може починатися із заборонених фраз (in this video, did you know, etc.)
+        3. Повинен містити emotion tag як [excited], [whispers], etc.
         """
         # Видаляємо всі теги щоб отримати чистий текст
         clean_text = re.sub(r'\[.*?\]', '', first_words).strip()
+        clean_text_lower = clean_text.lower()
+
+        # Отримуємо актуальні банлисти
+        banned_words = get_banned_first_words()
+        banned_phrases = get_banned_first_phrases()
 
         if clean_text:
             # Перевіряємо перше слово
-            actual_first_word = clean_text.split()[0]
-            if actual_first_word in BANNED_FIRST_WORDS:
+            actual_first_word = clean_text.split()[0].lower()
+            if actual_first_word in banned_words:
                 self._add_error(
                     "hook.first_words",
-                    f"Cannot start with '{actual_first_word}'",
+                    f"Cannot start with '{actual_first_word}' (banned first word)",
                     code="BANNED_FIRST_WORD",
-                    suggestion=f"Avoid starting with: {', '.join(BANNED_FIRST_WORDS)}"
+                    suggestion="Use IMPACT words: numbers, sensory words, warnings, food nouns"
                 )
+
+            # Перевіряємо заборонені фрази
+            for phrase in banned_phrases:
+                if clean_text_lower.startswith(phrase):
+                    self._add_error(
+                        "hook.first_words",
+                        f"Cannot start with phrase '{phrase}'",
+                        code="BANNED_FIRST_PHRASE",
+                        suggestion="Avoid generic YouTube opener phrases"
+                    )
+                    break
 
         # Перевіряємо наявність emotion tag
         has_emotion_tag = any(tag in first_words for tag in ELEVENLABS_EMOTION_TAGS)
@@ -730,6 +888,40 @@ class Gen1Validator:
                     "voiceover.full_script",
                     "Should contain ElevenLabs tags for better delivery",
                     suggestion=f"Add tags like [pause], [whispers], etc."
+                )
+
+            # === BANLIST CHECKS ===
+            script_lower = script.lower()
+
+            # Перевірка на AI маркери (КРИТИЧНО — YouTube детектить)
+            ai_markers = get_ai_markers()
+            found_ai_markers = [m for m in ai_markers if m in script_lower]
+            if found_ai_markers:
+                self._add_error(
+                    "voiceover.full_script",
+                    f"Contains AI markers: {', '.join(found_ai_markers[:5])}{'...' if len(found_ai_markers) > 5 else ''}",
+                    code="AI_MARKERS_DETECTED",
+                    suggestion="Remove AI-sounding words like 'delve', 'nestled', 'tapestry', etc."
+                )
+
+            # Перевірка на перевикористані прикметники
+            overused = get_overused_adjectives()
+            found_overused = [w for w in overused if w in script_lower]
+            if found_overused:
+                self._add_warning(
+                    "voiceover.full_script",
+                    f"Contains overused adjectives: {', '.join(found_overused[:3])}",
+                    suggestion="Use more specific, unique descriptors"
+                )
+
+            # Перевірка на generic luxury слова
+            generic = get_generic_luxury()
+            found_generic = [w for w in generic if w in script_lower]
+            if len(found_generic) >= 2:
+                self._add_warning(
+                    "voiceover.full_script",
+                    f"Contains multiple generic luxury words: {', '.join(found_generic[:3])}",
+                    suggestion="Be more specific and creative with descriptions"
                 )
 
         # character
@@ -1117,6 +1309,32 @@ class Gen1Validator:
                         "Required for scenes 1-4",
                         code="MISSING_BROKER_SCRIPT"
                     )
+                else:
+                    # Check for AI markers in broker_script
+                    broker_lower = broker.lower()
+                    ai_markers = get_ai_markers()
+                    found_ai = [m for m in ai_markers if m in broker_lower]
+                    if found_ai:
+                        self._add_error(
+                            f"{prefix}.broker_script",
+                            f"Contains AI markers: {', '.join(found_ai[:3])}",
+                            code="AI_MARKERS_IN_SCENE",
+                            suggestion="Remove AI-sounding words"
+                        )
+
+            # voiceover_segment - check for AI markers
+            vo_segment = self._get_nested(scene, "voiceover_segment", "")
+            if vo_segment:
+                vo_lower = vo_segment.lower()
+                ai_markers = get_ai_markers()
+                found_ai = [m for m in ai_markers if m in vo_lower]
+                if found_ai:
+                    self._add_error(
+                        f"{prefix}.voiceover_segment",
+                        f"Contains AI markers: {', '.join(found_ai[:3])}",
+                        code="AI_MARKERS_IN_SCENE",
+                        suggestion="Remove AI-sounding words"
+                    )
 
             # ===== SCENE 1 SPECIFIC RULES =====
             if scene_num == 1:
@@ -1363,4 +1581,11 @@ __all__ = [
     "BANNED_FIRST_WORDS",
     "BANNED_CAMERA_MOVEMENTS",
     "ALL_ELEVENLABS_TAGS",
+
+    # Banlist functions
+    "get_banlist",
+    "reload_banlist",
+    "get_banned_first_words",
+    "get_ai_markers",
+    "get_fillers",
 ]

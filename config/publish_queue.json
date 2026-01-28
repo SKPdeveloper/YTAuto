@@ -1,0 +1,28 @@
+{
+  "version": "1.0",
+  "channels": {
+    "glaze_city": {
+      "channel_id": "glaze_city",
+      "timezone": "America/New_York",
+      "schedule": {
+        "monday": "16:00",
+        "tuesday": "15:00",
+        "wednesday": "16:00",
+        "thursday": "15:00",
+        "friday": "15:00",
+        "saturday": null,
+        "sunday": null
+      },
+      "entries": [
+        {
+          "project_id": "proj_b99d6de73b2b",
+          "scheduled_datetime": "2026-01-27T20:00:00Z",
+          "scheduled_datetime_local": "2026-01-27 15:00 EST",
+          "status": "scheduled",
+          "video_id": "nrxOogGW1oQ",
+          "created_at": "2026-01-27T14:23:54.920339Z"
+        }
+      ]
+    }
+  }
+}

@@ -27,6 +27,7 @@ from app.utils.logger import logger
 from app.services.glaze_models import GlazeCityProject
 from app.services.glaze_parser import GlazeParser, save_project_brief, save_raw_output
 from app.services.validation_models import SimpleValidationResult
+from app.utils.prompt_loader import load_prompt_with_banlist
 
 # =============================================================================
 # PROTECTED SYSTEM PROMPT - DO NOT EDIT THE SOURCE FILE
@@ -87,10 +88,12 @@ class ContentBrain:
 
     def _load_system_prompt(self) -> str:
         """
-        Load the protected GLAZE CITY system prompt.
+        Load the protected GLAZE CITY system prompt with banlist injection.
 
         WARNING: This file is PROTECTED. Do not edit without user permission.
         See PROTECTED_FILES.md for details.
+
+        Injects ban_list.txt content into {{BANLIST}} placeholder.
         """
         if not SYSTEM_PROMPT_PATH.exists():
             logger.error(f"System prompt not found: {SYSTEM_PROMPT_PATH}")
@@ -99,11 +102,16 @@ class ContentBrain:
                 f"This file is required for content generation."
             )
 
-        with open(SYSTEM_PROMPT_PATH, "r", encoding="utf-8") as f:
-            prompt = f.read()
+        # Load prompt with banlist injection
+        banlist_path = SYSTEM_PROMPT_PATH.parent / "ban_list.txt"
+        prompt = load_prompt_with_banlist(
+            prompt_path=SYSTEM_PROMPT_PATH,
+            banlist_path=banlist_path
+        )
 
         logger.success(f"Loaded PROTECTED system prompt: {SYSTEM_PROMPT_PATH.name}")
         logger.info(f"  Size: {len(prompt)} characters")
+        logger.info(f"  Banlist: {'injected' if banlist_path.exists() else 'not found (empty)'}")
 
         return prompt
 

@@ -1,0 +1,116 @@
+# =====================
+# GLAZE CITY BANLIST v1.0
+# Оновлено: 2025-01-28
+# =====================
+
+# ЗАБОРОНЕНІ ПЕРШІ СЛОВА
+# (ніколи не починати hook з цих слів)
+welcome
+hello
+hi
+hey
+today
+so
+here
+this
+let
+introducing
+meet
+presenting
+
+# ЗАБОРОНЕНІ ПОЧАТКОВІ ФРАЗИ
+# (ніколи не починати з цих патернів)
+in this video
+this is a
+this is the
+let me show
+here is
+here are
+here's the
+did you know
+have you ever
+what if i told you
+picture this
+imagine this
+get ready to
+prepare to
+
+# КОМАНДИ
+# (викликають захисну реакцію)
+stop
+wait
+look
+watch
+check this out
+don't scroll
+stay
+listen up
+watch until the end
+wait for it
+
+# ФІЛЕРИ
+# (мертвий ефір, вода)
+actually
+basically
+literally
+really
+just
+simply
+obviously
+clearly
+you see
+you know
+i mean
+kind of
+sort of
+
+# ШІ-МАРКЕРИ
+# (КРИТИЧНО — YouTube детектить)
+delve
+nestled
+testament
+tapestry
+symphony
+realm
+showcase
+behold
+embark
+unveil
+uncover
+captivate
+elevate
+curated
+bespoke
+exquisite
+unparalleled
+seamless
+seamlessly
+meticulously
+thoughtfully
+boasts
+features
+offers
+
+# ПЕРЕВИКОРИСТАНІ ПРИКМЕТНИКИ
+# (втратили силу)
+stunning
+breathtaking
+gorgeous
+amazing
+incredible
+magnificent
+spectacular
+remarkable
+extraordinary
+
+# GENERIC LUXURY
+# (не специфічні, слабкі)
+luxury
+premium
+exclusive
+elite
+world-class
+state-of-the-art
+one-of-a-kind
+like no other
+unlike anything

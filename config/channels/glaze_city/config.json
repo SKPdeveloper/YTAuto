@@ -1,0 +1,21 @@
+{
+  "channel_id": "glaze_city",
+  "channel_name": "GLAZE city",
+  "youtube_channel_id": "UCZ0Cuswz-MuOT_F_TFzwzkQ",
+  "region": "US",
+  "timezone": "America/New_York",
+  "proxy": {
+    "enabled": true,
+    "host": "154.6.57.60",
+    "port": 7528,
+    "username": "jukzuhev-datacenter",
+    "password": "27m50k928ccs"
+  },
+  "adspower_profile_id": "j5yrx8v",
+  "settings": {
+    "active": true,
+    "default_privacy": "public",
+    "default_category_id": "24",
+    "made_for_kids": false
+  }
+}

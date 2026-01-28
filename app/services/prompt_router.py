@@ -133,6 +133,7 @@ from app.services.validation_models import (
     Gen2RetryGuidance,
 )
 from app.services.topic_memory import topic_memory
+from app.utils.prompt_loader import load_prompt_with_banlist
 
 # Python validators (deterministic, ~5ms, 0 tokens) - replacing LLM validators
 from app.services.gen1_validator import (
@@ -202,15 +203,18 @@ class PromptRouter:
 
     def _load_prompts(self) -> None:
         """Load GEN1, GEN2, VAL_GEN1, and VAL_GEN2 system prompts."""
-        # Load GEN1
+        # Load GEN1 with banlist injection
         if GEN1_PROMPT_PATH.exists():
-            with open(GEN1_PROMPT_PATH, "r", encoding="utf-8") as f:
-                content = f.read().strip()
-                if content:
-                    self.gen1_prompt = content
-                    logger.success(f"Loaded GEN1 prompt: {len(self.gen1_prompt)} chars")
-                else:
-                    logger.warning(f"GEN1 prompt file is empty: {GEN1_PROMPT_PATH}")
+            banlist_path = CONFIG_DIR / "ban_list.txt"
+            content = load_prompt_with_banlist(
+                prompt_path=GEN1_PROMPT_PATH,
+                banlist_path=banlist_path
+            ).strip()
+            if content:
+                self.gen1_prompt = content
+                logger.success(f"Loaded GEN1 prompt with banlist: {len(self.gen1_prompt)} chars")
+            else:
+                logger.warning(f"GEN1 prompt file is empty: {GEN1_PROMPT_PATH}")
         else:
             logger.warning(f"GEN1 prompt not found: {GEN1_PROMPT_PATH}")
 
