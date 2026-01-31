@@ -366,7 +366,7 @@
 
         <div class="relative">
             <video
-                :src="'/projects/' + currentProject + '/final.mp4'"
+                :src="finalVideoPath || '/projects/' + currentProject + '/final.mp4'"
                 controls
                 class="w-full border-2"
                 :class="awaitingVideoApproval ? 'border-yellow-500' : 'border-white'"
@@ -683,6 +683,16 @@ function controlPanel() {
                     this.allScenes = payload.scenes || [];
                     break;
 
+                case 'scene_video_ready':
+                    // Individual video ready notification (payload uses scene_number, allScenes uses scene_num)
+                    const videoSceneNum = payload.scene_number || payload.scene_num;
+                    const videoSceneIdx = this.allScenes.findIndex(s => s.scene_num === videoSceneNum);
+                    if (videoSceneIdx !== -1) {
+                        this.allScenes[videoSceneIdx].video_url = payload.video_url;
+                    }
+                    this.addLog('success', `SCENE ${videoSceneNum} VIDEO READY`);
+                    break;
+
                 case 'merge_status':
                     // Merge GEN1+GEN2 status
                     this.mergeStatus = payload;
@@ -705,7 +715,7 @@ function controlPanel() {
 
                 case 'video_approval_required':
                     this.awaitingVideoApproval = true;
-                    this.finalVideoPath = payload.video_path;
+                    this.finalVideoPath = payload.video_url || payload.video_path;
                     this.addLog('warning', 'VIDEO APPROVAL REQUIRED BEFORE TOPAZ');
                     break;
 
@@ -714,8 +724,8 @@ function controlPanel() {
                     this.awaitingApproval = false;
                     this.currentStage = 'COMPLETED';
                     this.progress = 100;
-                    this.finalVideoPath = payload.video_path;
-                    this.addLog('success', 'PIPELINE COMPLETED // ' + payload.video_path);
+                    this.finalVideoPath = payload.video_url || payload.video_path;
+                    this.addLog('success', 'PIPELINE COMPLETED // ' + this.finalVideoPath);
                     break;
 
                 case 'topaz_completed':

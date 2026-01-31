@@ -191,12 +191,14 @@ class NotificationService:
         video_path: Path
     ) -> None:
         """Notify that scene video is ready"""
+        import time
+        cache_bust = int(time.time())
         await self.manager.broadcast(Events.SCENE_VIDEO_READY, SceneEvent(
             project_id=project_id,
             scene_number=scene_number,
             status="video_ready",
             video_path=str(video_path),
-            video_url=f"/api/projects/{project_id}/scenes/{scene_number}/video"
+            video_url=f"/projects/{project_id}/scene_{scene_number}/video.mp4?t={cache_bust}"
         ).to_dict())
 
     async def send_scene_rejected(

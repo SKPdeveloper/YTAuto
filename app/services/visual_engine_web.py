@@ -848,11 +848,8 @@ class HiggsFieldWebAdapter:
                 logger.error(f"[VISUAL_ENGINE] MISSING IMAGES! Expected {len(scenes)}, got {len(generated_images)}")
                 logger.error(f"[VISUAL_ENGINE] Scene 6 may be missing! This will cause incomplete final video.")
 
-            # FIX: Swap scenes 2 and 6 (indices 0 and 4 in remaining scenes array)
-            # Higgsfield returns them in wrong order
-            if len(generated_images) == 5:
-                generated_images[0], generated_images[4] = generated_images[4], generated_images[0]
-                logger.info("[FIX] Swapped scenes 2 and 6 images")
+            # NOTE: Order is already correct after reverse in higgsfield_image.py
+            # Scenes are queued: 2,3,4,5,6 -> History shows: 6,5,4,3,2 -> Reversed: 2,3,4,5,6
 
             # Copy images to project directories and save URLs to metadata
             final_paths = []

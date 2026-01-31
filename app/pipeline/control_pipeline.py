@@ -7,6 +7,8 @@ Used by control_routes.py to run pipeline with user approvals.
 
 import asyncio
 import json
+import shutil
+import time
 from pathlib import Path
 from typing import Optional, List, Dict, Callable, Any
 from datetime import datetime
@@ -181,9 +183,6 @@ class ControlPipeline:
 
     async def _select_primary_candidate(self, index: int):
         """Copy selected candidate as main image and save reference URL."""
-        import shutil
-        import json
-
         if not self.project or not self.primary_candidates:
             return
 
@@ -210,6 +209,13 @@ class ControlPipeline:
         primary_scene.status = SceneStatus.IMAGE_READY
         primary_scene.validation_approved = True
 
+        # Notify UI about primary scene image
+        await self._notify_scene_update(1, {
+            "scene_num": 1,
+            "image_url": f"/projects/{self.project.project_id}/scene_1/image.png",
+            "status": "image_ready"
+        })
+
         await self.orchestrator._save_project_state(self.project)
 
     async def _process_remaining_scenes(self):
@@ -224,12 +230,42 @@ class ControlPipeline:
         primary_scene = self.project.scenes[0]
         reference_image = primary_scene.image_path
 
+        # ================================================================
+        # SCENE 6 (LOOP_CLOSE): Copy Scene 1 image instead of generating
+        # Scene 6 should be IDENTICAL to Scene 1 for seamless loop
+        # ================================================================
+        scene_6 = next((s for s in self.project.scenes if s.scene_number == 6), None)
+        if scene_6 and scene_6.reference_type == "LOOP_CLOSE":
+            scene_1_dir = settings.get_scene_dir(self.project.project_id, 1)
+            scene_6_dir = settings.get_scene_dir(self.project.project_id, 6)
+            scene_1_image = scene_1_dir / "image.png"
+            scene_6_image = scene_6_dir / "image.png"
+
+            if scene_1_image.exists() and not scene_6_image.exists():
+                scene_6_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy(scene_1_image, scene_6_image)
+                scene_6.image_path = str(scene_6_image)
+                scene_6.status = SceneStatus.IMAGE_READY
+                scene_6.validation_approved = True  # No validation needed - identical to approved Scene 1
+                logger.success(f"[Scene 6] ✅ Copied from Scene 1 (LOOP_CLOSE)")
+
+                # Notify UI
+                cache_bust = int(time.time())
+                await self._notify_scene_update(6, {
+                    "scene_num": 6,
+                    "image_url": f"/projects/{self.project.project_id}/scene_6/image.png?t={cache_bust}",
+                    "status": "image_ready"
+                })
+
         max_batch_retries = 2
 
         for batch_attempt in range(1, max_batch_retries + 1):
-            # Collect scenes WITHOUT images
+            # Collect scenes WITHOUT images (excluding LOOP_CLOSE which was copied)
             scenes_to_generate = []
             for scene in self.project.scenes[1:]:
+                # Skip LOOP_CLOSE - already copied from Scene 1
+                if scene.reference_type == "LOOP_CLOSE":
+                    continue
                 scene_dir = settings.get_scene_dir(self.project.project_id, scene.scene_number)
                 if not (scene_dir / "image.png").exists():
                     scenes_to_generate.append(scene)
@@ -269,6 +305,13 @@ class ControlPipeline:
                         scene.status = SceneStatus.IMAGE_READY
                         generated_count += 1
                         logger.success(f"[Scene {scene.scene_number}] Image generated")
+
+                        # Notify UI about new image
+                        await self._notify_scene_update(scene.scene_number, {
+                            "scene_num": scene.scene_number,
+                            "image_url": f"/projects/{self.project.project_id}/scene_{scene.scene_number}/image.png",
+                            "status": "image_ready"
+                        })
 
                 logger.info(f"[PIPELINE] Generated {generated_count}/{len(scenes_to_generate)} images in batch {batch_attempt}")
 
@@ -317,6 +360,29 @@ class ControlPipeline:
 
             # Generate missing images individually
             for scene in missing_scenes:
+                # LOOP_CLOSE (Scene 6): Copy from Scene 1 instead of generating
+                if scene.reference_type == "LOOP_CLOSE":
+                    scene_1_dir = settings.get_scene_dir(self.project.project_id, 1)
+                    scene_dir = settings.get_scene_dir(self.project.project_id, scene.scene_number)
+                    scene_1_image = scene_1_dir / "image.png"
+
+                    if scene_1_image.exists():
+                        scene_dir.mkdir(parents=True, exist_ok=True)
+                        dest_image = scene_dir / "image.png"
+                        shutil.copy(scene_1_image, dest_image)
+                        scene.image_path = str(dest_image)
+                        scene.status = SceneStatus.IMAGE_READY
+                        scene.validation_approved = True
+                        logger.success(f"[Scene {scene.scene_number}] ✅ Copied from Scene 1 (LOOP_CLOSE)")
+
+                        cache_bust = int(time.time())
+                        await self._notify_scene_update(scene.scene_number, {
+                            "scene_num": scene.scene_number,
+                            "image_url": f"/projects/{self.project.project_id}/scene_{scene.scene_number}/image.png?t={cache_bust}",
+                            "status": "image_ready"
+                        })
+                    continue
+
                 logger.info(f"[PIPELINE] Generating scene {scene.scene_number} (round {retry_round})...")
                 try:
                     ref_image = Path(reference_image) if reference_image else None
@@ -331,6 +397,14 @@ class ControlPipeline:
                         scene.image_path = str(image_path)
                         scene.status = SceneStatus.IMAGE_READY
                         logger.success(f"[Scene {scene.scene_number}] ✅ Image generated: {image_path}")
+
+                        # Notify UI immediately (with cache-bust for retries)
+                        cache_bust = int(time.time())
+                        await self._notify_scene_update(scene.scene_number, {
+                            "scene_num": scene.scene_number,
+                            "image_url": f"/projects/{self.project.project_id}/scene_{scene.scene_number}/image.png?t={cache_bust}",
+                            "status": "image_ready"
+                        })
                 except Exception as e:
                     logger.error(f"[Scene {scene.scene_number}] Generation failed: {e}, will retry...")
 
@@ -359,6 +433,15 @@ class ControlPipeline:
                 continue
 
             if not scene.image_path or not Path(scene.image_path).exists():
+                continue
+
+            # Skip validation for LOOP_CLOSE scenes (Scene 6) - they mirror Scene 1
+            # which was already approved by user. Validating against LOOP_CLOSE prompt
+            # is illogical since it should match the user-selected Scene 1.
+            if scene.reference_type == "LOOP_CLOSE":
+                logger.info(f"[Scene {scene.scene_number}] Skipping validation (LOOP_CLOSE mirrors user-approved Scene 1)")
+                scene.status = SceneStatus.APPROVED
+                scene.validation_approved = True
                 continue
 
             validation_passed = False
@@ -441,7 +524,7 @@ class ControlPipeline:
 
             scenes_data.append({
                 "scene_num": scene.scene_number,
-                "url": f"/projects/{rel_path}",
+                "image_url": f"/projects/{rel_path}",
                 "status": "approved"
             })
 
@@ -488,21 +571,27 @@ class ControlPipeline:
             )
 
             if result and result.path:
-                # Copy to scene directory
-                import shutil
+                # Copy to scene directory (overwrites existing)
                 final_path = scene_dir / "image.png"
+
+                # Remove old file first to ensure fresh copy
+                if final_path.exists():
+                    final_path.unlink()
+
                 shutil.copy(result.path, final_path)
 
                 scene.image_path = str(final_path)
                 scene.status = SceneStatus.AWAITING_APPROVAL
                 scene.validation_approved = True
 
+                # Add timestamp to URL for cache busting
+                cache_bust = int(time.time())
                 await self._notify_scene_update(scene_num, {
                     "status": "approved",
-                    "url": f"/projects/{self.project.project_id}/scene_{scene_num}/image.png"
+                    "image_url": f"/projects/{self.project.project_id}/scene_{scene_num}/image.png?t={cache_bust}"
                 })
 
-                logger.success(f"[Scene {scene_num}] Regenerated")
+                logger.success(f"[Scene {scene_num}] Regenerated: {final_path}")
 
         except Exception as e:
             logger.error(f"[Scene {scene_num}] Regeneration failed: {e}")
@@ -594,13 +683,23 @@ class ControlPipeline:
                         project_id=self.project.project_id,
                     )
 
-                    # Update scene statuses
+                    # Update scene statuses and notify UI
                     for i, path in enumerate(video_paths):
                         if path and i < len(scenes_to_generate):
                             scene = scenes_to_generate[i]
                             scene.video_path = str(path)
                             scene.status = SceneStatus.VIDEO_READY
                             logger.success(f"[Scene {scene.scene_number}] Video ready: {path}")
+
+                            # Notify UI immediately when each video is ready
+                            from app.server.websocket import broadcast_event
+                            video_cache_bust = int(time.time())
+                            await broadcast_event("scene_video_ready", {
+                                "project_id": self.project.project_id,
+                                "scene_number": scene.scene_number,
+                                "video_path": str(path),
+                                "video_url": f"/projects/{self.project.project_id}/scene_{scene.scene_number}/video.mp4?t={video_cache_bust}"
+                            })
 
                 except Exception as e:
                     logger.error(f"Video generation failed: {e}, will retry...")
@@ -660,12 +759,43 @@ class ControlPipeline:
 
         await self._notify_stage("ASSEMBLING_VIDEO", 90)
 
+        project_dir = settings.PROJECTS_DIR / self.project.project_id
+        manifest_path = project_dir / "gen3b_manifest.json"
+
+        # Try to use ManifestRenderer if Gen3b manifest exists (full montage with effects)
+        if manifest_path.exists():
+            try:
+                from app.services.manifest_renderer import ManifestRenderer
+                from app.services.gen_models import Gen3bManifest
+
+                logger.info("[PIPELINE] Using ManifestRenderer for full montage...")
+                await self.notify_log("🎬 Rendering with effects, subtitles & audio mixing...", "info")
+
+                with open(manifest_path, 'r', encoding='utf-8') as f:
+                    manifest_data = json.load(f)
+
+                manifest = Gen3bManifest(**manifest_data)
+                renderer = ManifestRenderer()
+
+                result = await renderer.render(
+                    manifest=manifest,
+                    project_dir=project_dir,
+                    output_filename="final.mp4"
+                )
+
+                logger.success(f"[PIPELINE] Full montage rendered: {result}")
+                return
+
+            except Exception as e:
+                logger.warning(f"[PIPELINE] ManifestRenderer failed: {e}, falling back to simple assembly")
+                await self.notify_log(f"⚠️ Montage failed, using simple concat: {e}", "warning")
+
+        # Fallback: Simple concat with voiceover + music
         from app.services.video_assembler import VideoAssembler
 
+        logger.info("[PIPELINE] Using simple VideoAssembler (no effects)...")
         assembler = VideoAssembler()
-        project_dir = settings.PROJECTS_DIR / self.project.project_id
 
-        # Simple concat with voiceover audio
         result = await assembler.assemble(
             project_dir=project_dir,
             output_filename="final.mp4",
@@ -796,10 +926,11 @@ class ControlPipeline:
         from app.api.control_routes import get_state
         state = get_state()
         scenes_data = []
+        cache_bust = int(time.time())
         for scene in self.project.scenes:
             scene_dir = settings.PROJECTS_DIR / self.project.project_id / f"scene_{scene.scene_number}"
-            image_url = f"/projects/{self.project.project_id}/scene_{scene.scene_number}/image.png" if scene.image_path else None
-            video_url = f"/projects/{self.project.project_id}/scene_{scene.scene_number}/video.mp4" if (scene_dir / "video.mp4").exists() else None
+            image_url = f"/projects/{self.project.project_id}/scene_{scene.scene_number}/image.png?t={cache_bust}" if scene.image_path else None
+            video_url = f"/projects/{self.project.project_id}/scene_{scene.scene_number}/video.mp4?t={cache_bust}" if (scene_dir / "video.mp4").exists() else None
             scenes_data.append({
                 "scene_num": scene.scene_number,
                 "image_url": image_url,
@@ -911,10 +1042,10 @@ class ControlPipeline:
                     voice_settings = voiceover_config.get("settings", {})
                     voice_id = voice_settings.get("voice_id", "Adam")
 
-                    result_path = await audio_engine.generate_voiceover(
+                    result_path = await audio_engine.generate_and_save_voiceover(
                         text=full_script,
-                        voice_id=voice_id,
                         output_path=voiceover_path,
+                        voice_id=voice_id,
                     )
 
                     if result_path and result_path.exists():
@@ -949,16 +1080,16 @@ class ControlPipeline:
                 prompt = bg_music.get("reference", f"{bg_music.get('genre', 'cinematic')} {bg_music.get('style', 'orchestral')} background music")
                 duration = bg_music.get("duration_seconds", 60)
 
-                result_path = await music_generator.generate(
+                result = await music_generator.generate(
                     prompt=prompt,
                     duration=duration,
                     output_path=music_path,
                 )
 
-                if result_path and result_path.exists():
-                    logger.success(f"[PIPELINE] Music generated: {result_path}")
+                if result.success and result.file_path and result.file_path.exists():
+                    logger.success(f"[PIPELINE] Music generated: {result.file_path}")
                 else:
-                    logger.warning("[PIPELINE] Music generation returned no file")
+                    logger.warning(f"[PIPELINE] Music generation failed: {result.error if hasattr(result, 'error') else 'unknown'}")
 
             except ImportError:
                 logger.warning("[PIPELINE] MusicGenerator not available, skipping music")
@@ -1068,11 +1199,18 @@ class ControlPipeline:
                 with open(brief_path, 'r', encoding='utf-8') as f:
                     project_brief = json.load(f)
 
+            # Convert dict to Gen3aOutput if needed
+            from app.services.gen_models import Gen3aOutput
+            if isinstance(gen3a_data, dict):
+                gen3a_analysis = Gen3aOutput(**gen3a_data)
+            else:
+                gen3a_analysis = gen3a_data
+
             # Generate manifest
             manifest = await service.generate_manifest(
-                gen3a_output=gen3a_data,
-                project_brief=project_brief,
-                project_dir=project_dir
+                gen3a_analysis=gen3a_analysis,
+                gen1_brief=project_brief or {},
+                gen2_brief=project_brief or {}
             )
 
             if manifest:
@@ -1113,38 +1251,34 @@ class ControlPipeline:
             queue = TopazQueue()
 
             # Check if Topaz is available
-            if not queue.topaz_available:
+            if not queue.is_topaz_available:
                 logger.warning("[PIPELINE] Topaz not available, skipping upscaling")
                 return
 
             # Start worker
             await queue.start()
 
-            # Add task (FPS boost + 4K upscale)
-            task_id = await queue.add_task(
-                input_path=input_video,
-                output_path=output_video,
+            # Add task for final video (scene_number=0 for final)
+            task = await queue.add_task(
                 project_id=self.project.project_id,
-                stage="combined"  # FPS + upscale in one pass
+                scene_number=0,  # 0 = final video
+                input_path=input_video,
+                output_dir=project_dir,
             )
 
-            logger.info(f"[PIPELINE] Topaz task added: {task_id}")
+            logger.info(f"[PIPELINE] Topaz task added: {task.task_id}")
 
-            # Wait for completion (with progress updates)
-            while True:
-                status = queue.get_task_status(task_id)
+            # Wait for completion (30 min timeout)
+            completed = await queue.wait_for_completion(timeout=1800)
 
-                if status == "completed":
+            if completed:
+                # Check if output exists
+                if output_video.exists():
                     logger.success(f"[PIPELINE] Topaz upscaling complete: {output_video}")
-                    break
-                elif status == "failed":
-                    logger.error("[PIPELINE] Topaz upscaling failed")
-                    break
-                elif status == "processing":
-                    progress = queue.get_task_progress(task_id)
-                    await self._notify_stage("TOPAZ_UPSCALING", 95 + int(progress * 0.04))
-
-                await asyncio.sleep(10)
+                else:
+                    logger.warning("[PIPELINE] Topaz completed but no output file found")
+            else:
+                logger.error("[PIPELINE] Topaz processing timed out or failed")
 
             # Stop worker
             await queue.stop()

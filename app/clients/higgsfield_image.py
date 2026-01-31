@@ -1408,11 +1408,10 @@ class HiggsFieldImageGenerator:
                 return downloaded
 
         urls_to_download = image_urls[:count]
-        # CRITICAL: Reverse order! Higgsfield shows newest first in History,
-        # but we queue scenes in order 2,3,4,5,6 so we need to reverse
-        # to match the original scene order
-        urls_to_download = list(reversed(urls_to_download))
-        logger.info(f"Downloading {len(urls_to_download)} images (requested: {count}, reversed for correct order)")
+        # NOTE: For sequential generation (count=1), newest image is first - correct order
+        # For PRIMARY candidates (count=4), all 4 are generated together - order preserved
+        # Reverse is NO LONGER needed since we switched to sequential generation
+        logger.info(f"Downloading {len(urls_to_download)} images (requested: {count})")
 
         for i, url in enumerate(urls_to_download):
             try:
@@ -1692,7 +1691,7 @@ class HiggsFieldImageGenerator:
         logger.info(f"[Scene {scene_num}] Image queued successfully!")
 
     # ========================================================================
-    # BATCH GENERATION (PARALLEL)
+    # BATCH GENERATION (SEQUENTIAL - ensures correct order)
     # ========================================================================
 
     async def generate_batch_images(
@@ -1702,17 +1701,21 @@ class HiggsFieldImageGenerator:
         reference_url: Optional[str] = None
     ) -> List[GeneratedImage]:
         """
-        РџР°СЂР°Р»РµР»СЊРЅР° РіРµРЅРµСЂР°С†С–СЏ Р·РѕР±СЂР°Р¶РµРЅСЊ РґР»СЏ РєС–Р»СЊРєРѕС… СЃС†РµРЅ.
+        SEQUENTIAL image generation for multiple scenes.
+
+        IMPORTANT: Generate and download each image IMMEDIATELY to ensure
+        correct scene-to-image mapping. Parallel queueing causes order issues
+        because HiggsField may complete generations in unpredictable order.
 
         Workflow:
         1. Navigate to image page ONCE
         2. Set Unlimited ON, 2K, count=1 ONCE
-        3. For each scene:
-           - If INDEPENDENT: clear reference
-           - If REQUIRES_REF/LOOP_CLOSE: upload reference (if not exists)
-           - Clear prompt в†’ enter prompt в†’ Generate в†’ wait 15s
-        4. After all queued: wait for all images to appear
-        5. Download all NEW images
+        3. Upload reference ONCE (if needed)
+        4. For EACH scene:
+           - Clear prompt -> enter prompt -> Generate
+           - Wait for THIS image to complete
+           - Download THIS image immediately
+        5. Return all images in correct order
 
         Args:
             scenes: List of dicts with:
@@ -1720,17 +1723,17 @@ class HiggsFieldImageGenerator:
                 - image_prompt: str
                 - reference_type: str (INDEPENDENT, REQUIRES_REF, LOOP_CLOSE)
             reference_image: Optional shared reference for scenes that need it
+            reference_url: URL for finding reference in gallery
 
         Returns:
-            List[GeneratedImage]: РћР±'С”РєС‚Рё Р· path С‚Р° url.
+            List[GeneratedImage]: Images in CORRECT order matching scenes.
         """
         if not scenes:
             return []
 
         logger.info("=" * 70)
-        logger.info(f"BATCH IMAGE GENERATION: {len(scenes)} scenes")
+        logger.info(f"SEQUENTIAL IMAGE GENERATION: {len(scenes)} scenes")
         logger.info(f"[REF_DEBUG] reference_image param = {reference_image}")
-        logger.info(f"[REF_DEBUG] reference_image type = {type(reference_image)}")
         if reference_image:
             logger.info(f"[REF_DEBUG] reference_image.exists() = {reference_image.exists()}")
         logger.info("=" * 70)
@@ -1740,7 +1743,6 @@ class HiggsFieldImageGenerator:
         await self._navigate_to_image(force=True)
 
         # Step 2: Set settings FIRST (before reference upload!)
-        # These actions scroll and click UI, which can accidentally remove reference
         logger.info("[SETUP] Step 2: Setting Unlimited ON...")
         await self._set_unlimited(True)
 
@@ -1750,76 +1752,75 @@ class HiggsFieldImageGenerator:
         logger.info("[SETUP] Step 4: Setting image count to 1...")
         await self._set_image_count(1)
 
-        # Step 5: Check if reference already uploaded, skip if yes
-        reference_uploaded = False
+        # Step 5: Upload reference if needed
         if reference_image and reference_image.exists():
-            # Проверяем есть ли уже реф
             ref_exists = await asyncio.to_thread(self._check_reference_exists)
             if ref_exists:
                 logger.success("[SETUP] ✅ Reference already uploaded, skipping")
-                reference_uploaded = True
             else:
                 logger.info(f"[SETUP] Step 5: Uploading reference: {reference_image}")
-                logger.info(f"[SETUP] Reference URL for lookup: {reference_url}")
                 await self._upload_reference_image(reference_image, skip_if_exists=False, reference_url=reference_url)
                 logger.success("[SETUP] ✅ Reference uploaded")
-                reference_uploaded = True
         elif reference_image:
             logger.error(f"[SETUP] Reference file NOT FOUND: {reference_image}")
             raise HiggsFieldWebGenerationError(f"Reference image not found: {reference_image}")
         else:
             logger.warning("[SETUP] No reference image path provided!")
 
-        # Remember initial images to exclude from download
-        initial_image_urls = await asyncio.to_thread(self._get_generated_image_urls, 100)
-        logger.info(f"[SETUP] Found {len(initial_image_urls)} existing images (will exclude)")
+        # Step 6: Generate each scene SEQUENTIALLY
+        logger.info("=" * 70)
+        logger.info("GENERATING SCENES SEQUENTIALLY (correct order guaranteed)...")
+        logger.info("=" * 70)
 
-        # Step 4: Queue all scenes
-        logger.info("=" * 70)
-        logger.info("QUEUEING ALL SCENES...")
-        logger.info("=" * 70)
+        generated_images: List[GeneratedImage] = []
 
         for i, scene in enumerate(scenes):
             scene_num = scene.get('scene_number', i + 1)
             prompt = scene.get('image_prompt', '')
-            ref_type = scene.get('reference_type', 'REQUIRES_REF')  # Default to requiring ref
 
-            logger.info(f"[Scene {scene_num}] ({i+1}/{len(scenes)}) Queueing...")
-            logger.info(f"[Scene {scene_num}]   Prompt: {prompt[:50]}...")
+            logger.info(f"[Scene {scene_num}] ({i+1}/{len(scenes)}) Generating...")
+            logger.info(f"[Scene {scene_num}]   Prompt: {prompt[:60]}...")
 
-            # Clear old prompt first, then enter new one
+            # Remember URLs before this generation
+            urls_before = await asyncio.to_thread(self._get_generated_image_urls, 100)
+
+            # Clear old prompt, enter new one
             await asyncio.to_thread(self._sync_clear_prompt)
             await asyncio.to_thread(self._sync_enter_prompt, prompt)
 
             # Click Generate
             await asyncio.to_thread(self._sync_click_generate)
 
-            logger.info(f"[Scene {scene_num}] Queued! Waiting 15s before next...")
-            await asyncio.sleep(15)
+            # Wait for THIS image to complete
+            logger.info(f"[Scene {scene_num}] Waiting for generation to complete...")
+            await self._wait_for_generation(timeout=300)
+
+            # Download the NEW image immediately
+            new_images = await self._download_generated_images(
+                count=1,
+                exclude_urls=urls_before
+            )
+
+            if new_images:
+                img = new_images[0]
+                generated_images.append(img)
+                logger.success(f"[Scene {scene_num}] ✅ Image downloaded: {img.path.name}")
+            else:
+                logger.error(f"[Scene {scene_num}] ❌ No new image found!")
+                # Append None placeholder to maintain order
+                generated_images.append(None)
 
         logger.info("=" * 70)
-        logger.info(f"ALL {len(scenes)} SCENES QUEUED!")
+        success_count = sum(1 for img in generated_images if img is not None)
+        logger.info(f"SEQUENTIAL GENERATION COMPLETE: {success_count}/{len(scenes)} images")
         logger.info("=" * 70)
 
-        # Step 5: Wait for all images to generate
-        logger.info("Waiting for all images to generate...")
-        await self._wait_for_batch_generation(
-            expected_count=len(scenes),
-            initial_urls=initial_image_urls
-        )
+        # Filter out None values but log warning
+        valid_images = [img for img in generated_images if img is not None]
+        if len(valid_images) < len(scenes):
+            logger.warning(f"Missing {len(scenes) - len(valid_images)} images!")
 
-        # Step 6: Download all NEW images
-        logger.info("Downloading generated images...")
-        images = await self._download_generated_images(
-            count=len(scenes),
-            exclude_urls=initial_image_urls
-        )
-
-        logger.info("=" * 70)
-        logger.info(f"BATCH COMPLETE: {len(images)}/{len(scenes)} images downloaded")
-        logger.info("=" * 70)
-
-        return images
+        return generated_images  # Return with Nones to preserve index mapping
 
     async def _wait_for_batch_generation(
         self,

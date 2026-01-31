@@ -98,10 +98,12 @@ class TopazTask:
 
     def __post_init__(self):
         """Генерує output paths якщо не вказані"""
+        # scene_number=0 means final video, use "final_" prefix
+        prefix = "final" if self.scene_number == 0 else f"scene_{self.scene_number}"
         if self.fps_output_path is None:
-            self.fps_output_path = self.output_dir / f"scene_{self.scene_number}_60fps.mp4"
+            self.fps_output_path = self.output_dir / f"{prefix}_60fps.mp4"
         if self.upscaled_output_path is None:
-            self.upscaled_output_path = self.output_dir / f"scene_{self.scene_number}_4k.mp4"
+            self.upscaled_output_path = self.output_dir / f"{prefix}_4k.mp4"
 
 
 @dataclass

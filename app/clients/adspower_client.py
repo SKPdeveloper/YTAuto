@@ -113,18 +113,20 @@ class AdsPowerClient:
     # BROWSER LIFECYCLE
     # ========================================================================
 
-    async def start_browser(self, max_retries: int = 3) -> None:
+    async def start_browser(self, max_retries: int = 3, update_wait_retries: int = 30) -> None:
         """
         Запустити AdsPower профіль і підключити Selenium.
 
         Args:
             max_retries: Кількість спроб підключення (default: 3)
+            update_wait_retries: Кількість спроб очікування оновлення браузера (default: 30)
         """
         logger.info(f"Starting AdsPower browser, profile: {self.config.profile_id}")
 
         self._http_client = httpx.AsyncClient(timeout=60)  # Збільшено таймаут
 
         last_error = None
+        update_attempts = 0
 
         for attempt in range(1, max_retries + 1):
             try:
@@ -140,8 +142,27 @@ class AdsPowerClient:
                 data = response.json()
 
                 if data.get("code") != 0:
+                    error_msg = data.get('msg', 'Unknown error')
+
+                    # Перевірка на оновлення браузера - це тимчасовий стан
+                    if "updating" in error_msg.lower() or "waiting for download" in error_msg.lower():
+                        update_attempts += 1
+                        if update_attempts <= update_wait_retries:
+                            logger.warning(
+                                f"[Update {update_attempts}/{update_wait_retries}] "
+                                f"Browser is updating: {error_msg}"
+                            )
+                            logger.info("Waiting 10s for update to complete...")
+                            await asyncio.sleep(10)
+                            continue  # Повторити спробу без збільшення attempt
+                        else:
+                            raise AdsPowerConnectionError(
+                                f"Browser update timeout after {update_wait_retries} attempts",
+                                details={"response": data}
+                            )
+
                     raise AdsPowerConnectionError(
-                        f"AdsPower API error: {data.get('msg', 'Unknown error')}",
+                        f"AdsPower API error: {error_msg}",
                         details={"response": data}
                     )
 
@@ -188,8 +209,18 @@ class AdsPowerClient:
     ) -> webdriver.Chrome:
         """Sync підключення до Selenium (запускається в thread)"""
         try:
+            # Parse selenium_addr - може бути ws:// URL або host:port
+            # AdsPower повертає ws://127.0.0.1:12345/... - потрібно витягти host:port
+            debugger_address = selenium_addr
+            if selenium_addr.startswith("ws://") or selenium_addr.startswith("wss://"):
+                # Витягти host:port з WebSocket URL
+                from urllib.parse import urlparse
+                parsed = urlparse(selenium_addr)
+                debugger_address = f"{parsed.hostname}:{parsed.port}"
+                logger.debug(f"Parsed debugger address: {debugger_address} from {selenium_addr}")
+
             chrome_options = Options()
-            chrome_options.add_experimental_option("debuggerAddress", selenium_addr)
+            chrome_options.add_experimental_option("debuggerAddress", debugger_address)
 
             service = Service(executable_path=webdriver_path)
             driver = webdriver.Chrome(service=service, options=chrome_options)
