@@ -762,47 +762,29 @@ class ControlPipeline:
         project_dir = settings.PROJECTS_DIR / self.project.project_id
         manifest_path = project_dir / "gen3b_manifest.json"
 
-        # Try to use ManifestRenderer if Gen3b manifest exists (full montage with effects)
-        if manifest_path.exists():
-            try:
-                from app.services.manifest_renderer import ManifestRenderer
-                from app.services.gen_models import Gen3bManifest
+        # ManifestRenderer - повноцінний монтаж з ефектами, субтитрами та аудіо
+        if not manifest_path.exists():
+            raise FileNotFoundError(f"Gen3b manifest not found: {manifest_path}")
 
-                logger.info("[PIPELINE] Using ManifestRenderer for full montage...")
-                await self.notify_log("🎬 Rendering with effects, subtitles & audio mixing...", "info")
+        from app.services.manifest_renderer import ManifestRenderer
+        from app.services.gen_models import Gen3bManifest
 
-                with open(manifest_path, 'r', encoding='utf-8') as f:
-                    manifest_data = json.load(f)
+        logger.info("[PIPELINE] Using ManifestRenderer for full montage...")
+        await self.notify_log("🎬 Rendering with effects, subtitles & audio mixing...", "info")
 
-                manifest = Gen3bManifest(**manifest_data)
-                renderer = ManifestRenderer()
+        with open(manifest_path, 'r', encoding='utf-8') as f:
+            manifest_data = json.load(f)
 
-                result = await renderer.render(
-                    manifest=manifest,
-                    project_dir=project_dir,
-                    output_filename="final.mp4"
-                )
+        manifest = Gen3bManifest(**manifest_data)
+        renderer = ManifestRenderer()
 
-                logger.success(f"[PIPELINE] Full montage rendered: {result}")
-                return
-
-            except Exception as e:
-                logger.warning(f"[PIPELINE] ManifestRenderer failed: {e}, falling back to simple assembly")
-                await self.notify_log(f"⚠️ Montage failed, using simple concat: {e}", "warning")
-
-        # Fallback: Simple concat with voiceover + music
-        from app.services.video_assembler import VideoAssembler
-
-        logger.info("[PIPELINE] Using simple VideoAssembler (no effects)...")
-        assembler = VideoAssembler()
-
-        result = await assembler.assemble(
+        result = await renderer.render(
+            manifest=manifest,
             project_dir=project_dir,
-            output_filename="final.mp4",
-            include_voiceover=True
+            output_filename="final.mp4"
         )
 
-        logger.success(f"Final video: {result}")
+        logger.success(f"[PIPELINE] Full montage rendered: {result}")
 
     async def _assemble_with_trimming(self, project_dir: Path) -> Path:
         """Assemble final video with scene duration trimming."""

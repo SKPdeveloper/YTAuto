@@ -294,7 +294,7 @@ class Settings(BaseSettings):
 
     # Encoding Settings
     TOPAZ_CODEC: str = Field(
-        default="hevc_amf",
+        default="hevc_nvenc",
         description="Кодек для вихідного відео (hevc_nvenc/h264_nvenc для NVIDIA, hevc_amf/h264_amf для AMD)"
     )
 
@@ -513,7 +513,7 @@ class Settings(BaseSettings):
     # ========================================================================
 
     model_config = SettingsConfigDict(
-        env_file="config/.env",
+        env_file=Path(__file__).parent.parent.parent / "config" / ".env",
         env_file_encoding="utf-8",
         case_sensitive=True,
         extra="ignore"  # Ігнорує зайві поля в .env

@@ -19,6 +19,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass
 
 from app.utils.logger import logger
+from app.core.config import settings
 
 
 @dataclass
@@ -531,8 +532,9 @@ class Gen3aPreprocessor:
 
         Scene 6 is reversed for seamless loop back to Scene 1.
         """
+        ffmpeg_path = settings.TOPAZ_FFMPEG_PATH or "ffmpeg"
         cmd = [
-            "ffmpeg",
+            ffmpeg_path,
             "-y",  # Overwrite output
             "-i", str(input_path),
             "-vf", "reverse",

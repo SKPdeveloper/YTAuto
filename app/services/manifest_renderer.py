@@ -31,6 +31,7 @@ from typing import List, Optional, Dict, Any
 from dataclasses import dataclass
 
 from app.utils.logger import logger
+from app.core.config import settings
 from app.services.gen_models import (
     Gen3bManifest,
     ManifestScene,
@@ -77,8 +78,10 @@ class ManifestRenderer:
         """Initialize ManifestRenderer with optional config."""
         self.config = config or RenderConfig()
         self.audio_mixer = AudioMixer()
+        self.ffmpeg_path = settings.TOPAZ_FFMPEG_PATH or "ffmpeg"
 
         logger.info("ManifestRenderer initialized:")
+        logger.info(f"  FFmpeg: {self.ffmpeg_path}")
         logger.info(f"  Output: {self.config.output_width}x{self.config.output_height}")
         logger.info(f"  FPS: {self.config.fps}")
         logger.info(f"  Codec: {self.config.video_codec}")
@@ -245,43 +248,93 @@ class ManifestRenderer:
         speed_segments: List[SpeedSegment],
         output_path: Path,
     ) -> None:
-        """Apply speed changes to video based on speed map."""
-        # Build FFmpeg filter for variable speed
-        # Using setpts filter for speed changes
+        """
+        Apply speed changes to video based on speed map.
 
-        filter_parts = []
+        Обробляє кожен сегмент окремо:
+        1. Trim до потрібного часового діапазону
+        2. Застосувати швидкість (setpts)
+        3. Concat всі сегменти
+        """
+        if not speed_segments:
+            # Просто копіюємо якщо немає сегментів
+            import shutil
+            shutil.copy(input_path, output_path)
+            return
+
+        # Якщо один сегмент - простіша обробка
+        if len(speed_segments) == 1:
+            seg = speed_segments[0]
+            pts_factor = 1 / seg.speed
+            cmd = [
+                self.ffmpeg_path, "-y",
+                "-i", str(input_path),
+                "-ss", str(seg.source_start),
+                "-t", str(seg.source_end - seg.source_start),
+                "-filter:v", f"setpts={pts_factor}*PTS",
+                "-an",
+                "-c:v", self.config.video_codec,
+                "-preset", self.config.preset,
+                "-crf", str(self.config.crf),
+                str(output_path)
+            ]
+            await self._run_ffmpeg(cmd)
+            return
+
+        # Багато сегментів - складний filter_complex
+        # Формат: trim+setpts для кожного сегмента, потім concat
+        temp_dir = output_path.parent / "temp_segments"
+        temp_dir.mkdir(exist_ok=True)
+
+        segment_files = []
         for i, seg in enumerate(speed_segments):
-            # setpts=PTS/speed changes video speed
-            # speed > 1 = faster, speed < 1 = slower
-            speed = seg.speed
-            start = seg.source_start
-            end = seg.source_end
+            seg_output = temp_dir / f"seg_{i}.mp4"
+            pts_factor = 1 / seg.speed
 
-            # We'll use a complex filter for segment-based speed
-            filter_parts.append(
-                f"between(t,{start},{end})*{1/speed}"
-            )
+            cmd = [
+                self.ffmpeg_path, "-y",
+                "-i", str(input_path),
+                "-ss", str(seg.source_start),
+                "-t", str(seg.source_end - seg.source_start),
+                "-filter:v", f"setpts={pts_factor}*PTS",
+                "-an",
+                "-c:v", self.config.video_codec,
+                "-preset", self.config.preset,
+                "-crf", str(self.config.crf),
+                str(seg_output)
+            ]
+            await self._run_ffmpeg(cmd)
 
-        # For simplicity, apply average speed if multiple segments
-        if speed_segments:
-            avg_speed = sum(s.speed for s in speed_segments) / len(speed_segments)
-            pts_filter = f"setpts={1/avg_speed}*PTS"
-        else:
-            pts_filter = "setpts=PTS"
+            if seg_output.exists():
+                segment_files.append(seg_output)
 
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", str(input_path),
-            "-filter_complex", f"[0:v]{pts_filter}[v]",
-            "-map", "[v]",
-            "-an",  # No audio for now
-            "-c:v", self.config.video_codec,
-            "-preset", self.config.preset,
-            "-crf", str(self.config.crf),
-            str(output_path)
-        ]
+        # Concat всі сегменти
+        if segment_files:
+            concat_file = temp_dir / "concat.txt"
+            with open(concat_file, 'w') as f:
+                for seg_file in segment_files:
+                    f.write(f"file '{str(seg_file).replace(chr(92), '/')}'\n")
 
-        await self._run_ffmpeg(cmd)
+            cmd = [
+                self.ffmpeg_path, "-y",
+                "-f", "concat",
+                "-safe", "0",
+                "-i", str(concat_file),
+                "-c", "copy",
+                str(output_path)
+            ]
+            await self._run_ffmpeg(cmd)
+
+            # Cleanup temp files
+            for seg_file in segment_files:
+                seg_file.unlink(missing_ok=True)
+            concat_file.unlink(missing_ok=True)
+            try:
+                temp_dir.rmdir()
+            except:
+                pass
+
+        logger.info(f"  Applied {len(speed_segments)} speed segments")
 
     async def _apply_effects(
         self,
@@ -306,7 +359,7 @@ class ManifestRenderer:
         filter_chain = ",".join(filters)
 
         cmd = [
-            "ffmpeg", "-y",
+            self.ffmpeg_path, "-y",
             "-i", str(input_path),
             "-vf", filter_chain,
             "-c:v", self.config.video_codec,
@@ -384,7 +437,7 @@ class ManifestRenderer:
         filter_chain = ",".join(hook_filters) if hook_filters else "null"
 
         cmd = [
-            "ffmpeg", "-y",
+            self.ffmpeg_path, "-y",
             "-i", str(first_scene),
             "-t", str(hook.duration),
             "-vf", filter_chain,
@@ -447,7 +500,7 @@ class ManifestRenderer:
                     f.write(f"file '{path}'\n")
 
         cmd = [
-            "ffmpeg", "-y",
+            self.ffmpeg_path, "-y",
             "-f", "concat",
             "-safe", "0",
             "-i", str(concat_file),
@@ -499,7 +552,7 @@ class ManifestRenderer:
         ass_path_escaped = str(ass_path).replace("\\", "/").replace(":", "\\:")
 
         cmd = [
-            "ffmpeg", "-y",
+            self.ffmpeg_path, "-y",
             "-i", str(input_path),
             "-vf", f"ass='{ass_path_escaped}'",
             "-c:v", self.config.video_codec,
@@ -656,7 +709,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         filter_complex = self.audio_mixer.generate_ffmpeg_filter(audio_config)
 
         # Build full command
-        cmd = ["ffmpeg", "-y", "-i", str(video_path)]
+        cmd = [self.ffmpeg_path, "-y", "-i", str(video_path)]
 
         # Add audio inputs
         for _, path in input_files:
@@ -842,7 +895,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         vo_path = project_dir / "voiceover.mp3"
         music_path = project_dir / "music.mp3"
 
-        cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_file)]
+        cmd = [self.ffmpeg_path, "-y", "-f", "concat", "-safe", "0", "-i", str(concat_file)]
 
         # Add audio if available
         audio_inputs = []
