@@ -402,7 +402,7 @@ class HiggsFieldImageGenerator:
         await asyncio.to_thread(self._sync_set_image_count, count)
 
     def _sync_set_image_count(self, count: int) -> None:
-        """Sync РІСЃС‚Р°РЅРѕРІР»РµРЅРЅСЏ РєС–Р»СЊРєРѕСЃС‚С– Р·РѕР±СЂР°Р¶РµРЅСЊ С‡РµСЂРµР· РєРЅРѕРїРєРё +/-"""
+        """Sync встановлення кількості зображень через кнопки +/-"""
         driver = self.browser.driver
 
         if count < 1:
@@ -410,56 +410,75 @@ class HiggsFieldImageGenerator:
         if count > 4:
             count = 4
 
-        logger.info(f"Setting image count to {count}...")
+        logger.info(f"[IMAGE_COUNT] Setting image count to {count}...")
 
         def find_plus_minus_buttons():
             return driver.execute_script(JS_SCRIPTS.find_plus_minus_buttons())
 
         try:
-            # РљСЂРѕРє 1: РЎРєРёРЅСѓС‚Рё РґРѕ РјС–РЅС–РјСѓРјСѓ
-            logger.debug("Resetting to minimum...")
+            # Спочатку перевіримо чи кнопки взагалі є
+            initial_buttons = find_plus_minus_buttons()
+            if not initial_buttons or (not initial_buttons.get('plus') and not initial_buttons.get('minus')):
+                logger.warning(f"[IMAGE_COUNT] ⚠️ +/- buttons NOT FOUND! UI may have changed.")
+                logger.warning(f"[IMAGE_COUNT] Count will remain at previous value (likely 4)")
+                return
+
+            logger.info(f"[IMAGE_COUNT] Found buttons: plus={bool(initial_buttons.get('plus'))}, minus={bool(initial_buttons.get('minus'))}")
+
+            # Крок 1: Скинути до мінімуму (1)
+            minus_clicks = 0
+            logger.info("[IMAGE_COUNT] Step 1: Resetting to minimum (1)...")
             for i in range(4):
                 buttons = find_plus_minus_buttons()
                 minus_btn = buttons.get('minus') if buttons else None
 
                 if not minus_btn:
-                    logger.debug(f"Minus button gone after {i} clicks - reached minimum (1)")
+                    logger.info(f"[IMAGE_COUNT] Minus button gone after {i} clicks - reached minimum (1)")
                     break
 
                 try:
                     driver.execute_script("arguments[0].click();", minus_btn)
+                    minus_clicks += 1
                     time.sleep(0.2)
-                    logger.debug(f"Clicked - ({i+1})")
                 except Exception:
                     break
 
+            logger.info(f"[IMAGE_COUNT] Clicked minus {minus_clicks} times")
             time.sleep(0.3)
 
-            # РљСЂРѕРє 2: Р—Р±С–Р»СЊС€РёС‚Рё РґРѕ РїРѕС‚СЂС–Р±РЅРѕС— РєС–Р»СЊРєРѕСЃС‚С–
+            # Крок 2: Збільшити до потрібної кількості
             clicks_needed = count - 1
+            plus_clicks = 0
             if clicks_needed > 0:
-                logger.debug(f"Increasing to {count} (need {clicks_needed} clicks)...")
+                logger.info(f"[IMAGE_COUNT] Step 2: Increasing to {count} (need {clicks_needed} clicks)...")
 
                 for i in range(clicks_needed):
                     buttons = find_plus_minus_buttons()
                     plus_btn = buttons.get('plus') if buttons else None
 
                     if not plus_btn:
-                        logger.debug(f"Plus button gone after {i} clicks - reached maximum (4)")
+                        logger.warning(f"[IMAGE_COUNT] Plus button gone after {i} clicks")
                         break
 
                     try:
                         driver.execute_script("arguments[0].click();", plus_btn)
+                        plus_clicks += 1
                         time.sleep(0.2)
-                        logger.debug(f"Clicked + ({i+1}/{clicks_needed})")
                     except Exception as e:
-                        logger.warning(f"Failed to click +: {e}")
+                        logger.warning(f"[IMAGE_COUNT] Failed to click +: {e}")
                         break
 
-            logger.info(f"Image count set to {count}")
+                logger.info(f"[IMAGE_COUNT] Clicked plus {plus_clicks} times")
+
+            # Верифікація
+            final_count = 1 + plus_clicks  # Починаємо з 1, додаємо кліки
+            if final_count == count:
+                logger.info(f"[IMAGE_COUNT] ✅ Image count set to {count}")
+            else:
+                logger.warning(f"[IMAGE_COUNT] ⚠️ Expected {count}, but set {final_count}")
 
         except Exception as e:
-            logger.warning(f"Failed to set image count: {e}")
+            logger.error(f"[IMAGE_COUNT] ❌ Failed to set image count: {e}")
 
     async def _set_unlimited(self, enabled: bool) -> None:
         """Р’СЃС‚Р°РЅРѕРІРёС‚Рё Unlimited toggle"""

@@ -243,6 +243,8 @@ class JSScripts:
         """JS для пошуку кнопок +/- (image count)"""
         return """
             var result = {plus: null, minus: null};
+
+            // Спосіб 1: Шукаємо по SVG path (старий UI)
             document.querySelectorAll('button').forEach(function(btn) {
                 var svg = btn.querySelector('svg');
                 if (svg) {
@@ -260,6 +262,43 @@ class JSScripts:
                     }
                 }
             });
+
+            // Спосіб 2: Якщо не знайшли, шукаємо по тексту + та -
+            if (!result.plus || !result.minus) {
+                document.querySelectorAll('button').forEach(function(btn) {
+                    var text = btn.textContent.trim();
+                    if (text === '+' && !result.plus) {
+                        result.plus = btn;
+                    }
+                    if (text === '-' && !result.minus) {
+                        result.minus = btn;
+                    }
+                });
+            }
+
+            // Спосіб 3: Шукаємо поруч з числом 1-4 (лічильник зображень)
+            if (!result.plus || !result.minus) {
+                var allButtons = Array.from(document.querySelectorAll('button'));
+                for (var i = 0; i < allButtons.length; i++) {
+                    var btn = allButtons[i];
+                    var parent = btn.parentElement;
+                    if (parent) {
+                        var siblings = parent.querySelectorAll('button');
+                        // Якщо є 2 кнопки поруч і між ними є число
+                        if (siblings.length === 2) {
+                            var parentText = parent.textContent;
+                            if (/[1-4]/.test(parentText)) {
+                                var btns = Array.from(siblings);
+                                // Перша кнопка зазвичай мінус, друга плюс
+                                if (!result.minus) result.minus = btns[0];
+                                if (!result.plus) result.plus = btns[1];
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
             return result;
         """
 

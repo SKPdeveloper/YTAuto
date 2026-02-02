@@ -78,7 +78,7 @@ class ManifestRenderer:
         """Initialize ManifestRenderer with optional config."""
         self.config = config or RenderConfig()
         self.audio_mixer = AudioMixer()
-        self.ffmpeg_path = settings.TOPAZ_FFMPEG_PATH or "ffmpeg"
+        self.ffmpeg_path = str(settings.TOPAZ_FFMPEG_PATH) if settings.TOPAZ_FFMPEG_PATH else "ffmpeg"
 
         logger.info("ManifestRenderer initialized:")
         logger.info(f"  FFmpeg: {self.ffmpeg_path}")
@@ -743,7 +743,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
     async def _run_ffmpeg(self, cmd: List[str]) -> None:
         """Run FFmpeg command asynchronously."""
-        logger.debug(f"FFmpeg command: {' '.join(cmd)}")
+        logger.debug(f"FFmpeg command: {' '.join(str(x) for x in cmd)}")
 
         process = await asyncio.create_subprocess_exec(
             *cmd,
@@ -759,7 +759,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             error_lines = error_msg.strip().split('\n')
             # Get last 10 lines which typically contain the actual error
             relevant_error = '\n'.join(error_lines[-10:]) if len(error_lines) > 10 else error_msg
-            logger.error(f"FFmpeg command failed: {' '.join(cmd[:15])}...")
+            logger.error(f"FFmpeg command failed: {' '.join(str(x) for x in cmd[:15])}...")
             logger.error(f"FFmpeg error:\n{relevant_error}")
             raise Exception(f"FFmpeg failed: {relevant_error}")
 
