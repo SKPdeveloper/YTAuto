@@ -235,13 +235,14 @@ class PostProcessStage(BasePipelineStage):
                 f.write(f"file '{path}'\n")
 
         import subprocess
+        ffmpeg_path = str(settings.TOPAZ_FFMPEG_PATH) if settings.TOPAZ_FFMPEG_PATH else "ffmpeg"
         cmd = [
-            "ffmpeg", "-y",
+            ffmpeg_path, "-y",
             "-f", "concat", "-safe", "0",
             "-i", str(concat_file),
-            "-c:v", "libx264",
-            "-preset", "medium",
-            "-crf", "18",
+            "-c:v", "h264_nvenc",
+            "-preset", "p4",
+            "-rc", "constqp", "-qp", "23",
             str(output_path)
         ]
 

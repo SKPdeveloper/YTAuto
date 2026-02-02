@@ -52,12 +52,14 @@ class RenderConfig:
     output_width: int = 1080
     output_height: int = 1920  # 9:16 vertical
     fps: int = 60
-    video_codec: str = "libx264"
+    # Topaz FFmpeg не має libx264, використовуємо NVIDIA NVENC (GPU)
+    # Fallback: h264_mf (MediaFoundation) якщо немає NVIDIA
+    video_codec: str = "h264_nvenc"
     audio_codec: str = "aac"
     video_bitrate: str = "8M"
     audio_bitrate: str = "192k"
-    preset: str = "medium"
-    crf: int = 18  # Quality (lower = better, 0-51)
+    preset: str = "p4"  # NVENC presets: p1-p7 (p4=medium)
+    crf: int = 23  # NVENC CQ mode (18-28 recommended)
 
 
 class ManifestRenderer:
@@ -85,6 +87,31 @@ class ManifestRenderer:
         logger.info(f"  Output: {self.config.output_width}x{self.config.output_height}")
         logger.info(f"  FPS: {self.config.fps}")
         logger.info(f"  Codec: {self.config.video_codec}")
+
+    def _get_encoder_params(self) -> List[str]:
+        """Повертає параметри кодека в залежності від типу.
+
+        NVENC (h264_nvenc): використовує -preset p1-p7, -cq або -b:v
+        libx264: використовує -preset, -crf
+        h264_mf: використовує тільки -b:v
+        """
+        codec = self.config.video_codec
+
+        if "nvenc" in codec:
+            # NVIDIA NVENC: preset p1-p7, constant quality mode
+            return ["-preset", "p4", "-rc", "constqp", "-qp", "23"]
+        elif "qsv" in codec:
+            # Intel Quick Sync
+            return ["-preset", "medium", "-global_quality", "23"]
+        elif "mf" in codec:
+            # MediaFoundation: тільки bitrate
+            return ["-b:v", self.config.video_bitrate]
+        elif "amf" in codec:
+            # AMD AMF
+            return ["-quality", "balanced", "-rc", "cqp", "-qp_i", "23", "-qp_p", "23"]
+        else:
+            # libx264 та інші software encoders
+            return ["-preset", self.config.preset, "-crf", str(self.config.crf)]
 
     async def render(
         self,
@@ -274,8 +301,7 @@ class ManifestRenderer:
                 "-filter:v", f"setpts={pts_factor}*PTS",
                 "-an",
                 "-c:v", self.config.video_codec,
-                "-preset", self.config.preset,
-                "-crf", str(self.config.crf),
+                *self._get_encoder_params(),
                 str(output_path)
             ]
             await self._run_ffmpeg(cmd)
@@ -299,8 +325,7 @@ class ManifestRenderer:
                 "-filter:v", f"setpts={pts_factor}*PTS",
                 "-an",
                 "-c:v", self.config.video_codec,
-                "-preset", self.config.preset,
-                "-crf", str(self.config.crf),
+                *self._get_encoder_params(),
                 str(seg_output)
             ]
             await self._run_ffmpeg(cmd)
@@ -363,8 +388,7 @@ class ManifestRenderer:
             "-i", str(input_path),
             "-vf", filter_chain,
             "-c:v", self.config.video_codec,
-            "-preset", self.config.preset,
-            "-crf", str(self.config.crf),
+            *self._get_encoder_params(),
             "-c:a", "copy",
             str(output_path)
         ]
@@ -442,8 +466,7 @@ class ManifestRenderer:
             "-t", str(hook.duration),
             "-vf", filter_chain,
             "-c:v", self.config.video_codec,
-            "-preset", self.config.preset,
-            "-crf", str(self.config.crf),
+            *self._get_encoder_params(),
             "-an",
             str(hook_path)
         ]
@@ -505,8 +528,7 @@ class ManifestRenderer:
             "-safe", "0",
             "-i", str(concat_file),
             "-c:v", self.config.video_codec,
-            "-preset", self.config.preset,
-            "-crf", str(self.config.crf),
+            *self._get_encoder_params(),
             str(output_path)
         ]
 
@@ -556,8 +578,7 @@ class ManifestRenderer:
             "-i", str(input_path),
             "-vf", f"ass='{ass_path_escaped}'",
             "-c:v", self.config.video_codec,
-            "-preset", self.config.preset,
-            "-crf", str(self.config.crf),
+            *self._get_encoder_params(),
             "-c:a", "copy",
             str(output_path)
         ]

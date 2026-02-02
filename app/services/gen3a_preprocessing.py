@@ -532,16 +532,16 @@ class Gen3aPreprocessor:
 
         Scene 6 is reversed for seamless loop back to Scene 1.
         """
-        ffmpeg_path = settings.TOPAZ_FFMPEG_PATH or "ffmpeg"
+        ffmpeg_path = str(settings.TOPAZ_FFMPEG_PATH) if settings.TOPAZ_FFMPEG_PATH else "ffmpeg"
         cmd = [
             ffmpeg_path,
             "-y",  # Overwrite output
             "-i", str(input_path),
             "-vf", "reverse",
             "-af", "areverse",
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "18",
+            "-c:v", "h264_nvenc",
+            "-preset", "p4",
+            "-rc", "constqp", "-qp", "23",
             "-c:a", "aac",
             "-b:a", "192k",
             str(output_path),

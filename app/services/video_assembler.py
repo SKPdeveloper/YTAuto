@@ -251,18 +251,31 @@ class VideoAssembler:
             cmd.extend(["-filter_complex", filter_complex])
             cmd.extend(["-map", "[outv]"])
 
-        # Output settings
-        # Use libx264 for software encoding (works everywhere)
+        # Output settings - підтримка різних кодеків
         if video_codec == "libx264":
             cmd.extend([
                 "-c:v", "libx264",
                 "-preset", "fast",
                 "-crf", str(crf),
             ])
-        else:
+        elif "nvenc" in video_codec:
+            # NVIDIA NVENC
             cmd.extend([
                 "-c:v", video_codec,
-                "-crf", str(crf),
+                "-preset", "p4",
+                "-rc", "constqp", "-qp", str(crf),
+            ])
+        elif "qsv" in video_codec:
+            # Intel Quick Sync
+            cmd.extend([
+                "-c:v", video_codec,
+                "-preset", "medium",
+                "-global_quality", str(crf),
+            ])
+        else:
+            # Інші кодеки (h264_mf, h264_amf, etc.) - тільки bitrate
+            cmd.extend([
+                "-c:v", video_codec,
                 "-b:v", video_bitrate,
             ])
 
