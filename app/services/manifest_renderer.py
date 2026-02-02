@@ -409,20 +409,24 @@ class ManifestRenderer:
         # Note: zoompan requires explicit size (s=WxH) and fps
         w, h = self.config.output_width, self.config.output_height
         fps = self.config.fps
+        # Topaz FFmpeg не має eq фільтра, використовуємо альтернативи:
+        # brightness -> exposure=exposure=X
+        # contrast -> colorcontrast=cc=X
+        # saturation -> hue=s=X або vibrance
         effect_map = {
             "ZOOM_IN": f"zoompan=z='min(zoom+0.0015,1.5)':d={int(duration * fps)}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={w}x{h}:fps={fps}",
             "ZOOM_OUT": f"zoompan=z='max(1.5-zoom*0.0015,1)':d={int(duration * fps)}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={w}x{h}:fps={fps}",
-            "ZOOM_PUNCH": f"scale={w}:{h},eq=brightness=0.05:contrast=1.1",  # Simplified - just brightness/contrast punch
+            "ZOOM_PUNCH": f"scale={w}:{h},exposure=exposure=0.05,colorcontrast=cc=1.1",
             "CAMERA_SHAKE": f"crop=iw-20:ih-20:x='10+random(0)*10':y='10+random(0)*10',scale={w}:{h}",
             "SHAKE": f"crop=iw-20:ih-20:x='10+random(0)*10':y='10+random(0)*10',scale={w}:{h}",
-            "GLOW": "eq=brightness=0.06:saturation=1.3",
+            "GLOW": "exposure=exposure=0.06,hue=s=1.3",
             "FLASH": f"fade=t=in:st={start}:d=0.1,fade=t=out:st={start + 0.1}:d=0.1",
             "VIGNETTE": "vignette=PI/4",
             "RGB_SPLIT": "rgbashift=rh=-3:bh=3",
             "CHROMATIC_ABERRATION": "rgbashift=rh=-3:bh=3",
             "GLITCH": "noise=alls=20:allf=t+u",
             "LETTERBOX": "drawbox=x=0:y=0:w=iw:h=ih*0.1:c=black:t=fill,drawbox=x=0:y=ih*0.9:w=iw:h=ih*0.1:c=black:t=fill",
-            "COLOR_BOOST": "eq=saturation=1.3:contrast=1.1",
+            "COLOR_BOOST": "hue=s=1.3,colorcontrast=cc=1.1",
             "WARM": "colorbalance=rs=0.1:gs=0.05:bs=-0.1",
             "COOL": "colorbalance=rs=-0.1:gs=0:bs=0.1",
         }
@@ -480,12 +484,18 @@ class ManifestRenderer:
         """Get FFmpeg filters for hook style."""
         style = style.upper()
 
+        # Topaz FFmpeg альтернативи для eq:
+        # brightness -> exposure=exposure=X
+        # contrast -> colorcontrast=cc=X
+        # saturation -> hue=s=X
         style_filters = {
             "CLASSIC": [
-                "eq=brightness=0.1:saturation=1.2",
+                "exposure=exposure=0.1",
+                "hue=s=1.2",
             ],
             "IMPACT": [
-                "eq=brightness=0.15:contrast=1.3",
+                "exposure=exposure=0.15",
+                "colorcontrast=cc=1.3",
                 "unsharp=5:5:1.5:5:5:0.0",
             ],
             "GLITCH": [
@@ -497,7 +507,8 @@ class ManifestRenderer:
                 "vignette=PI/5",
             ],
             "DRAMATIC": [
-                "eq=contrast=1.4:brightness=-0.05",
+                "colorcontrast=cc=1.4",
+                "exposure=exposure=-0.05",
                 "vignette=PI/3",
             ],
         }
