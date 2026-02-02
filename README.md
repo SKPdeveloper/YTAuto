@@ -132,13 +132,24 @@ CONTENTBRAIN_MODEL=claude-3-5-sonnet-20241022
 ANTHROPIC_API_KEY=your_key
 ```
 
-### Налаштування Topaz
+### Налаштування FFmpeg
 
-Якщо Topaz встановлено в іншому місці:
+Система використовує **два FFmpeg**:
+
+1. **Full FFmpeg** - для рендерингу відео з субтитрами та ефектами
+2. **Topaz FFmpeg** - для AI upscaling (tvai_up фільтр)
 
 ```env
-TOPAZ_FFMPEG_PATH=D:\Custom\Path\To\Topaz Video AI\ffmpeg.exe
+# Full FFmpeg (встанови через: winget install Gyan.FFmpeg)
+FFMPEG_PATH=C:\Users\...\ffmpeg-8.0.1-full_build\bin\ffmpeg.exe
+
+# Topaz FFmpeg (встановлюється разом з Topaz Video AI)
+TOPAZ_FFMPEG_PATH=C:\Program Files\Topaz Labs LLC\Topaz Video AI\ffmpeg.exe
 ```
+
+**Чому два FFmpeg?**
+- Topaz FFmpeg не має фільтрів `ass`, `subtitles`, `eq`, `libx264`
+- Full FFmpeg не має AI фільтрів `tvai_up`, `tvai_fi`
 
 ### Додаткові параметри
 
