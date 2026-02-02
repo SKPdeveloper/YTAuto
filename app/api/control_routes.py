@@ -9,11 +9,12 @@ Handles:
 """
 
 import asyncio
+import json
 from datetime import datetime, timedelta
 from typing import Optional
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from pydantic import BaseModel
 
 from app.core.config import settings
@@ -559,6 +560,56 @@ async def submit_video_approval(request: VideoApprovalDecision):
         "decision": request.decision,
         "project_id": state.video_approval_project_id
     }
+
+
+# ============================================================================
+# RE-RENDER ENDPOINT
+# ============================================================================
+
+@router.post("/render/{project_id}")
+async def render_project(project_id: str, background_tasks: BackgroundTasks):
+    """
+    Re-render a project using ManifestRenderer.
+    Requires gen3b_manifest.json to exist.
+    """
+    from app.services.manifest_renderer import ManifestRenderer
+    from app.services.gen_models import Gen3bManifest
+
+    project_dir = settings.PROJECTS_DIR / project_id
+    manifest_path = project_dir / "gen3b_manifest.json"
+
+    if not project_dir.exists():
+        raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+
+    if not manifest_path.exists():
+        raise HTTPException(status_code=400, detail=f"Gen3b manifest not found for {project_id}")
+
+    async def do_render():
+        try:
+            logger.info(f"[RENDER] Starting render for {project_id}...")
+
+            with open(manifest_path, 'r', encoding='utf-8') as f:
+                manifest_data = json.load(f)
+
+            manifest = Gen3bManifest(**manifest_data)
+            renderer = ManifestRenderer()
+
+            result = await renderer.render(
+                manifest=manifest,
+                project_dir=project_dir,
+                output_filename="final.mp4"
+            )
+
+            logger.success(f"[RENDER] ✅ {project_id} rendered: {result}")
+            await broadcast_event("render_complete", {"project_id": project_id, "path": str(result)})
+
+        except Exception as e:
+            logger.error(f"[RENDER] ❌ {project_id} failed: {e}")
+            await broadcast_event("render_failed", {"project_id": project_id, "error": str(e)})
+
+    background_tasks.add_task(do_render)
+
+    return {"status": "rendering", "project_id": project_id}
 
 
 # ============================================================================
