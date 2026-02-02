@@ -80,7 +80,14 @@ class ManifestRenderer:
         """Initialize ManifestRenderer with optional config."""
         self.config = config or RenderConfig()
         self.audio_mixer = AudioMixer()
-        self.ffmpeg_path = str(settings.TOPAZ_FFMPEG_PATH) if settings.TOPAZ_FFMPEG_PATH else "ffmpeg"
+        # Використовуємо повний FFmpeg (має ass/subtitles фільтри та libx264)
+        # Topaz FFmpeg не має цих фільтрів!
+        if hasattr(settings, 'FFMPEG_PATH') and settings.FFMPEG_PATH and settings.FFMPEG_PATH.exists():
+            self.ffmpeg_path = str(settings.FFMPEG_PATH)
+        elif settings.TOPAZ_FFMPEG_PATH and settings.TOPAZ_FFMPEG_PATH.exists():
+            self.ffmpeg_path = str(settings.TOPAZ_FFMPEG_PATH)
+        else:
+            self.ffmpeg_path = "ffmpeg"
 
         logger.info("ManifestRenderer initialized:")
         logger.info(f"  FFmpeg: {self.ffmpeg_path}")
@@ -409,24 +416,24 @@ class ManifestRenderer:
         # Note: zoompan requires explicit size (s=WxH) and fps
         w, h = self.config.output_width, self.config.output_height
         fps = self.config.fps
-        # Topaz FFmpeg не має eq фільтра, використовуємо альтернативи:
-        # brightness -> exposure=exposure=X
-        # contrast -> colorcontrast=cc=X
-        # saturation -> hue=s=X або vibrance
+        # FFmpeg фільтри для ефектів:
+        # brightness -> eq=brightness=X або exposure=exposure=X
+        # contrast -> eq=contrast=X
+        # saturation -> eq=saturation=X або hue=s=X
         effect_map = {
             "ZOOM_IN": f"zoompan=z='min(zoom+0.0015,1.5)':d={int(duration * fps)}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={w}x{h}:fps={fps}",
             "ZOOM_OUT": f"zoompan=z='max(1.5-zoom*0.0015,1)':d={int(duration * fps)}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={w}x{h}:fps={fps}",
-            "ZOOM_PUNCH": f"scale={w}:{h},exposure=exposure=0.05,colorcontrast=cc=1.1",
+            "ZOOM_PUNCH": f"scale={w}:{h},eq=brightness=0.05:contrast=1.1",
             "CAMERA_SHAKE": f"crop=iw-20:ih-20:x='10+random(0)*10':y='10+random(0)*10',scale={w}:{h}",
             "SHAKE": f"crop=iw-20:ih-20:x='10+random(0)*10':y='10+random(0)*10',scale={w}:{h}",
-            "GLOW": "exposure=exposure=0.06,hue=s=1.3",
+            "GLOW": "eq=brightness=0.06:saturation=1.3",
             "FLASH": f"fade=t=in:st={start}:d=0.1,fade=t=out:st={start + 0.1}:d=0.1",
             "VIGNETTE": "vignette=PI/4",
             "RGB_SPLIT": "rgbashift=rh=-3:bh=3",
             "CHROMATIC_ABERRATION": "rgbashift=rh=-3:bh=3",
             "GLITCH": "noise=alls=20:allf=t+u",
             "LETTERBOX": "drawbox=x=0:y=0:w=iw:h=ih*0.1:c=black:t=fill,drawbox=x=0:y=ih*0.9:w=iw:h=ih*0.1:c=black:t=fill",
-            "COLOR_BOOST": "hue=s=1.3,colorcontrast=cc=1.1",
+            "COLOR_BOOST": "eq=saturation=1.3:contrast=1.1",
             "WARM": "colorbalance=rs=0.1:gs=0.05:bs=-0.1",
             "COOL": "colorbalance=rs=-0.1:gs=0:bs=0.1",
         }
@@ -484,18 +491,14 @@ class ManifestRenderer:
         """Get FFmpeg filters for hook style."""
         style = style.upper()
 
-        # Topaz FFmpeg альтернативи для eq:
-        # brightness -> exposure=exposure=X
-        # contrast -> colorcontrast=cc=X
-        # saturation -> hue=s=X
+        # FFmpeg фільтри для стилів хука:
+        # eq=brightness=X:contrast=X:saturation=X
         style_filters = {
             "CLASSIC": [
-                "exposure=exposure=0.1",
-                "hue=s=1.2",
+                "eq=brightness=0.1:saturation=1.2",
             ],
             "IMPACT": [
-                "exposure=exposure=0.15",
-                "colorcontrast=cc=1.3",
+                "eq=brightness=0.15:contrast=1.3",
                 "unsharp=5:5:1.5:5:5:0.0",
             ],
             "GLITCH": [
@@ -507,8 +510,7 @@ class ManifestRenderer:
                 "vignette=PI/5",
             ],
             "DRAMATIC": [
-                "colorcontrast=cc=1.4",
-                "exposure=exposure=-0.05",
+                "eq=contrast=1.4:brightness=-0.05",
                 "vignette=PI/3",
             ],
         }
@@ -521,27 +523,58 @@ class ManifestRenderer:
         scene_paths: List[Path],
         project_dir: Path,
     ) -> Path:
-        """Concatenate hook and all scenes."""
+        """Concatenate hook and all scenes using filter_complex."""
         output_path = project_dir / "concatenated.mp4"
 
-        # Create concat file
+        # Збираємо всі файли для конкатенації
+        input_files = []
+        if hook_path and hook_path.exists():
+            input_files.append(hook_path)
+        for path in scene_paths:
+            if path.exists():
+                input_files.append(path)
+
+        if not input_files:
+            raise Exception("No input files for concatenation")
+
+        # Зберігаємо список для інформації
         concat_file = project_dir / "concat_list.txt"
         with open(concat_file, "w") as f:
-            if hook_path and hook_path.exists():
-                f.write(f"file '{hook_path}'\n")
-            for path in scene_paths:
-                if path.exists():
-                    f.write(f"file '{path}'\n")
+            for path in input_files:
+                f.write(f"file '{path}'\n")
 
-        cmd = [
-            self.ffmpeg_path, "-y",
-            "-f", "concat",
-            "-safe", "0",
-            "-i", str(concat_file),
+        w, h = self.config.output_width, self.config.output_height
+        fps = self.config.fps
+
+        # Будуємо команду з filter_complex для нормалізації розмірів
+        cmd = [self.ffmpeg_path, "-y"]
+
+        # Додаємо всі вхідні файли
+        for path in input_files:
+            cmd.extend(["-i", str(path)])
+
+        # Будуємо filter_complex: scale кожен вхід до однакового розміру, потім concat
+        n = len(input_files)
+        filter_parts = []
+        concat_inputs = []
+
+        for i in range(n):
+            # Нормалізуємо кожен вхід
+            filter_parts.append(f"[{i}:v]scale={w}:{h}:force_original_aspect_ratio=disable,fps={fps},format=yuv420p,setsar=1[v{i}]")
+            concat_inputs.append(f"[v{i}]")
+
+        # Конкатенуємо всі нормалізовані потоки
+        filter_parts.append(f"{''.join(concat_inputs)}concat=n={n}:v=1:a=0[outv]")
+
+        filter_complex = ";".join(filter_parts)
+
+        cmd.extend([
+            "-filter_complex", filter_complex,
+            "-map", "[outv]",
             "-c:v", self.config.video_codec,
             *self._get_encoder_params(),
             str(output_path)
-        ]
+        ])
 
         await self._run_ffmpeg(cmd)
         logger.info("  Concatenated all clips")
@@ -679,8 +712,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         """Mix 5-layer audio and combine with video."""
         # Get actual video duration (may differ from manifest due to speed processing)
         import subprocess
+        # Використовуємо ffprobe з тієї ж директорії що і ffmpeg
+        ffprobe_path = Path(self.ffmpeg_path).parent / "ffprobe.exe"
+        if not ffprobe_path.exists():
+            ffprobe_path = "ffprobe"  # Fallback до системного
         result = subprocess.run([
-            "ffprobe", "-v", "error",
+            str(ffprobe_path), "-v", "error",
             "-show_entries", "format=duration",
             "-of", "default=noprint_wrappers=1:nokey=1",
             str(video_path)

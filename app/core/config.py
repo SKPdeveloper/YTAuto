@@ -252,7 +252,12 @@ class Settings(BaseSettings):
 
     TOPAZ_FFMPEG_PATH: Path = Field(
         default=Path(r"C:\Program Files\Topaz Labs LLC\Topaz Video AI\ffmpeg.exe"),
-        description="Шлях до Topaz FFmpeg executable"
+        description="Шлях до Topaz FFmpeg executable (для AI upscaling з tvai фільтрами)"
+    )
+
+    FFMPEG_PATH: Path = Field(
+        default=Path(r"C:\Users\SKP\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.0.1-full_build\bin\ffmpeg.exe"),
+        description="Шлях до повного FFmpeg (для рендерингу з субтитрами, libx264, ass фільтрами)"
     )
 
     # Frame Interpolation (Step 1: FPS Boost)
