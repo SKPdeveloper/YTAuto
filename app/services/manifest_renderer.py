@@ -725,12 +725,30 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         actual_duration = float(result.stdout.strip()) if result.returncode == 0 else manifest.total_duration
         logger.info(f"  Video duration: {actual_duration:.2f}s (manifest: {manifest.total_duration}s)")
 
+        # Find music file - check multiple possible locations
+        music_path = self._find_audio_file(project_dir, [
+            "music.mp3",
+            "music/background.mp3",
+            "music/music.mp3",
+        ])
+        if music_path:
+            logger.info(f"  Found music: {music_path.relative_to(project_dir)}")
+        else:
+            logger.warning("  No background music found")
+
+        # Find ambient/bed file
+        bed_path = self._find_audio_file(project_dir, [
+            "ambient.mp3",
+            "bed.mp3",
+            "music/ambient.mp3",
+        ])
+
         # Create audio mix configuration with actual video duration
         audio_config = self.audio_mixer.create_default_config(
             total_duration=actual_duration,
             vo_path=project_dir / "voiceover.mp3",
-            music_path=project_dir / "music.mp3",
-            bed_path=project_dir / "ambient.mp3" if (project_dir / "ambient.mp3").exists() else None,
+            music_path=music_path,
+            bed_path=bed_path,
         )
 
         # Add SFX events from manifest
@@ -809,6 +827,23 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         logger.info("  Mixed 5-layer audio")
 
         return output_path
+
+    def _find_audio_file(self, project_dir: Path, candidates: List[str]) -> Optional[Path]:
+        """
+        Find audio file from a list of candidate paths.
+
+        Args:
+            project_dir: Base project directory
+            candidates: List of relative paths to check
+
+        Returns:
+            Path to first existing file, or None if none found
+        """
+        for candidate in candidates:
+            path = project_dir / candidate
+            if path.exists():
+                return path
+        return None
 
     async def _run_ffmpeg(self, cmd: List[str]) -> None:
         """Run FFmpeg command asynchronously."""
@@ -962,7 +997,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
         # Simple concat with VO
         vo_path = project_dir / "voiceover.mp3"
-        music_path = project_dir / "music.mp3"
+        music_path = self._find_audio_file(project_dir, [
+            "music.mp3",
+            "music/background.mp3",
+            "music/music.mp3",
+        ])
 
         cmd = [self.ffmpeg_path, "-y", "-f", "concat", "-safe", "0", "-i", str(concat_file)]
 
@@ -971,7 +1010,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         if vo_path.exists():
             cmd.extend(["-i", str(vo_path)])
             audio_inputs.append("vo")
-        if music_path.exists():
+        if music_path and music_path.exists():
             cmd.extend(["-i", str(music_path)])
             audio_inputs.append("music")
 

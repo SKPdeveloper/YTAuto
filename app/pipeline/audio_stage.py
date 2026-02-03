@@ -52,23 +52,38 @@ class AudioStage(BasePipelineStage):
         """Check if audio generation should run"""
         project_dir = Path(self.project.project_dir) if hasattr(self.project, 'project_dir') else Path(settings.PROJECTS_DIR) / self.project_id
 
-        # Check if all videos exist (audio comes after video generation)
-        has_videos = all(
-            scene.video_path and Path(scene.video_path).exists()
-            for scene in self.project.scenes
-            if scene.scene_number <= 6
-        )
+        # Check if videos exist by scanning disk (more reliable than self.project.scenes)
+        # VideoStage may not update scene.video_path, so we check actual files
+        video_count = 0
+        for scene_num in range(1, 7):  # Scenes 1-6
+            scene_dir = project_dir / f"scene_{scene_num}"
+            video_path = scene_dir / "video.mp4"
+            if video_path.exists():
+                video_count += 1
 
-        # Check if audio files already exist
+        # Need at least 4 videos to proceed (allow some flexibility)
+        has_videos = video_count >= 4
+        if not has_videos:
+            logger.debug(f"[{self.project_id}] AudioStage: Only {video_count}/6 videos found, skipping")
+
+        # Check if audio files already exist (check multiple possible locations)
         voiceover_exists = (project_dir / "voiceover.mp3").exists()
-        music_exists = (project_dir / "music.mp3").exists()
+        music_exists = (
+            (project_dir / "music.mp3").exists() or
+            (project_dir / "music" / "background.mp3").exists()
+        )
 
         # Check if SFX exist (at least sonic_hook or scene SFX)
         sfx_dir = project_dir / "sfx"
         sfx_exists = sfx_dir.exists() and any(sfx_dir.glob("*.mp3"))
 
         # Run if we have videos but missing any audio asset
-        return has_videos and (not voiceover_exists or not music_exists or not sfx_exists)
+        should_run = has_videos and (not voiceover_exists or not music_exists or not sfx_exists)
+
+        if has_videos and not should_run:
+            logger.debug(f"[{self.project_id}] AudioStage: All audio exists (vo={voiceover_exists}, music={music_exists}, sfx={sfx_exists})")
+
+        return should_run
 
     async def can_resume(self) -> bool:
         """Audio generation can be resumed"""
