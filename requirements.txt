@@ -57,3 +57,23 @@ selenium>=4.16.0
 beautifulsoup4>=4.12.0  # DOM parsing
 pyautogui>=0.9.54  # Screen automation fallback for clicks
 pywin32>=306; sys_platform == "win32"  # Windows API for window activation
+
+# Human Commenter v2.0 (Playwright-based)
+# ----------------------------------------------------------------------------
+playwright>=1.40.0  # CDP-based browser automation with isTrusted events
+
+# Testing
+# ----------------------------------------------------------------------------
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+pytest-cov>=4.1.0  # Coverage reporting
+
+# Note: Human Commenter v2.0 features:
+# - BimodalDelay: Cognitive-based timing (70% fast / 30% slow modes)
+# - 5 TypoTypes: Adjacent, Skip, Double, Swap, Case errors
+# - ScrollNormalizer: Device-specific deltas (mouse 120, touchpad 3-12)
+# - ProfileSeedGenerator: Multi-factor seeds (behavior, daily, session, action)
+# - ViewportPool: Market-based resolutions (StatCounter 2024-2025)
+# - SessionState: Persistent scroll positions & visited pages
+# - RetryHandler: Human-like recovery with exponential backoff
+# - HumanBrowser: Unified interface for all biometrics

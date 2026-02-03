@@ -82,6 +82,7 @@ class ChannelConfig(BaseModel):
     timezone: str = "America/New_York"
     proxy: Optional[ProxyConfig] = None
     adspower_profile_id: Optional[str] = None  # AdsPower profile for browser automation
+    channel_keywords: List[str] = Field(default_factory=list)  # Keywords for entropy actions
     settings: ChannelSettings = Field(default_factory=ChannelSettings)
 
     class Config:

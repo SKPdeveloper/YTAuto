@@ -11,6 +11,7 @@ Orchestrates the entire publishing process:
 7. Archive project
 """
 
+import asyncio
 from pathlib import Path
 from typing import Optional, Tuple
 from datetime import datetime
@@ -27,6 +28,17 @@ from .config_manager import ConfigManager, get_config_manager
 from .metadata_cleaner import MetadataCleaner, get_metadata_cleaner
 from .youtube_api import YouTubeAPI
 from .scheduler import PublicationScheduler, create_scheduler, PublishStatus as QueueStatus
+
+# Import HumanCommenter for comment automation
+try:
+    from ..human_commenter import HumanCommenter, CommenterConfig
+    HUMAN_COMMENTER_AVAILABLE = True
+except ImportError:
+    try:
+        from human_commenter import HumanCommenter, CommenterConfig
+        HUMAN_COMMENTER_AVAILABLE = True
+    except ImportError:
+        HUMAN_COMMENTER_AVAILABLE = False
 
 
 class Publisher:
@@ -252,24 +264,38 @@ class Publisher:
             if brief.youtube.pinned_comment:
                 logger.info("Adding pinned comment...")
 
-                # Use add_and_pin_comment with AdsPower if profile configured
-                success, comment_id, error = youtube.add_and_pin_comment(
-                    video_id=video_id,
-                    comment_text=brief.youtube.pinned_comment,
-                    adspower_profile_id=channel_config.adspower_profile_id,
-                )
+                # Use HumanCommenter with AdsPower if profile configured
+                if channel_config.adspower_profile_id and HUMAN_COMMENTER_AVAILABLE:
+                    logger.info("Using HumanCommenter for human-like behavior...")
 
-                if success:
-                    status.comment_id = comment_id
+                    commenter = HumanCommenter(CommenterConfig())
+                    result = asyncio.get_event_loop().run_until_complete(
+                        commenter.add_and_pin_comment(
+                            video_id=video_id,
+                            comment_text=brief.youtube.pinned_comment,
+                            profile_id=channel_config.adspower_profile_id,
+                            channel_keywords=channel_config.channel_keywords or None,
+                            expected_region=channel_config.region,
+                            expected_timezone=channel_config.timezone,
+                        )
+                    )
 
-                    self.config.append_history_event(PublishEvent(
-                        event="comment_pinned",
-                        project_id=project_id,
-                        video_id=video_id,
-                        comment_id=comment_id,
-                    ))
+                    if result.success:
+                        status.comment_id = "human_commenter"
+
+                        self.config.append_history_event(PublishEvent(
+                            event="comment_pinned",
+                            project_id=project_id,
+                            video_id=video_id,
+                            comment_id="human_commenter",
+                        ))
+                    else:
+                        logger.warning(f"Failed to add/pin comment: {result.error}")
                 else:
-                    logger.warning(f"Failed to add comment: {error}")
+                    if not HUMAN_COMMENTER_AVAILABLE:
+                        logger.warning("HumanCommenter not available, skipping comment")
+                    else:
+                        logger.warning("No AdsPower profile configured, skipping comment")
 
             # Step 8: Update status
             status.status = (
