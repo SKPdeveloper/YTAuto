@@ -88,6 +88,9 @@ class PipelineStage(str, Enum):
     # Етап 7: Rendering (v7.4)
     RENDER = "render"                              # Manifest-based FFmpeg rendering
 
+    # Етап 8: Очікування підтвердження перед Topaz
+    AWAITING_RENDER_APPROVAL = "awaiting_render_approval"  # Чекає підтвердження після монтажу
+
     # Legacy stages (for backwards compatibility)
     ASSEMBLY = "assembly"                          # Збірка фінального відео (legacy)
     TOPAZ_FPS = "topaz_fps"                        # FPS інтерполяція

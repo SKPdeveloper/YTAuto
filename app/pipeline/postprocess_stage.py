@@ -182,8 +182,8 @@ class PostProcessStage(BasePipelineStage):
         # Notify clients
         await self.notifier.send_project_completed(
             project_id=self.project_id,
-            video_path=final_path,
-            thumbnail_path=thumbnail_path
+            title=self.project.title or "Video Complete",
+            final_video_path=final_path
         )
 
         # PUSH: Success notification
@@ -277,8 +277,8 @@ class PostProcessStage(BasePipelineStage):
 
         await self.notifier.send_project_completed(
             project_id=self.project_id,
-            video_path=final_path,
-            thumbnail_path=thumbnail_path
+            title=self.project.title or "Video Complete",
+            final_video_path=final_path
         )
 
         return StageResult(

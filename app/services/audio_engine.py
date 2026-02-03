@@ -284,6 +284,79 @@ class AudioEngine:
                 logger.info(f"Waiting {wait_time}s before retry...")
                 await asyncio.sleep(wait_time)
 
+    async def generate_voiceover_with_timestamps(
+        self,
+        text: str,
+        voice_settings: Optional[VoiceoverSettings] = None,
+        voice_id: Optional[str] = None,
+    ) -> tuple[bytes, dict]:
+        """
+        Generate voiceover with character-level timestamps from ElevenLabs.
+
+        Returns:
+            Tuple of (audio_bytes, alignment_data)
+            alignment_data contains:
+            - characters: list of characters
+            - character_start_times_seconds: list of start times
+            - character_end_times_seconds: list of end times
+        """
+        from elevenlabs import AsyncElevenLabs, VoiceSettings
+        import base64
+
+        ssml_text = self._convert_pause_markers(text)
+
+        raw_voice_id = voice_id or (
+            voice_settings.voice_id if voice_settings else None
+        ) or self.default_voice_id
+        effective_voice_id = await self._resolve_voice_id(raw_voice_id)
+
+        if voice_settings:
+            sanitized_stability = self._sanitize_stability_for_model(
+                voice_settings.stability, self.model_id
+            )
+            elevenlabs_settings = VoiceSettings(
+                stability=sanitized_stability,
+                similarity_boost=voice_settings.similarity_boost,
+                style=voice_settings.style,
+                use_speaker_boost=voice_settings.speaker_boost,
+            )
+        else:
+            elevenlabs_settings = None
+
+        logger.info(f"Generating voiceover with timestamps...")
+        logger.info(f"  Voice ID: {effective_voice_id}")
+        logger.info(f"  Text length: {len(text)} chars")
+
+        retries = 0
+        while retries <= self.max_retries:
+            try:
+                client = AsyncElevenLabs(api_key=self.api_key)
+
+                response = await client.text_to_speech.convert_with_timestamps(
+                    text=ssml_text,
+                    voice_id=effective_voice_id,
+                    model_id=self.model_id,
+                    output_format="mp3_44100_128",
+                    voice_settings=elevenlabs_settings,
+                )
+
+                audio_bytes = base64.b64decode(response.audio_base_64)
+                alignment_data = {
+                    'characters': response.alignment.characters,
+                    'character_start_times_seconds': response.alignment.character_start_times_seconds,
+                    'character_end_times_seconds': response.alignment.character_end_times_seconds,
+                }
+
+                logger.success(f"Voiceover with timestamps: {len(audio_bytes)} bytes, {len(alignment_data['characters'])} chars aligned")
+                return audio_bytes, alignment_data
+
+            except Exception as e:
+                retries += 1
+                logger.error(f"Voiceover+timestamps error (attempt {retries}/{self.max_retries + 1}): {e}")
+                if retries > self.max_retries:
+                    raise
+                await asyncio.sleep(5 * retries)
+
     async def generate_and_save_voiceover(
         self,
         text: str,
@@ -365,6 +438,378 @@ class AudioEngine:
             output_path=output_path,
             voice_settings=voiceover_config.settings,
         )
+
+    async def generate_voiceover_and_subtitles(
+        self,
+        voiceover_config: VoiceoverConfig,
+        project_dir: Path,
+        hook_offset: float = 0.3,
+    ) -> tuple[Path, Path, Path, Path]:
+        """
+        Generate voiceover with timestamps and create synced subtitles.
+
+        This is the RECOMMENDED method for generating voiceover - it ensures
+        subtitles are perfectly synced with the audio.
+
+        Args:
+            voiceover_config: VoiceoverConfig from project
+            project_dir: Project directory
+            hook_offset: Time offset for hook at video start (default 0.3s)
+
+        Returns:
+            Tuple of (voiceover_path, alignment_path, subtitles_path, timing_path)
+        """
+        import json
+        import re
+
+        logger.info(f"Generating voiceover with synced subtitles...")
+        logger.info(f"  Script: {voiceover_config.full_script[:60]}...")
+        logger.info(f"  Hook offset: {hook_offset}s")
+
+        # Generate voiceover with timestamps
+        audio_bytes, alignment = await self.generate_voiceover_with_timestamps(
+            text=voiceover_config.full_script,
+            voice_settings=voiceover_config.settings,
+        )
+
+        # Save audio
+        voiceover_path = project_dir / "voiceover.mp3"
+        voiceover_path.write_bytes(audio_bytes)
+        logger.success(f"Voiceover saved: {voiceover_path}")
+
+        # Save alignment (character-level)
+        alignment_path = project_dir / "vo_alignment.json"
+        with open(alignment_path, 'w', encoding='utf-8') as f:
+            json.dump(alignment, f, indent=2, ensure_ascii=False)
+        logger.success(f"Alignment saved: {alignment_path}")
+
+        # Generate subtitles from alignment (Netflix-style, word-by-word)
+        subtitles_path = project_dir / "subtitles.ass"
+        self._generate_subtitles_from_alignment(alignment, output_path=subtitles_path, project_dir=project_dir, hook_offset=hook_offset)
+        logger.success(f"Subtitles saved: {subtitles_path}")
+
+        # Generate voiceover_timing.json for GEN3b (scene-level segments)
+        timing_path = project_dir / "voiceover_timing.json"
+        self._generate_voiceover_timing(alignment, project_dir, timing_path, hook_offset)
+        logger.success(f"Timing saved: {timing_path}")
+
+        return voiceover_path, alignment_path, subtitles_path, timing_path
+
+    def _generate_subtitles_from_alignment(
+        self,
+        alignment: dict,
+        output_path: Path,
+        project_dir: Path = None,
+        hook_offset: float = 0.3,
+    ) -> None:
+        """
+        Generate Netflix-style ASS subtitle file with WORD-BY-WORD display.
+
+        Uses ElevenLabs character-level timestamps for precise word timing.
+        Style: Montserrat-Bold, 72px, white, shadow 2px, no stroke, UPPERCASE.
+
+        Args:
+            alignment: ElevenLabs alignment data with character timestamps
+            output_path: Path to save subtitles.ass
+            project_dir: Project directory (to find easter_egg scene)
+            hook_offset: Time offset for hook at video start (default 0.3s)
+        """
+        import re
+        import json
+
+        chars = alignment['characters']
+        starts = alignment['character_start_times_seconds']
+        ends = alignment['character_end_times_seconds']
+
+        # Find easter egg scene number from project_brief
+        easter_egg_scene = None
+        if project_dir:
+            project_brief_path = project_dir / "project_brief.json"
+            if project_brief_path.exists():
+                with open(project_brief_path, 'r', encoding='utf-8') as f:
+                    brief = json.load(f)
+                # Easter egg is usually in engagement section
+                easter_egg_info = brief.get('engagement', {}).get('easter_egg', {})
+                if easter_egg_info:
+                    # Try to find scene number from location or scene field
+                    easter_egg_scene = easter_egg_info.get('scene_number') or easter_egg_info.get('scene')
+                    if not easter_egg_scene:
+                        # Default to scene 4 if not specified
+                        easter_egg_scene = 4
+                    logger.info(f"  Easter egg detected in scene {easter_egg_scene}")
+
+        # Parse words with their exact timestamps from character-level data
+        words = []
+        current_word = ''
+        word_start = 0.0
+        word_end = 0.0
+        in_tag = False  # Track if we're inside a [tag]
+
+        for i, char in enumerate(chars):
+            # Handle style tags like [whispers], [pause], etc.
+            if char == '[':
+                in_tag = True
+                continue
+            if char == ']':
+                in_tag = False
+                continue
+            if in_tag:
+                continue
+
+            # Skip XML-style tags
+            if char == '<' or char == '>':
+                continue
+
+            # Start new word
+            if current_word == '' and char not in ' \n\t':
+                word_start = starts[i]
+
+            # Build word
+            if char not in ' \n\t':
+                current_word += char
+                word_end = ends[i]
+            else:
+                # End of word - save it
+                if current_word and len(current_word) >= 1:
+                    # Remove punctuation for cleaner display but keep word
+                    display_word = current_word.rstrip('.,!?;:')
+                    if display_word:
+                        words.append({
+                            'word': display_word.upper(),  # UPPERCASE
+                            'start': word_start + hook_offset,
+                            'end': word_end + hook_offset,
+                        })
+                current_word = ''
+
+        # Don't forget last word
+        if current_word and len(current_word) >= 1:
+            display_word = current_word.rstrip('.,!?;:')
+            if display_word:
+                words.append({
+                    'word': display_word.upper(),
+                    'start': word_start + hook_offset,
+                    'end': word_end + hook_offset,
+                })
+
+        # ================================================================
+        # GROUP SHORT WORDS: Merge articles/prepositions with next word
+        # Rule: the/a/an/is/are/was/were/in/on/at/to/of/for/and/but/or/do/not/has/had + next word = one chunk
+        # ================================================================
+        MERGE_WORDS = {
+            'THE', 'A', 'AN', 'IS', 'ARE', 'WAS', 'WERE',
+            'IN', 'ON', 'AT', 'TO', 'OF', 'FOR', 'BY', 'WITH',
+            'AND', 'BUT', 'OR', 'SO', 'DO', 'NOT', "DON'T",
+            'HAS', 'HAD', 'HAVE', 'WILL', 'BE', 'IT', "IT'S",
+            'I', 'YOU', 'WE', 'HE', 'SHE', 'THEY',
+            'THIS', 'THAT', 'THESE', 'THOSE',
+            'MY', 'YOUR', 'OUR', 'HIS', 'HER', 'ITS', 'THEIR',
+        }
+
+        grouped_words = []
+        i = 0
+        while i < len(words):
+            current = words[i]
+
+            # Check if current word should be merged with next
+            if current['word'] in MERGE_WORDS and i + 1 < len(words):
+                next_word = words[i + 1]
+                # Merge: combine text, use start of first, end of last
+                grouped_words.append({
+                    'word': f"{current['word']} {next_word['word']}",
+                    'start': current['start'],
+                    'end': next_word['end'],
+                })
+                i += 2  # Skip both words
+            else:
+                grouped_words.append(current)
+                i += 1
+
+        words = grouped_words
+        logger.info(f"  Grouped into {len(words)} subtitle chunks (merged articles/prepositions)")
+
+        # Helper function for ASS time format
+        def time_to_ass(seconds: float) -> str:
+            h = int(seconds // 3600)
+            m = int((seconds % 3600) // 60)
+            s = int(seconds % 60)
+            cs = int((seconds % 1) * 100)
+            return f'{h}:{m:02d}:{s:02d}.{cs:02d}'
+
+        # Viral/TikTok style ASS header
+        # Montserrat Black, 76px, white text, black stroke 3px
+        # OutlineColour: &H00000000 = solid black
+        # BorderStyle: 1 = outline+shadow
+        # Outline: 3 = 3px stroke
+        # Shadow: 0 = no shadow (stroke only)
+        # Alignment: 2 = bottom-center, 8 = top-center
+        #
+        # YOUTUBE SAFE ZONES (1080x1920 vertical):
+        # - Bottom: 350px margin (avoid like/comment/share/subscribe buttons)
+        # - Top: 200px margin (avoid video title, channel name overlay)
+        ass_content = '''[Script Info]
+Title: Glaze City Subtitles
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Bottom,Montserrat Black,76,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,3,0,2,50,50,350,1
+Style: Top,Montserrat Black,76,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,3,0,8,50,50,200,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+'''
+
+        # Load voiceover_timing.json to map words to scenes
+        scene_timings = []
+        if project_dir:
+            timing_path = project_dir / "voiceover_timing.json"
+            if timing_path.exists():
+                with open(timing_path, 'r', encoding='utf-8') as f:
+                    timing_data = json.load(f)
+                for seg in timing_data.get('segments', []):
+                    scene_timings.append({
+                        'scene': seg.get('scene_number', 0),
+                        'start': seg.get('start_time', 0) + hook_offset,
+                        'end': seg.get('end_time', 0) + hook_offset,
+                    })
+
+        def get_scene_for_time(t: float) -> int:
+            """Find which scene a timestamp belongs to."""
+            for st in scene_timings:
+                if st['start'] <= t <= st['end']:
+                    return st['scene']
+            return 0
+
+        for w in words:
+            start = time_to_ass(w['start'])
+            end = time_to_ass(w['end'])
+            word = w['word']
+
+            # Determine position based on scene
+            word_scene = get_scene_for_time(w['start'])
+
+            # Use Top style for easter egg scene, Bottom for others
+            if easter_egg_scene and word_scene == easter_egg_scene:
+                style = "Top"
+            else:
+                style = "Bottom"
+
+            ass_content += f'Dialogue: 0,{start},{end},{style},,0,0,0,,{word}\n'
+
+        output_path.write_text(ass_content, encoding='utf-8')
+        logger.info(f"  Generated {len(words)} word-by-word subtitles (Netflix style, UPPERCASE)")
+
+    def _generate_voiceover_timing(
+        self,
+        alignment: dict,
+        project_dir: Path,
+        output_path: Path,
+        hook_offset: float = 0.3,
+    ) -> None:
+        """
+        Generate voiceover_timing.json for GEN3b from ElevenLabs alignment data.
+
+        This file maps sentences to scene numbers based on project_brief.json.
+        GEN3b uses this for accurate subtitle timing in the manifest.
+
+        Format:
+        {
+            "segments": [
+                {"scene_number": 1, "start_time": 0.0, "end_time": 2.5, "text": "..."},
+                ...
+            ]
+        }
+        """
+        import json
+        import re
+
+        chars = alignment['characters']
+        starts = alignment['character_start_times_seconds']
+        ends = alignment['character_end_times_seconds']
+
+        # Parse sentences from alignment (same logic as subtitles)
+        sentences = []
+        current_text = ''
+        sent_start = 0.0
+
+        for i, char in enumerate(chars):
+            if current_text == '':
+                sent_start = starts[i]
+            current_text += char
+
+            if char in '.!?':
+                sent_end = ends[i]
+                # Clean text - remove style tags like [whispers], [pause], [excited]
+                clean_text = re.sub(r'\[[^\]]+\]', '', current_text).strip()
+                if len(clean_text) > 2:
+                    sentences.append({
+                        'text': clean_text,
+                        'start': sent_start,  # No hook offset here - GEN3b adds it
+                        'end': sent_end,
+                    })
+                current_text = ''
+
+        # Load project_brief to get scene voiceover segments
+        project_brief_path = project_dir / "project_brief.json"
+        scene_vo_segments = []
+
+        if project_brief_path.exists():
+            with open(project_brief_path, 'r', encoding='utf-8') as f:
+                project_brief = json.load(f)
+
+            for scene in project_brief.get('scenes', []):
+                scene_num = scene.get('scene_number', 0)
+                vo_segment = scene.get('voiceover_segment', '') or scene.get('voiceover', '')
+                if vo_segment:
+                    # Clean the segment for matching
+                    clean_vo = re.sub(r'\[[^\]]+\]', '', vo_segment).strip()
+                    clean_vo = re.sub(r'<[^>]+>', '', clean_vo).strip()  # Remove XML tags too
+                    scene_vo_segments.append({
+                        'scene_number': scene_num,
+                        'text': clean_vo,
+                    })
+
+        # Match sentences to scenes
+        segments = []
+        current_scene_idx = 0
+
+        for sent in sentences:
+            # Find which scene this sentence belongs to
+            scene_number = 1  # Default
+
+            if scene_vo_segments:
+                # Try to match by checking if sentence text is part of scene voiceover
+                for idx, scene_vo in enumerate(scene_vo_segments[current_scene_idx:], start=current_scene_idx):
+                    # Check if sentence is contained in this scene's voiceover
+                    # Use fuzzy matching - first few words
+                    sent_words = sent['text'].split()[:3]
+                    if any(word.lower() in scene_vo['text'].lower() for word in sent_words if len(word) > 2):
+                        scene_number = scene_vo['scene_number']
+                        current_scene_idx = idx
+                        break
+                else:
+                    # If no match found, use last known scene or increment
+                    if segments:
+                        scene_number = segments[-1]['scene_number']
+                    else:
+                        scene_number = 1
+
+            segments.append({
+                'scene_number': scene_number,
+                'start_time': sent['start'],
+                'end_time': sent['end'],
+                'text': sent['text'],
+            })
+
+        # Save timing file
+        timing_data = {'segments': segments}
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(timing_data, f, indent=2, ensure_ascii=False)
+
+        logger.info(f"  Generated voiceover_timing.json with {len(segments)} segments for GEN3b")
 
     async def list_voices(self) -> List[Dict[str, Any]]:
         """

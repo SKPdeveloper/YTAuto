@@ -22,6 +22,7 @@ from datetime import datetime
 sys.path.insert(0, str(Path(__file__).parent))
 
 from app.services.prompt_router import PromptRouter, DEBUG_DIR
+from app.services.glaze_parser import save_merged_project_brief
 from app.utils.logger import logger
 
 
@@ -29,7 +30,7 @@ async def run_script_only(topic: str = "FREE_TOPIC", num_scenes: int = 6):
     """Generate script only (GEN1 + GEN2 + MERGE) without visual generation."""
 
     print("\n" + "=" * 70)
-    print("SCRIPT-ONLY PIPELINE")
+    print("SCRIPT-ONLY PIPELINE (DEEP MERGE)")
     print("=" * 70)
     print(f"Topic: {topic}")
     print(f"Scenes: {num_scenes}")
@@ -42,15 +43,14 @@ async def run_script_only(topic: str = "FREE_TOPIC", num_scenes: int = 6):
     project_dir = Path(__file__).parent / "projects" / project_id
     project_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info(f"[1/3] Initializing PromptRouter...")
+    logger.info(f"[1/4] Initializing PromptRouter...")
     router = PromptRouter()
 
-    logger.info(f"[2/3] Running GEN1 + GEN2 pipeline...")
-    logger.info(f"  This will generate creative brief with {num_scenes} scenes")
+    logger.info(f"[2/4] Running GEN1...")
 
     try:
-        # Run the two-stage pipeline
-        project = await router.generate_full_project(
+        # Run GEN1 separately
+        gen1_output = await router.run_gen1(
             topic=topic,
             num_scenes=num_scenes,
             style="cinematic food fantasy",
@@ -58,16 +58,34 @@ async def run_script_only(topic: str = "FREE_TOPIC", num_scenes: int = 6):
             project_id=project_id,
         )
 
-        if not project:
-            logger.error("Pipeline failed - no project generated")
+        if not gen1_output:
+            logger.error("GEN1 failed - no output generated")
             return None
 
-        # Save brief to project directory
-        brief_path = project_dir / "project_brief.json"
-        brief_dict = project.model_dump(mode='json')
-        brief_path.write_text(json.dumps(brief_dict, indent=2, ensure_ascii=False), encoding='utf-8')
+        logger.info(f"[3/4] Running GEN2...")
 
-        logger.success(f"[3/3] Brief generated successfully!")
+        # Create delivery payload and run GEN2
+        payload = router.create_delivery_payload(gen1_output, project_id)
+        gen2_output = await router.run_gen2(payload, project_id)
+
+        if not gen2_output:
+            logger.error("GEN2 failed - no output generated")
+            return None
+
+        logger.info(f"[4/4] Deep merging GEN1 + GEN2...")
+
+        # ЗАЛІЗОБЕТОННИЙ DEEP MERGE - напряму з dicts
+        brief_path = save_merged_project_brief(
+            gen1_dict=gen1_output.model_dump(),
+            gen2_dict=gen2_output.model_dump(),
+            project_id=project_id,
+            output_dir=project_dir
+        )
+
+        # Also create GlazeCityProject for summary display (optional)
+        project = router.merge_outputs(gen1_output, gen2_output, project_id)
+
+        logger.success(f"Brief generated successfully with DEEP MERGE!")
 
         # Find GEN1 and GEN2 debug files
         gen1_files = sorted(DEBUG_DIR.glob(f"GEN1_{project_id}*.txt"), reverse=True)

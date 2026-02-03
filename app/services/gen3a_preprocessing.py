@@ -143,10 +143,20 @@ class Gen3aPreprocessor:
         logger.info(f"  Prepared {len(prepared_video_paths)}/{len(video_paths)} videos")
 
         # ====================================================================
-        # STEP 2: Generate beats.json
+        # STEP 2: Generate beats.json (or copy from existing beat_analysis.json)
         # ====================================================================
-        logger.info("Step 2/4: Analyzing music beats...")
-        if music_path and music_path.exists():
+        logger.info("Step 2/4: Preparing music beats...")
+
+        # Check if beat_analysis.json already exists from orchestrator STEP 1
+        existing_beats_path = project_dir / "music" / "beat_analysis.json"
+        if existing_beats_path.exists():
+            # Copy existing analysis instead of re-analyzing
+            import shutil
+            shutil.copy2(existing_beats_path, beats_path)
+            with open(beats_path, 'r', encoding='utf-8') as f:
+                beats_data = json.load(f)
+            logger.success(f"  beats.json copied from existing beat_analysis.json (BPM={beats_data.get('bpm', 'N/A')})")
+        elif music_path and music_path.exists():
             try:
                 beats_data = await self._analyze_beats(music_path)
                 with open(beats_path, 'w', encoding='utf-8') as f:

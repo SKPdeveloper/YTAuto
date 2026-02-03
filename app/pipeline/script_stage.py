@@ -14,7 +14,7 @@ from loguru import logger
 from app.pipeline.base import BasePipelineStage, StageResult, StageStatus
 from app.api.schemas import ProjectData, SceneData, SceneStatus, PipelineStage
 from app.services.prompt_router import PromptRouter
-from app.services.glaze_parser import save_project_brief
+from app.services.glaze_parser import save_project_brief, save_merged_project_brief
 from app.core.paths import get_project_path
 from app.utils.yt_metadata_parser import parse_gen1_to_yt_file
 
@@ -301,10 +301,17 @@ class ScriptStage(BasePipelineStage):
 
             await self.notify_progress(90, "Saving project brief...")
 
-            # Save project_brief.json
+            # Save project_brief.json - ЗАЛІЗОБЕТОННИЙ DEEP MERGE
             project_dir = get_project_path(self.project.project_id)
             project_dir.mkdir(parents=True, exist_ok=True)
-            save_project_brief(glaze_project, project_dir)
+
+            # Deep merge GEN1 + GEN2 dicts напряму, без втрат даних
+            save_merged_project_brief(
+                gen1_dict=gen1_output.model_dump(),
+                gen2_dict=gen2_output.model_dump(),
+                project_id=self.project.project_id,
+                output_dir=project_dir
+            )
 
             # Also save GEN1 and GEN2 outputs separately for debugging
             await self._save_gen_outputs(project_dir, gen1_output, gen2_output)

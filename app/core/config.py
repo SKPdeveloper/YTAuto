@@ -83,6 +83,17 @@ class Settings(BaseSettings):
         description="Replicate API token for music generation"
     )
 
+    # Telegram Bot
+    TELEGRAM_BOT_TOKEN: str = Field(
+        default="",
+        description="Telegram Bot token from @BotFather"
+    )
+
+    TELEGRAM_CHAT_ID: str = Field(
+        default="",
+        description="Telegram chat ID for notifications"
+    )
+
 
     # ========================================================================
     # AI MODELS CONFIGURATION

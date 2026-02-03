@@ -1712,16 +1712,19 @@ class ProjectOrchestrator:
 
     async def _run_post_processing(self, project: ProjectData, skip_voiceover: bool = False):
         """
-        Запускає повний v7.4 пайплайн пост-обробки:
+        Запускає повний v7.5 пайплайн пост-обробки:
 
         STEP 0: Music Generation (Replicate)
         STEP 1: Beat Analysis (librosa)
-        STEP 2: Voiceover Generation (ElevenLabs)
-        STEP 3: GEN3a Video Analysis (Gemini)
-        STEP 4: GEN3b Manifest Generation (Gemini)
-        STEP 5: SFX Generation (ElevenLabs)
+        STEP 2: Voiceover + Subtitles Generation (ElevenLabs with timestamps)
+        STEP 3: SFX Generation (ElevenLabs Sound Effects)
+        STEP 4: GEN3a Video Analysis (Gemini)
+        STEP 5: GEN3b Manifest Generation (Gemini)
         STEP 6: Proper Render with effects and audio mixing (FFmpeg)
         STEP 7: Topaz Enhancement (optional)
+
+        Note: All audio assets (music, voiceover, subtitles, SFX) are generated
+        BEFORE GEN3a so that GEN3a has all raw files available for analysis.
 
         Args:
             project: ProjectData з усіма схваленими сценами
@@ -1797,16 +1800,17 @@ class ProjectOrchestrator:
             logger.info(f"[POST] Step 1: Beat analysis already exists: {beat_analysis_path}")
 
         # ====================================================================
-        # STEP 2: Generate voiceover
+        # STEP 2: Generate voiceover + subtitles (synced from ElevenLabs timestamps)
         # ====================================================================
         if not skip_voiceover:
             await self._update_stage(project, PipelineStage.VOICEOVER)
 
             try:
                 voiceover_path = project_dir / "voiceover.mp3"
+                subtitles_path = project_dir / "subtitles.ass"
 
                 if not voiceover_path.exists() and 'voiceover' in project_data:
-                    logger.info("[POST] Step 2: Generating voiceover...")
+                    logger.info("[POST] Step 2: Generating voiceover with synced subtitles...")
 
                     from app.services.glaze_models import VoiceoverSettings, VoiceoverConfig
 
@@ -1818,13 +1822,23 @@ class ProjectOrchestrator:
                     )
 
                     audio_engine = AudioEngine()
-                    voiceover_path = await audio_engine.generate_project_voiceover(
+                    voiceover_path, alignment_path, subtitles_path, timing_path = await audio_engine.generate_voiceover_and_subtitles(
                         voiceover_config=voiceover_config,
                         project_dir=project_dir,
+                        hook_offset=0.3,  # Standard hook offset
                     )
-                    logger.success(f"[POST] Voiceover generated: {voiceover_path}")
+                    logger.success(f"[POST] Voiceover + subtitles generated (synced from ElevenLabs timestamps)")
+                    logger.success(f"[POST]   Audio: {voiceover_path}")
+                    logger.success(f"[POST]   Alignment: {alignment_path}")
+                    logger.success(f"[POST]   Subtitles: {subtitles_path}")
+                    logger.success(f"[POST]   Timing (for GEN3b): {timing_path}")
                 elif voiceover_path.exists():
                     logger.info(f"[POST] Step 2: Voiceover already exists: {voiceover_path}")
+                    if subtitles_path.exists():
+                        logger.info(f"[POST] Step 2: Subtitles already exist: {subtitles_path}")
+                    timing_path = project_dir / "voiceover_timing.json"
+                    if timing_path.exists():
+                        logger.info(f"[POST] Step 2: Timing already exists: {timing_path}")
                 else:
                     logger.warning("[POST] No voiceover config found, skipping")
 
@@ -1837,9 +1851,74 @@ class ProjectOrchestrator:
                 raise
 
         # ====================================================================
-        # STEP 3-6: Run v7.4 Pipeline (GEN3a → GEN3b → SFX → Render)
+        # STEP 3: Generate SFX (ElevenLabs Sound Effects)
         # ====================================================================
-        logger.info("[POST] Steps 3-6: Running v7.4 Pipeline (GEN3a → GEN3b → Render)...")
+        sfx_dir = project_dir / "sfx"
+        sfx_dir.mkdir(parents=True, exist_ok=True)
+
+        logger.info("[POST] Step 3: Generating SFX...")
+        try:
+            audio_engine = AudioEngine()
+            sfx_count = 0
+
+            # Generate sonic hook (intro sound)
+            sonic_hook_config = project_data.get("audio", {}).get("sonic_hook", {})
+            if sonic_hook_config and sonic_hook_config.get("description"):
+                hook_path = sfx_dir / "sonic_hook.mp3"
+                if not hook_path.exists():
+                    logger.info(f"[POST] Generating sonic hook: {sonic_hook_config['description'][:40]}...")
+                    await audio_engine.generate_and_save_sfx(
+                        text=sonic_hook_config["description"],
+                        output_path=hook_path,
+                        duration_seconds=2.0,
+                        prompt_influence=0.5,
+                    )
+                    sfx_count += 1
+                else:
+                    logger.info(f"[POST] Sonic hook already exists: {hook_path}")
+
+            # Generate SFX for each scene
+            scenes = project_data.get("scenes", [])
+            for scene in scenes:
+                scene_num = scene.get("scene_number", 0)
+
+                # Get SFX description from scene
+                sfx_desc = (
+                    scene.get("audio_sfx") or
+                    scene.get("audio_moment") or
+                    ""
+                )
+
+                if not sfx_desc or sfx_desc.lower() in ["", "none", "n/a"]:
+                    continue
+
+                sfx_path = sfx_dir / f"scene_{scene_num}_sfx.mp3"
+
+                if sfx_path.exists():
+                    logger.info(f"[POST] Scene {scene_num} SFX already exists")
+                    continue
+
+                logger.info(f"[POST] Generating SFX for scene {scene_num}: {sfx_desc[:40]}...")
+                try:
+                    await audio_engine.generate_and_save_sfx(
+                        text=sfx_desc,
+                        output_path=sfx_path,
+                        duration_seconds=3.0,
+                        prompt_influence=0.4,
+                    )
+                    sfx_count += 1
+                except Exception as e:
+                    logger.warning(f"[POST] Failed to generate SFX for scene {scene_num}: {e}")
+                    continue
+
+            logger.success(f"[POST] Generated {sfx_count} new SFX files")
+        except Exception as e:
+            logger.warning(f"[POST] SFX generation error: {e}, continuing without SFX")
+
+        # ====================================================================
+        # STEP 4-7: Run v7.4 Pipeline (GEN3a → GEN3b → Render → Topaz)
+        # ====================================================================
+        logger.info("[POST] Steps 4-7: Running v7.4 Pipeline (GEN3a → GEN3b → Render)...")
 
         try:
             # This runs GEN3a → GEN3b → Render chain
@@ -1878,9 +1957,13 @@ class ProjectOrchestrator:
             logger.success(f"[FALLBACK] Video assembled: {final_video_path}")
             await self._mark_stage_complete(project, PipelineStage.ASSEMBLY)
 
-            # Send to Topaz if enabled
+            # After assembly - wait for approval before Topaz
             if settings.TOPAZ_ENABLED and final_video_path.exists():
-                await self._add_to_topaz_queue(project, final_video_path)
+                await self._update_stage(project, PipelineStage.AWAITING_RENDER_APPROVAL)
+                project.status = ProjectStatus.AWAITING_APPROVAL
+                await self._save_project_state(project)
+                logger.info(f"[FALLBACK] Assembly complete! Waiting for approval before Topaz...")
+                logger.info(f"[FALLBACK] Review video at: {final_video_path}")
             else:
                 await self._update_stage(project, PipelineStage.COMPLETED)
                 await self._mark_stage_complete(project, PipelineStage.COMPLETED)
@@ -2369,6 +2452,78 @@ class ProjectOrchestrator:
             "is_running": self.topaz_queue.is_running,
         }
 
+    async def approve_and_run_topaz(self, project_id: str) -> bool:
+        """
+        Approve rendered video and start Topaz upscaling.
+
+        Call this after reviewing final.mp4 to confirm it's ready for upscaling.
+        This prevents wasting time upscaling videos with montage issues.
+
+        Args:
+            project_id: ID of the project to approve
+
+        Returns:
+            True if Topaz started successfully, False otherwise
+        """
+        project = self.active_projects.get(project_id)
+
+        if not project:
+            project = await self.load_project_from_disk(project_id)
+
+        if not project:
+            logger.error(f"Project {project_id} not found")
+            return False
+
+        # Check if project is in the right state
+        if project.current_stage != PipelineStage.AWAITING_RENDER_APPROVAL:
+            logger.warning(f"Project {project_id} is not awaiting render approval (stage: {project.current_stage})")
+            return False
+
+        # Find final video
+        final_video_path = project.project_dir / "final.mp4"
+        if not final_video_path.exists():
+            final_video_path = project.project_dir / "final_video.mp4"
+
+        if not final_video_path.exists():
+            logger.error(f"No final video found in {project.project_dir}")
+            return False
+
+        logger.info(f"[{project_id}] Render approved! Starting Topaz upscaling...")
+
+        # Start Topaz
+        await self._add_to_topaz_queue(project, final_video_path)
+
+        return True
+
+    async def reject_render(self, project_id: str) -> bool:
+        """
+        Reject rendered video (e.g., due to montage issues).
+
+        This marks the project as failed and allows re-running render.
+
+        Args:
+            project_id: ID of the project to reject
+
+        Returns:
+            True if rejected successfully
+        """
+        project = self.active_projects.get(project_id)
+
+        if not project:
+            project = await self.load_project_from_disk(project_id)
+
+        if not project:
+            logger.error(f"Project {project_id} not found")
+            return False
+
+        project.status = ProjectStatus.PAUSED
+        project.current_stage = PipelineStage.RENDER
+        project.error_message = "Render rejected by user - needs re-render"
+        await self._save_project_state(project)
+
+        logger.warning(f"[{project_id}] Render rejected. Project paused at RENDER stage.")
+        return True
+
     # ========================================================================
     # STATE MANAGEMENT
     # ========================================================================
@@ -2511,13 +2666,17 @@ class ProjectOrchestrator:
                 await self._mark_stage_complete(project, PipelineStage.RENDER)
                 logger.success(f"[{project.project_id}] Render complete: {result.message}")
 
-                # Check if Topaz enhancement is enabled
+                # After render - wait for approval before Topaz
+                # This prevents upscaling videos with montage issues
                 if settings.TOPAZ_ENABLED:
-                    final_video_path = Path(project.project_dir) / "final_video.mp4"
-                    if final_video_path.exists():
-                        await self._add_to_topaz_queue(project, final_video_path)
+                    await self._update_stage(project, PipelineStage.AWAITING_RENDER_APPROVAL)
+                    project.status = ProjectStatus.AWAITING_APPROVAL
+                    await self._save_project_state(project)
+                    logger.info(f"[{project.project_id}] Render complete! Waiting for approval before Topaz upscaling...")
+                    logger.info(f"[{project.project_id}] Review video at: {project.project_dir / 'final.mp4'}")
+                    logger.info(f"[{project.project_id}] To approve and run Topaz, use: approve_and_run_topaz('{project.project_id}')")
                 else:
-                    # Mark as completed
+                    # Mark as completed (no Topaz)
                     await self._update_stage(project, PipelineStage.COMPLETED)
                     await self._mark_stage_complete(project, PipelineStage.COMPLETED)
                     project.status = ProjectStatus.COMPLETED

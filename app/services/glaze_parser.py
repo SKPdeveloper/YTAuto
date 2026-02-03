@@ -179,6 +179,105 @@ def save_project_brief(project: GlazeCityProject, output_dir: Path) -> Path:
     return brief_path
 
 
+# =============================================================================
+# ЗАЛІЗОБЕТОННЕ РІШЕННЯ: Deep Merge GEN1 + GEN2
+# =============================================================================
+
+def deep_merge(base: dict, override: dict) -> dict:
+    """
+    Рекурсивно об'єднує два dict. Override має пріоритет.
+
+    Правила:
+    - Якщо обидва значення dict → рекурсивний merge
+    - Якщо ключ "scenes" → спеціальний merge по scene_number
+    - Інакше override перезаписує base (якщо не None)
+    """
+    result = base.copy()
+
+    for key, override_value in override.items():
+        if key not in result:
+            result[key] = override_value
+        elif key == "scenes" and isinstance(result[key], list) and isinstance(override_value, list):
+            result[key] = _merge_scenes_by_number(result[key], override_value)
+        elif isinstance(result[key], dict) and isinstance(override_value, dict):
+            result[key] = deep_merge(result[key], override_value)
+        elif override_value is not None:
+            result[key] = override_value
+
+    return result
+
+
+def _merge_scenes_by_number(gen1_scenes: list, gen2_scenes: list) -> list:
+    """Об'єднує scenes по scene_number."""
+    gen1_map = {s.get("scene_number", i+1): s for i, s in enumerate(gen1_scenes)}
+    gen2_map = {s.get("scene_number", i+1): s for i, s in enumerate(gen2_scenes)}
+
+    all_numbers = sorted(set(gen1_map.keys()) | set(gen2_map.keys()))
+
+    merged_scenes = []
+    for num in all_numbers:
+        gen1_scene = gen1_map.get(num, {})
+        gen2_scene = gen2_map.get(num, {})
+        merged_scene = deep_merge(gen1_scene, gen2_scene)
+        merged_scenes.append(merged_scene)
+
+    return merged_scenes
+
+
+def save_merged_project_brief(
+    gen1_dict: dict,
+    gen2_dict: dict,
+    project_id: str,
+    output_dir: Path
+) -> Path:
+    """
+    ЗАЛІЗОБЕТОННИЙ MERGE: зберігає deep merged GEN1+GEN2 без втрат.
+
+    Це головна функція для збереження project_brief.json.
+    Нічого не губиться, всі поля з обох джерел присутні.
+
+    Args:
+        gen1_dict: Повний вихід GEN1 (gen1.model_dump())
+        gen2_dict: Повний вихід GEN2 (gen2.model_dump())
+        project_id: ID проекту
+        output_dir: Папка для збереження
+
+    Returns:
+        Path до збереженого файлу
+    """
+    from datetime import datetime
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    brief_path = output_dir / "project_brief.json"
+
+    # Deep merge: GEN1 + GEN2
+    merged = deep_merge(gen1_dict, gen2_dict)
+
+    # Додаємо metadata
+    merged["project_id"] = project_id
+    merged["_meta"] = {
+        "project_id": project_id,
+        "created_at": datetime.now().isoformat(),
+        "generator": "GLAZE CITY VIRAL ENGINE v4.1 - DEEP MERGE"
+    }
+
+    # Зберігаємо RAW для страховки
+    merged["gen1_raw"] = gen1_dict
+    merged["gen2_raw"] = gen2_dict
+
+    # Зберігаємо
+    with open(brief_path, "w", encoding="utf-8") as f:
+        json.dump(merged, f, indent=2, ensure_ascii=False)
+
+    logger.success(f"[DEEP MERGE] Saved project brief: {brief_path}")
+    logger.info(f"  GEN1 keys: {len(gen1_dict)}")
+    logger.info(f"  GEN2 keys: {len(gen2_dict)}")
+    logger.info(f"  Merged keys: {len(merged)}")
+    logger.info(f"  Scenes: {len(merged.get('scenes', []))}")
+
+    return brief_path
+
+
 def save_raw_output(raw_output: str, output_dir: Path) -> Path:
     """
     Save raw LLM output for reference.
@@ -208,5 +307,7 @@ def save_raw_output(raw_output: str, output_dir: Path) -> Path:
 __all__ = [
     "GlazeParser",
     "save_project_brief",
+    "save_merged_project_brief",
     "save_raw_output",
+    "deep_merge",
 ]

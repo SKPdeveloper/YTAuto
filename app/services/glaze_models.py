@@ -900,6 +900,18 @@ class GlazeCityProject(BaseModel):
     project_dir: Optional[Path] = Field(default=None, description="Папка проекту")
 
     # =====================================================================
+    # RAW PRESERVATION - Повні оригінали GEN1/GEN2 без втрат
+    # =====================================================================
+    gen1_raw: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Повний вихід GEN1 як dict - SINGLE SOURCE OF TRUTH. Якщо поле загубилось при merge, воно тут."
+    )
+    gen2_raw: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Повний вихід GEN2 як dict - SINGLE SOURCE OF TRUTH. Якщо поле загубилось при merge, воно тут."
+    )
+
+    # =====================================================================
     # BACKWARD COMPATIBILITY PROPERTIES
     # =====================================================================
 

@@ -356,12 +356,13 @@ class ManifestRenderer:
         if len(speed_segments) == 1:
             seg = speed_segments[0]
             pts_factor = 1 / seg.speed
+            # Use filter_complex with trim for correct speed processing
+            filter_str = f"[0:v]trim={seg.source_start}:{seg.source_end},setpts={pts_factor}*(PTS-STARTPTS)[v]"
             cmd = [
                 self.ffmpeg_path, "-y",
                 "-i", str(input_path),
-                "-ss", str(seg.source_start),
-                "-t", str(seg.source_end - seg.source_start),
-                "-filter:v", f"setpts={pts_factor}*PTS",
+                "-filter_complex", filter_str,
+                "-map", "[v]",
                 "-an",
                 "-c:v", self.config.video_codec,
                 *self._get_encoder_params(),
@@ -380,12 +381,13 @@ class ManifestRenderer:
             seg_output = temp_dir / f"seg_{i}.mp4"
             pts_factor = 1 / seg.speed
 
+            # Use filter_complex with trim for correct speed processing
+            filter_str = f"[0:v]trim={seg.source_start}:{seg.source_end},setpts={pts_factor}*(PTS-STARTPTS)[v]"
             cmd = [
                 self.ffmpeg_path, "-y",
                 "-i", str(input_path),
-                "-ss", str(seg.source_start),
-                "-t", str(seg.source_end - seg.source_start),
-                "-filter:v", f"setpts={pts_factor}*PTS",
+                "-filter_complex", filter_str,
+                "-map", "[v]",
                 "-an",
                 "-c:v", self.config.video_codec,
                 *self._get_encoder_params(),
@@ -401,7 +403,9 @@ class ManifestRenderer:
             concat_file = temp_dir / "concat.txt"
             with open(concat_file, 'w') as f:
                 for seg_file in segment_files:
-                    f.write(f"file '{str(seg_file).replace(chr(92), '/')}'\n")
+                    # Use absolute path to avoid path duplication issues
+                    abs_path = str(seg_file.resolve()).replace(chr(92), '/')
+                    f.write(f"file '{abs_path}'\n")
 
             cmd = [
                 self.ffmpeg_path, "-y",
@@ -664,10 +668,16 @@ class ManifestRenderer:
             return input_path
 
         output_path = project_dir / "subtitled.mp4"
-
-        # Create ASS subtitle file
         ass_path = project_dir / "subtitles.ass"
-        self._create_ass_file(subtitles, ass_path)
+
+        # Check if subtitles were generated from ElevenLabs timestamps (vo_alignment.json)
+        # If so, use the existing synced subtitles instead of manifest timing
+        vo_alignment_path = project_dir / "vo_alignment.json"
+        if vo_alignment_path.exists() and ass_path.exists():
+            logger.info(f"  Using existing synced subtitles (from vo_alignment.json)")
+        else:
+            # Create ASS subtitle file from manifest timing
+            self._create_ass_file(subtitles, ass_path)
 
         # FFmpeg filter requires escaped path on Windows
         # Replace backslashes with forward slashes and escape colons
@@ -693,10 +703,17 @@ class ManifestRenderer:
         subtitles: List[ManifestSubtitle],
         output_path: Path,
     ) -> None:
-        """Create ASS subtitle file from manifest subtitles."""
-        # ASS header for 9:16 vertical video
-        # Alignment: 2 = bottom center, positioned higher with MarginV=400 to avoid safe zone
-        # Font size 70 for good readability on mobile
+        """
+        Create Netflix-style ASS subtitle file from manifest subtitles.
+
+        Style: Montserrat-Bold, 72px, white, shadow 2px, no stroke, UPPERCASE.
+        This is a fallback - preferred method is word-by-word from vo_alignment.json.
+        """
+        # Viral/TikTok style ASS header
+        # Montserrat Black, 76px, white text, black stroke 3px
+        # YOUTUBE SAFE ZONES (1080x1920 vertical):
+        # - Bottom: 350px margin (avoid like/comment/share/subscribe buttons)
+        # - Top: 200px margin (avoid video title, channel name overlay)
         header = """[Script Info]
 Title: Glaze City Subtitles
 ScriptType: v4.00+
@@ -706,13 +723,8 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial,70,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,4,2,2,50,50,400,1
-Style: NORMAL,Arial,70,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,4,2,2,50,50,400,1
-Style: EXCITED,Arial,70,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,4,2,2,50,50,400,1
-Style: DRAMATIC,Arial,70,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,4,2,2,50,50,400,1
-Style: WHISPER,Arial,70,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,4,2,2,50,50,400,1
-Style: Impact,Arial,70,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,4,2,2,50,50,400,1
-Style: Elegant,Arial,70,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,4,2,2,50,50,400,1
+Style: Bottom,Montserrat Black,76,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,3,0,2,50,50,350,1
+Style: Top,Montserrat Black,76,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,3,0,8,50,50,200,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -723,34 +735,15 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         for sub in subtitles:
             start = self._seconds_to_ass_time(sub.output_start)
             end = self._seconds_to_ass_time(sub.output_end)
-            # Map style names (Gemini uses NORMAL, WHISPER, EXCITED, DRAMATIC, etc.)
-            style_map = {
-                "NORMAL": "NORMAL",
-                "WHISPER": "WHISPER",
-                "EXCITED": "EXCITED",
-                "DRAMATIC": "DRAMATIC",
-                "SARCASTIC": "NORMAL",  # Use NORMAL style for sarcastic
-                "IMPACT": "Impact",
-                "ELEGANT": "Elegant",
-            }
-            style = style_map.get(sub.style.upper(), "Default") if sub.style else "Default"
-            text = sub.text.replace("\n", "\\N")
 
-            # Apply animation effects - handle various Gemini animation names
-            anim = sub.animation.upper() if sub.animation else ""
-            effects = ""
-            if "FADE" in anim:
-                effects = "{\\fad(200,200)}"
-            elif "BOUNCE" in anim or anim == "POP":
-                # BOUNCE, BOUNCE_ENERGETIC, etc.
-                effects = "{\\t(0,100,\\fscx110\\fscy110)\\t(100,200,\\fscx100\\fscy100)}"
-            elif "SLIDE" in anim:
-                # SLIDE, SLIDE_SUBTLE, etc.
-                effects = "{\\move(540,1520,540,1420,0,200)}"
-            elif "SHAKE" in anim:
-                effects = "{\\t(0,50,\\frz2)\\t(50,100,\\frz-2)\\t(100,150,\\frz0)}"
+            # Use Bottom style by default, Top for easter egg scenes
+            position = sub.position.lower() if sub.position else "bottom-center"
+            style = "Top" if "top" in position else "Bottom"
 
-            lines.append(f"Dialogue: 0,{start},{end},{style},,0,0,0,,{effects}{text}")
+            # Transform text to UPPERCASE (Netflix style)
+            text = sub.text.upper().replace("\n", "\\N")
+
+            lines.append(f"Dialogue: 0,{start},{end},{style},,0,0,0,,{text}")
 
         with open(output_path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))

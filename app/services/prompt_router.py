@@ -162,6 +162,77 @@ DEBUG_DIR = Path(__file__).parent.parent.parent / "debug" / "gen_responses"
 MAX_VALIDATION_RETRIES = 7  # Max retries for GEN1/GEN2 validation
 
 
+# =============================================================================
+# DEEP MERGE UTILITIES - Залізобетонне об'єднання GEN1 + GEN2
+# =============================================================================
+
+def deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Рекурсивно об'єднує два dict. Override має пріоритет.
+
+    Правила:
+    - Якщо обидва значення dict → рекурсивний merge
+    - Якщо ключ "scenes" → спеціальний merge по scene_number
+    - Інакше override перезаписує base
+
+    Args:
+        base: Базовий dict (GEN1)
+        override: Dict який доповнює/перезаписує (GEN2)
+
+    Returns:
+        Об'єднаний dict
+    """
+    result = base.copy()
+
+    for key, override_value in override.items():
+        if key not in result:
+            # Новий ключ - просто додаємо
+            result[key] = override_value
+        elif key == "scenes" and isinstance(result[key], list) and isinstance(override_value, list):
+            # Спеціальна обробка scenes - merge по scene_number
+            result[key] = merge_scenes_by_number(result[key], override_value)
+        elif isinstance(result[key], dict) and isinstance(override_value, dict):
+            # Обидва dict - рекурсивний merge
+            result[key] = deep_merge(result[key], override_value)
+        elif override_value is not None:
+            # Override перезаписує (якщо не None)
+            result[key] = override_value
+
+    return result
+
+
+def merge_scenes_by_number(gen1_scenes: List[Dict], gen2_scenes: List[Dict]) -> List[Dict]:
+    """
+    Об'єднує scenes по scene_number.
+
+    GEN1 scene + GEN2 scene → merged scene з усіма полями.
+
+    Args:
+        gen1_scenes: Список сцен з GEN1
+        gen2_scenes: Список сцен з GEN2
+
+    Returns:
+        Об'єднаний список сцен
+    """
+    # Індексуємо по scene_number
+    gen1_map = {s.get("scene_number", i+1): s for i, s in enumerate(gen1_scenes)}
+    gen2_map = {s.get("scene_number", i+1): s for i, s in enumerate(gen2_scenes)}
+
+    # Всі унікальні scene_number
+    all_numbers = sorted(set(gen1_map.keys()) | set(gen2_map.keys()))
+
+    merged_scenes = []
+    for num in all_numbers:
+        gen1_scene = gen1_map.get(num, {})
+        gen2_scene = gen2_map.get(num, {})
+
+        # Deep merge кожної сцени
+        merged_scene = deep_merge(gen1_scene, gen2_scene)
+        merged_scenes.append(merged_scene)
+
+    return merged_scenes
+
+
 class PromptRouter:
     """
     Routes prompts between GEN1 and GEN2 stages.
@@ -1789,6 +1860,9 @@ CRITICAL REQUIREMENTS:
             ),
             project_id=project_id,
             created_at=datetime.now(),
+            # RAW PRESERVATION - Повні GEN1/GEN2 без втрат
+            gen1_raw=gen1.model_dump(),
+            gen2_raw=gen2.model_dump(),
             # Additional data from GEN1 and GEN2
             share_trigger=share_trigger_data,
             visual_summary=visual_summary_data,
