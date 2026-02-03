@@ -325,14 +325,40 @@ Internal project - Edible House
 ## 🚀 Roadmap
 
 - [x] **Етап 1:** Core Infrastructure ✅
-- [ ] **Етап 2:** Higgsfield API Client
-- [ ] **Етап 3:** Gemini Validator + ContentBrain
-- [ ] **Етап 4:** Orchestrator (Pipeline)
-- [ ] **Етап 5:** Telegram Bot
-- [ ] **Етап 6:** Topaz Queue
-- [ ] **Етап 7:** Web UI + Integration
+- [x] **Етап 2:** Higgsfield API Client ✅
+- [x] **Етап 3:** Gemini Validator + ContentBrain ✅
+- [x] **Етап 4:** Orchestrator (Pipeline) ✅
+- [x] **Етап 5:** Telegram Bot ✅
+- [x] **Етап 6:** Topaz Queue ✅
+- [x] **Етап 7:** Web UI + Integration ✅
+- [x] **Етап 8:** YouTube Publisher ✅
 
 **Детальний план:** `STEPS.txt`
+
+---
+
+## 📺 YouTube Publisher
+
+Автоматична публікація відео на YouTube.
+
+### Швидкий старт
+
+```bash
+# Тест підключення до каналу
+python -m src.publisher.main channel test glaze_city
+
+# Публікація відео
+python -m src.publisher.main publish proj_xxx
+
+# Публікація всіх pending
+python -m src.publisher.main publish-all
+```
+
+### Pipeline Integration
+
+PublishStage - 11-й етап пайплайну. Автоматично публікує відео на YouTube після CleanupStage.
+
+Детальна документація: `docs/PUBLISHER.md`
 
 ---
 

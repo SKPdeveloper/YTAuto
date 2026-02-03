@@ -21,6 +21,7 @@ from app.pipeline.gen3_stages import Gen3aStage, Gen3bStage
 from app.pipeline.postprocess_stage import PostProcessStage
 from app.pipeline.video_approval_stage import VideoApprovalStage
 from app.pipeline.cleanup_stage import CleanupStage
+from app.pipeline.publish_stage import PublishStage
 from app.api.schemas import ProjectData, ProjectStatus, PipelineStage
 from app.server.notifications import NotificationService, get_notification_service
 
@@ -40,6 +41,7 @@ class PipelineOrchestrator:
     8. PostProcessStage - FFmpeg rendering, assembly
     9. VideoApprovalStage - User approval before upscaling (web interface)
     10. CleanupStage - Topaz upscale, import SFX, cleanup
+    11. PublishStage - Upload to YouTube (якщо target_channel вказано)
 
     Each stage is independent and can be resumed after failure.
 
@@ -66,6 +68,7 @@ class PipelineOrchestrator:
         PostProcessStage,   # FFmpeg rendering, assembly
         VideoApprovalStage, # User approval before upscaling
         CleanupStage,       # Topaz upscale, import SFX, cleanup
+        PublishStage,       # Upload to YouTube (if target_channel configured)
     ]
 
     def __init__(self, notifier: Optional[NotificationService] = None):
