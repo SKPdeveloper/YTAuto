@@ -673,10 +673,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 "WHISPER": "WHISPER",
                 "EXCITED": "EXCITED",
                 "DRAMATIC": "DRAMATIC",
+                "SARCASTIC": "NORMAL",  # Use NORMAL style for sarcastic
                 "IMPACT": "Impact",
                 "ELEGANT": "Elegant",
             }
-            style = style_map.get(sub.style.upper(), "Default")
+            style = style_map.get(sub.style.upper(), "Default") if sub.style else "Default"
             text = sub.text.replace("\n", "\\N")
 
             # Apply animation effects - handle various Gemini animation names
@@ -684,10 +685,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             effects = ""
             if "FADE" in anim:
                 effects = "{\\fad(200,200)}"
-            elif anim == "BOUNCE" or anim == "POP":
+            elif "BOUNCE" in anim or anim == "POP":
+                # BOUNCE, BOUNCE_ENERGETIC, etc.
                 effects = "{\\t(0,100,\\fscx110\\fscy110)\\t(100,200,\\fscx100\\fscy100)}"
-            elif anim == "SLIDE":
+            elif "SLIDE" in anim:
+                # SLIDE, SLIDE_SUBTLE, etc.
                 effects = "{\\move(540,1520,540,1420,0,200)}"
+            elif "SHAKE" in anim:
+                effects = "{\\t(0,50,\\frz2)\\t(50,100,\\frz-2)\\t(100,150,\\frz0)}"
 
             lines.append(f"Dialogue: 0,{start},{end},{style},,0,0,0,,{effects}{text}")
 

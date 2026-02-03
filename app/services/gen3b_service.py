@@ -356,14 +356,23 @@ NO markdown formatting."""
             raw_text = gen1_scene.get("voiceover_segment", "") or gen1_scene.get("voiceover", "")
 
             # Skip empty or placeholder voiceover
-            placeholder_texts = ["tagline", "final vo (can be empty)", "(can be empty)", ""]
-            if not raw_text or raw_text.lower().strip() in placeholder_texts:
+            placeholder_texts = ["tagline", "final vo (can be empty)", "(can be empty)", "",
+                                 "loop setup", "loop close", "closing loop", "loop", "(loop)"]
+            raw_lower = raw_text.lower().strip() if raw_text else ""
+            # Check exact match or if text contains "loop" and is short (likely placeholder)
+            is_placeholder = (
+                not raw_text or
+                raw_lower in placeholder_texts or
+                (len(raw_lower) < 20 and "loop" in raw_lower)
+            )
+            if is_placeholder:
                 continue
 
             # Clean up text - remove ElevenLabs audio tags for display
             display_text = raw_text
             for tag in ["[shouts]", "[whispers]", "[whisper]", "[pause]", "[soft]", "[excited]",
-                        "[shout]", "[dramatic]", "[sarcastic]"]:
+                        "[shout]", "[dramatic]", "[sarcastic]", "[sighs]", "[laughs]", "[sad]",
+                        "[angry]", "[happily]", "[short pause]", "[long pause]"]:
                 display_text = display_text.replace(tag, "").strip()
             display_text = re.sub(r'<[^>]+>', '', display_text)
             display_text = " ".join(display_text.split())
@@ -460,7 +469,9 @@ NO markdown formatting."""
 
             # Clean up text - remove voice direction tags for display
             display_text = text
-            for tag in ["[shouts]", "[whispers]", "[pause]", "[whisper]", "[shout]"]:
+            for tag in ["[shouts]", "[whispers]", "[pause]", "[whisper]", "[shout]", "[sighs]",
+                        "[laughs]", "[excited]", "[soft]", "[dramatic]", "[sarcastic]",
+                        "[sad]", "[angry]", "[happily]", "[short pause]", "[long pause]"]:
                 display_text = display_text.replace(tag, "").strip()
             display_text = " ".join(display_text.split())  # Normalize whitespace
 
