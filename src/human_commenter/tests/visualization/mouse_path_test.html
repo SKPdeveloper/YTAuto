@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Human Mouse Movement Visualizer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Arial, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+            overflow: hidden;
+        }
+
+        #canvas-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        #movement-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+
+        #controls {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 20px;
+            border-radius: 10px;
+            z-index: 100;
+            min-width: 300px;
+        }
+
+        #controls h2 {
+            color: #00d4ff;
+            margin-bottom: 15px;
+            font-size: 18px;
+        }
+
+        .control-group {
+            margin-bottom: 15px;
+        }
+
+        .control-group label {
+            display: block;
+            margin-bottom: 5px;
+            color: #aaa;
+            font-size: 12px;
+        }
+
+        .control-group input, .control-group select {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #333;
+            background: #222;
+            color: #fff;
+            border-radius: 5px;
+        }
+
+        button {
+            background: #00d4ff;
+            color: #000;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+            margin-right: 10px;
+            margin-top: 10px;
+        }
+
+        button:hover {
+            background: #00a8cc;
+        }
+
+        button.secondary {
+            background: #444;
+            color: #fff;
+        }
+
+        button.secondary:hover {
+            background: #555;
+        }
+
+        #stats {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 20px;
+            border-radius: 10px;
+            z-index: 100;
+            min-width: 250px;
+        }
+
+        #stats h3 {
+            color: #00d4ff;
+            margin-bottom: 10px;
+        }
+
+        .stat-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            font-size: 13px;
+        }
+
+        .stat-label {
+            color: #888;
+        }
+
+        .stat-value {
+            color: #0f0;
+            font-family: monospace;
+        }
+
+        #targets {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+
+        .target {
+            position: absolute;
+            border: 2px dashed #ff6b6b;
+            border-radius: 5px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #ff6b6b;
+            font-size: 12px;
+            pointer-events: auto;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .target:hover {
+            background: rgba(255, 107, 107, 0.2);
+        }
+
+        .target.clicked {
+            background: rgba(0, 255, 0, 0.3);
+            border-color: #0f0;
+            color: #0f0;
+        }
+
+        #instructions {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.8);
+            padding: 15px 30px;
+            border-radius: 10px;
+            text-align: center;
+            font-size: 14px;
+        }
+
+        .path-point {
+            position: absolute;
+            width: 4px;
+            height: 4px;
+            background: #00d4ff;
+            border-radius: 50%;
+            pointer-events: none;
+            opacity: 0.7;
+        }
+
+        .click-marker {
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            border: 2px solid #ff0;
+            border-radius: 50%;
+            pointer-events: none;
+            animation: click-pulse 0.5s ease-out;
+        }
+
+        @keyframes click-pulse {
+            0% { transform: scale(0.5); opacity: 1; }
+            100% { transform: scale(2); opacity: 0; }
+        }
+
+        #legend {
+            position: fixed;
+            bottom: 80px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 15px;
+            border-radius: 10px;
+            font-size: 12px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin-bottom: 5px;
+        }
+
+        .legend-color {
+            width: 20px;
+            height: 4px;
+            margin-right: 10px;
+            border-radius: 2px;
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container">
+        <canvas id="movement-canvas"></canvas>
+        <div id="targets"></div>
+    </div>
+
+    <div id="controls">
+        <h2>🖱️ Mouse Movement Test</h2>
+
+        <div class="control-group">
+            <label>Test Mode</label>
+            <select id="test-mode">
+                <option value="bezier">Bezier Curve Paths</option>
+                <option value="fitts">Fitts' Law Timing</option>
+                <option value="tremor">Micro-Tremor</option>
+                <option value="click">Click Jitter</option>
+            </select>
+        </div>
+
+        <div class="control-group">
+            <label>Bezier Variance: <span id="variance-value">0.3</span></label>
+            <input type="range" id="bezier-variance" min="0.1" max="0.8" step="0.05" value="0.3">
+        </div>
+
+        <div class="control-group">
+            <label>Click Jitter (px): <span id="jitter-value">3</span></label>
+            <input type="range" id="click-jitter" min="0" max="10" step="0.5" value="3">
+        </div>
+
+        <button id="start-test">▶ Start Test</button>
+        <button id="clear-canvas" class="secondary">Clear</button>
+        <button id="add-target" class="secondary">+ Target</button>
+    </div>
+
+    <div id="stats">
+        <h3>📊 Statistics</h3>
+        <div class="stat-row">
+            <span class="stat-label">Path Length:</span>
+            <span class="stat-value" id="stat-path-length">0 px</span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label">Movement Time:</span>
+            <span class="stat-value" id="stat-movement-time">0 ms</span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label">Avg Speed:</span>
+            <span class="stat-value" id="stat-avg-speed">0 px/s</span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label">Max Deviation:</span>
+            <span class="stat-value" id="stat-max-deviation">0 px</span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label">Points:</span>
+            <span class="stat-value" id="stat-points">0</span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label">Fitts' Time:</span>
+            <span class="stat-value" id="stat-fitts">0 ms</span>
+        </div>
+    </div>
+
+    <div id="legend">
+        <div class="legend-item">
+            <div class="legend-color" style="background: #00d4ff;"></div>
+            <span>Mouse path</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background: #ff6b6b;"></div>
+            <span>Straight line</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background: #0f0;"></div>
+            <span>Control points</span>
+        </div>
+    </div>
+
+    <div id="instructions">
+        Ця сторінка візуалізує рухи миші. Натисніть <strong>Start Test</strong> для автоматичного тесту,
+        або просто рухайте мишкою щоб бачити шлях.
+    </div>
+
+    <script>
+        const canvas = document.getElementById('movement-canvas');
+        const ctx = canvas.getContext('2d');
+        const targetsContainer = document.getElementById('targets');
+
+        // Set canvas size
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        resizeCanvas();
+        window.addEventListener('resize', resizeCanvas);
+
+        // State
+        let isTracking = false;
+        let pathPoints = [];
+        let lastPoint = null;
+        let startTime = null;
+        let targets = [];
+
+        // Config
+        let bezierVariance = 0.3;
+        let clickJitter = 3;
+
+        // Update config from controls
+        document.getElementById('bezier-variance').addEventListener('input', (e) => {
+            bezierVariance = parseFloat(e.target.value);
+            document.getElementById('variance-value').textContent = bezierVariance.toFixed(2);
+        });
+
+        document.getElementById('click-jitter').addEventListener('input', (e) => {
+            clickJitter = parseFloat(e.target.value);
+            document.getElementById('jitter-value').textContent = clickJitter;
+        });
+
+        // Track mouse movement
+        document.addEventListener('mousemove', (e) => {
+            const point = { x: e.clientX, y: e.clientY, time: Date.now() };
+
+            if (!startTime) startTime = point.time;
+
+            pathPoints.push(point);
+
+            // Draw point
+            ctx.fillStyle = 'rgba(0, 212, 255, 0.5)';
+            ctx.beginPath();
+            ctx.arc(point.x, point.y, 2, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Draw line to previous point
+            if (lastPoint) {
+                ctx.strokeStyle = 'rgba(0, 212, 255, 0.3)';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(lastPoint.x, lastPoint.y);
+                ctx.lineTo(point.x, point.y);
+                ctx.stroke();
+            }
+
+            lastPoint = point;
+            updateStats();
+        });
+
+        // Track clicks
+        document.addEventListener('click', (e) => {
+            // Create click marker
+            const marker = document.createElement('div');
+            marker.className = 'click-marker';
+            marker.style.left = (e.clientX - 10) + 'px';
+            marker.style.top = (e.clientY - 10) + 'px';
+            document.body.appendChild(marker);
+            setTimeout(() => marker.remove(), 500);
+
+            // Check if hit target
+            targets.forEach((target, i) => {
+                const rect = target.element.getBoundingClientRect();
+                if (e.clientX >= rect.left && e.clientX <= rect.right &&
+                    e.clientY >= rect.top && e.clientY <= rect.bottom) {
+                    target.element.classList.add('clicked');
+                    target.clicked = true;
+                }
+            });
+        });
+
+        // Calculate statistics
+        function updateStats() {
+            if (pathPoints.length < 2) return;
+
+            // Path length
+            let pathLength = 0;
+            for (let i = 1; i < pathPoints.length; i++) {
+                const dx = pathPoints[i].x - pathPoints[i-1].x;
+                const dy = pathPoints[i].y - pathPoints[i-1].y;
+                pathLength += Math.sqrt(dx*dx + dy*dy);
+            }
+
+            // Movement time
+            const movementTime = pathPoints[pathPoints.length-1].time - pathPoints[0].time;
+
+            // Average speed
+            const avgSpeed = movementTime > 0 ? (pathLength / movementTime * 1000) : 0;
+
+            // Max deviation from straight line
+            const start = pathPoints[0];
+            const end = pathPoints[pathPoints.length - 1];
+            let maxDeviation = 0;
+
+            for (const point of pathPoints) {
+                const deviation = pointToLineDistance(point, start, end);
+                maxDeviation = Math.max(maxDeviation, deviation);
+            }
+
+            // Fitts' Law prediction
+            const distance = Math.sqrt((end.x - start.x)**2 + (end.y - start.y)**2);
+            const targetWidth = 50; // Assume 50px target
+            const fittsTime = 100 + 100 * Math.log2(2 * distance / targetWidth); // a=100, b=100
+
+            // Update display
+            document.getElementById('stat-path-length').textContent = pathLength.toFixed(0) + ' px';
+            document.getElementById('stat-movement-time').textContent = movementTime + ' ms';
+            document.getElementById('stat-avg-speed').textContent = avgSpeed.toFixed(0) + ' px/s';
+            document.getElementById('stat-max-deviation').textContent = maxDeviation.toFixed(1) + ' px';
+            document.getElementById('stat-points').textContent = pathPoints.length;
+            document.getElementById('stat-fitts').textContent = fittsTime.toFixed(0) + ' ms';
+        }
+
+        // Calculate distance from point to line
+        function pointToLineDistance(point, lineStart, lineEnd) {
+            const A = point.x - lineStart.x;
+            const B = point.y - lineStart.y;
+            const C = lineEnd.x - lineStart.x;
+            const D = lineEnd.y - lineStart.y;
+
+            const dot = A * C + B * D;
+            const lenSq = C * C + D * D;
+            let param = -1;
+
+            if (lenSq !== 0) param = dot / lenSq;
+
+            let xx, yy;
+
+            if (param < 0) {
+                xx = lineStart.x;
+                yy = lineStart.y;
+            } else if (param > 1) {
+                xx = lineEnd.x;
+                yy = lineEnd.y;
+            } else {
+                xx = lineStart.x + param * C;
+                yy = lineStart.y + param * D;
+            }
+
+            const dx = point.x - xx;
+            const dy = point.y - yy;
+            return Math.sqrt(dx * dx + dy * dy);
+        }
+
+        // Generate Bezier curve
+        function generateBezierPath(start, end, numPoints = 50) {
+            const distance = Math.sqrt((end.x - start.x)**2 + (end.y - start.y)**2);
+            const dx = end.x - start.x;
+            const dy = end.y - start.y;
+
+            // Control points with variance
+            const ctrl1_t = 0.2 + Math.random() * 0.2;
+            const ctrl1_perp = (Math.random() - 0.5) * 2 * bezierVariance * distance;
+            const ctrl1 = {
+                x: start.x + dx * ctrl1_t + (distance > 0 ? dy * ctrl1_perp / distance : 0),
+                y: start.y + dy * ctrl1_t - (distance > 0 ? dx * ctrl1_perp / distance : 0)
+            };
+
+            const ctrl2_t = 0.6 + Math.random() * 0.2;
+            const ctrl2_perp = (Math.random() - 0.5) * 2 * bezierVariance * distance;
+            const ctrl2 = {
+                x: start.x + dx * ctrl2_t + (distance > 0 ? dy * ctrl2_perp / distance : 0),
+                y: start.y + dy * ctrl2_t - (distance > 0 ? dx * ctrl2_perp / distance : 0)
+            };
+
+            const path = [];
+            for (let i = 0; i <= numPoints; i++) {
+                const t = i / numPoints;
+                const t2 = t * t;
+                const t3 = t2 * t;
+                const mt = 1 - t;
+                const mt2 = mt * mt;
+                const mt3 = mt2 * mt;
+
+                path.push({
+                    x: mt3 * start.x + 3 * mt2 * t * ctrl1.x + 3 * mt * t2 * ctrl2.x + t3 * end.x,
+                    y: mt3 * start.y + 3 * mt2 * t * ctrl1.y + 3 * mt * t2 * ctrl2.y + t3 * end.y
+                });
+            }
+
+            return { path, ctrl1, ctrl2 };
+        }
+
+        // Draw Bezier curve
+        function drawBezierPath(start, end) {
+            const { path, ctrl1, ctrl2 } = generateBezierPath(start, end);
+
+            // Draw straight line (reference)
+            ctx.strokeStyle = 'rgba(255, 107, 107, 0.3)';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([5, 5]);
+            ctx.beginPath();
+            ctx.moveTo(start.x, start.y);
+            ctx.lineTo(end.x, end.y);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // Draw control points
+            ctx.fillStyle = '#0f0';
+            ctx.beginPath();
+            ctx.arc(ctrl1.x, ctrl1.y, 5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.arc(ctrl2.x, ctrl2.y, 5, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Draw control lines
+            ctx.strokeStyle = 'rgba(0, 255, 0, 0.3)';
+            ctx.beginPath();
+            ctx.moveTo(start.x, start.y);
+            ctx.lineTo(ctrl1.x, ctrl1.y);
+            ctx.lineTo(ctrl2.x, ctrl2.y);
+            ctx.lineTo(end.x, end.y);
+            ctx.stroke();
+
+            // Draw Bezier curve
+            ctx.strokeStyle = '#00d4ff';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(path[0].x, path[0].y);
+            for (const point of path) {
+                ctx.lineTo(point.x, point.y);
+            }
+            ctx.stroke();
+
+            // Draw points
+            for (const point of path) {
+                ctx.fillStyle = 'rgba(0, 212, 255, 0.7)';
+                ctx.beginPath();
+                ctx.arc(point.x, point.y, 3, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            return path;
+        }
+
+        // Clear canvas
+        document.getElementById('clear-canvas').addEventListener('click', () => {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            pathPoints = [];
+            lastPoint = null;
+            startTime = null;
+            targets.forEach(t => t.element.classList.remove('clicked'));
+        });
+
+        // Add target
+        document.getElementById('add-target').addEventListener('click', () => {
+            const sizes = [30, 50, 80, 120];
+            const size = sizes[Math.floor(Math.random() * sizes.length)];
+
+            const target = document.createElement('div');
+            target.className = 'target';
+            target.style.width = size + 'px';
+            target.style.height = size + 'px';
+            target.style.left = (100 + Math.random() * (window.innerWidth - 400)) + 'px';
+            target.style.top = (100 + Math.random() * (window.innerHeight - 300)) + 'px';
+            target.textContent = size + 'px';
+
+            targetsContainer.appendChild(target);
+            targets.push({ element: target, size, clicked: false });
+        });
+
+        // Start automated test
+        document.getElementById('start-test').addEventListener('click', async () => {
+            const mode = document.getElementById('test-mode').value;
+
+            // Clear first
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            pathPoints = [];
+
+            if (mode === 'bezier') {
+                // Draw multiple Bezier curves
+                for (let i = 0; i < 5; i++) {
+                    const start = {
+                        x: 100 + Math.random() * 300,
+                        y: 100 + Math.random() * (canvas.height - 200)
+                    };
+                    const end = {
+                        x: canvas.width - 400 + Math.random() * 300,
+                        y: 100 + Math.random() * (canvas.height - 200)
+                    };
+
+                    drawBezierPath(start, end);
+                    await sleep(500);
+                }
+            } else if (mode === 'fitts') {
+                // Draw targets of different sizes at different distances
+                ctx.font = '12px Arial';
+                ctx.fillStyle = '#fff';
+
+                const startX = 100;
+                const startY = canvas.height / 2;
+
+                const distances = [100, 200, 400, 600];
+                const sizes = [20, 40, 80];
+
+                let y = 100;
+                for (const distance of distances) {
+                    for (const size of sizes) {
+                        const endX = startX + distance;
+                        const fittsTime = 100 + 100 * Math.log2(2 * distance / size);
+
+                        // Draw start point
+                        ctx.fillStyle = '#0f0';
+                        ctx.beginPath();
+                        ctx.arc(startX, y, 5, 0, Math.PI * 2);
+                        ctx.fill();
+
+                        // Draw target
+                        ctx.strokeStyle = '#ff6b6b';
+                        ctx.lineWidth = 2;
+                        ctx.strokeRect(endX - size/2, y - size/2, size, size);
+
+                        // Draw path
+                        drawBezierPath({x: startX, y}, {x: endX, y});
+
+                        // Label
+                        ctx.fillStyle = '#888';
+                        ctx.fillText(`D=${distance}, W=${size}, T=${fittsTime.toFixed(0)}ms`, endX + size/2 + 10, y + 4);
+
+                        y += Math.max(size, 30) + 20;
+                    }
+                }
+            } else if (mode === 'tremor') {
+                // Simulate tremor
+                const centerX = canvas.width / 2;
+                const centerY = canvas.height / 2;
+                const amplitude = 2;
+
+                ctx.fillStyle = '#ff6b6b';
+                ctx.beginPath();
+                ctx.arc(centerX, centerY, 10, 0, Math.PI * 2);
+                ctx.fill();
+
+                ctx.fillStyle = 'rgba(0, 212, 255, 0.5)';
+
+                for (let i = 0; i < 200; i++) {
+                    const x = centerX + (Math.random() - 0.5) * 2 * amplitude * 2;
+                    const y = centerY + (Math.random() - 0.5) * 2 * amplitude * 2;
+
+                    ctx.beginPath();
+                    ctx.arc(x, y, 2, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    await sleep(50);
+                }
+            } else if (mode === 'click') {
+                // Show click jitter distribution
+                const centerX = canvas.width / 2;
+                const centerY = canvas.height / 2;
+
+                // Draw target
+                ctx.strokeStyle = '#ff6b6b';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(centerX, centerY, 30, 0, Math.PI * 2);
+                ctx.stroke();
+
+                // Simulate clicks with jitter
+                for (let i = 0; i < 100; i++) {
+                    const jitterX = (Math.random() - 0.5) * 2 * clickJitter;
+                    const jitterY = (Math.random() - 0.5) * 2 * clickJitter;
+
+                    ctx.fillStyle = 'rgba(0, 212, 255, 0.5)';
+                    ctx.beginPath();
+                    ctx.arc(centerX + jitterX, centerY + jitterY, 3, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    await sleep(30);
+                }
+
+                // Draw jitter radius
+                ctx.strokeStyle = 'rgba(0, 255, 0, 0.5)';
+                ctx.setLineDash([5, 5]);
+                ctx.beginPath();
+                ctx.arc(centerX, centerY, clickJitter, 0, Math.PI * 2);
+                ctx.stroke();
+                ctx.setLineDash([]);
+            }
+        });
+
+        function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        // Add some initial targets
+        for (let i = 0; i < 3; i++) {
+            document.getElementById('add-target').click();
+        }
+    </script>
+</body>
+</html>

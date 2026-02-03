@@ -1,0 +1,48 @@
+# ============================================================================
+# Human Commenter v2.0 - Requirements
+# Python 3.10+
+# ============================================================================
+
+# Browser Automation
+# ----------------------------------------------------------------------------
+playwright>=1.40.0  # CDP-based automation with isTrusted events
+
+# Configuration
+# ----------------------------------------------------------------------------
+pydantic>=2.5.0  # Data validation & settings
+
+# Logging
+# ----------------------------------------------------------------------------
+loguru>=0.7.0  # Structured logging
+
+# Testing (optional)
+# ----------------------------------------------------------------------------
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+
+# ============================================================================
+# Built-in modules used (no installation needed):
+# - asyncio, pathlib, hashlib, secrets, dataclasses, typing, random, math
+# ============================================================================
+
+# ============================================================================
+# Features in v2.0:
+#
+# Biometrics:
+#   - BimodalDelay: 70% fast (0.07s) / 30% slow (0.22s) cognitive patterns
+#   - HumanMouse: Bezier curves, Fitts' Law, overshoot, spiral approach
+#   - HumanKeyboard: 5 typo types (adjacent, skip, double, swap, case)
+#   - HumanScroll: Device-specific deltas (windows_mouse, mac_mouse, touchpad)
+#
+# Configuration:
+#   - ProfileSeedGenerator: behavior_seed, daily_seed, session_seed, action_seed
+#   - ViewportPool: 16 resolutions based on StatCounter 2024-2025 market data
+#
+# Utilities:
+#   - RetryHandler: Exponential backoff with recovery strategies
+#   - SessionState: Persistent scroll positions, visited pages, custom data
+#
+# Integration:
+#   - HumanBrowser: Unified interface combining all biometrics
+#   - HumanCommenter: YouTube-specific comment automation workflow
+# ============================================================================
