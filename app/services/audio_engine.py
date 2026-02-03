@@ -51,6 +51,29 @@ class AudioEngine:
     # Regex pattern to match pause markers like [0.3s], [0.5s], [1s], [1.5s]
     PAUSE_PATTERN = re.compile(r'\[(\d+(?:\.\d+)?)\s*s\]')
 
+    # eleven_v3 model only accepts these stability values (undocumented server-side restriction)
+    ELEVEN_V3_STABILITY_VALUES = [0.0, 0.5, 1.0]
+
+    @staticmethod
+    def _sanitize_stability_for_model(stability: float, model_id: str) -> float:
+        """
+        Sanitize stability value based on model restrictions.
+
+        eleven_v3 only accepts [0.0, 0.5, 1.0] - rounds to nearest valid value.
+        Other models (eleven_multilingual_v2, etc.) accept any 0.0-1.0 value.
+        """
+        if "eleven_v3" in model_id or model_id == "eleven_v3":
+            # Round to nearest valid value for eleven_v3
+            valid_values = AudioEngine.ELEVEN_V3_STABILITY_VALUES
+            nearest = min(valid_values, key=lambda x: abs(x - stability))
+            if nearest != stability:
+                logger.warning(
+                    f"eleven_v3 requires stability in {valid_values}. "
+                    f"Rounding {stability} -> {nearest}"
+                )
+            return nearest
+        return stability
+
     def __init__(self):
         """Initialize ElevenLabs client with credentials from .env"""
         self.api_key = settings.ELEVENLABS_API_KEY
@@ -202,10 +225,13 @@ class AudioEngine:
         # If voice_id looks like a name (not a UUID-like string), try to resolve it
         effective_voice_id = await self._resolve_voice_id(raw_voice_id)
 
-        # Build voice settings
+        # Build voice settings (with model-specific sanitization)
         if voice_settings:
+            sanitized_stability = self._sanitize_stability_for_model(
+                voice_settings.stability, self.model_id
+            )
             elevenlabs_settings = VoiceSettings(
-                stability=voice_settings.stability,
+                stability=sanitized_stability,
                 similarity_boost=voice_settings.similarity_boost,
                 style=voice_settings.style,
                 use_speaker_boost=voice_settings.speaker_boost,
