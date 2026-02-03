@@ -308,6 +308,70 @@ NO markdown formatting."""
 
         return is_valid
 
+    def _split_text_by_pause(self, raw_text: str, start_time: float, end_time: float) -> List[dict]:
+        """
+        Split text by [pause] tags and calculate timing for each part.
+
+        Returns list of {text, start, end} for each segment.
+        Timing is estimated based on character count ratio.
+        """
+        # Find all pause tags (case insensitive)
+        pause_pattern = r'\[(?:pause|short pause|long pause)\]'
+
+        # Split by pause, keeping the delimiters to know pause positions
+        parts = re.split(f'({pause_pattern})', raw_text, flags=re.IGNORECASE)
+
+        # Filter out empty parts and pause tags, collect text segments
+        text_segments = []
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            if re.match(pause_pattern, part, re.IGNORECASE):
+                continue  # Skip pause tags
+            # Clean ElevenLabs tags from this segment
+            clean_part = part
+            for tag in ["[shouts]", "[whispers]", "[whisper]", "[soft]", "[excited]",
+                        "[shout]", "[dramatic]", "[sarcastic]", "[sighs]", "[laughs]", "[sad]",
+                        "[angry]", "[happily]"]:
+                clean_part = clean_part.replace(tag, "").strip()
+            clean_part = re.sub(r'<[^>]+>', '', clean_part)
+            clean_part = " ".join(clean_part.split())
+            if clean_part and len(clean_part) >= 3:
+                text_segments.append(clean_part)
+
+        if len(text_segments) <= 1:
+            # No pause split needed
+            return None
+
+        # Calculate timing based on character ratios
+        total_chars = sum(len(seg) for seg in text_segments)
+        total_duration = end_time - start_time
+        pause_gap = 0.4  # Gap between segments (pause duration estimate)
+
+        # Adjust duration for pauses
+        num_pauses = len(text_segments) - 1
+        speaking_duration = total_duration - (num_pauses * pause_gap)
+
+        result = []
+        current_time = start_time
+
+        for i, segment in enumerate(text_segments):
+            # Calculate segment duration based on character ratio
+            char_ratio = len(segment) / total_chars
+            seg_duration = speaking_duration * char_ratio
+
+            result.append({
+                "text": segment,
+                "start": round(current_time, 2),
+                "end": round(current_time + seg_duration, 2),
+            })
+
+            current_time += seg_duration + pause_gap
+
+        logger.info(f"Split text into {len(result)} segments by [pause] tags")
+        return result
+
     def _merge_subtitles_with_voiceover(
         self,
         gen3b_subtitles: List[ManifestSubtitle],
@@ -321,9 +385,14 @@ NO markdown formatting."""
         - Uses voiceover_timing.json for accurate timing when available
         - Falls back to gen1_brief.scenes[N].voiceover_segment for text
         - Keeps GEN3b style if available
+        - Splits subtitles at [pause] tags for sync
+        - Adds hook offset (0.3s) to sync with video timeline
         """
         gen1_scenes = gen1_brief.get("scenes", [])
         result = []
+
+        # Hook duration offset - subtitles start after hook
+        HOOK_OFFSET = 0.3
 
         # Try to load voiceover_timing.json for accurate timing
         vo_timing = {}
@@ -334,12 +403,13 @@ NO markdown formatting."""
                 with open(timing_path, "r", encoding="utf-8") as f:
                     timing_data = json.load(f)
                 for seg in timing_data.get("segments", []):
+                    # Add hook offset to timing - voiceover plays after hook
                     vo_timing[seg["scene_number"]] = {
-                        "start_time": seg["start_time"],
-                        "end_time": seg["end_time"],
+                        "start_time": seg["start_time"] + HOOK_OFFSET,
+                        "end_time": seg["end_time"] + HOOK_OFFSET,
                         "text": seg["text"],
                     }
-                logger.info(f"Loaded voiceover timing for {len(vo_timing)} segments")
+                logger.info(f"Loaded voiceover timing for {len(vo_timing)} segments (with {HOOK_OFFSET}s hook offset)")
 
         # Build lookup of existing GEN3b subtitles by scene
         existing_by_scene = {}
@@ -366,18 +436,6 @@ NO markdown formatting."""
                 (len(raw_lower) < 20 and "loop" in raw_lower)
             )
             if is_placeholder:
-                continue
-
-            # Clean up text - remove ElevenLabs audio tags for display
-            display_text = raw_text
-            for tag in ["[shouts]", "[whispers]", "[whisper]", "[pause]", "[soft]", "[excited]",
-                        "[shout]", "[dramatic]", "[sarcastic]", "[sighs]", "[laughs]", "[sad]",
-                        "[angry]", "[happily]", "[short pause]", "[long pause]"]:
-                display_text = display_text.replace(tag, "").strip()
-            display_text = re.sub(r'<[^>]+>', '', display_text)
-            display_text = " ".join(display_text.split())
-
-            if not display_text or len(display_text) < 3:
                 continue
 
             # Determine timing - prefer voiceover_timing.json
@@ -417,31 +475,72 @@ NO markdown formatting."""
                 style = "DRAMATIC"
                 animation = "SLOW_REVEAL"
 
-            # Use GEN3b style if available, but always use correct timing from voiceover
-            if scene_num in existing_by_scene:
-                existing = existing_by_scene[scene_num]
-                subtitle = ManifestSubtitle(
-                    id=existing.id,
-                    text=display_text,
-                    output_start=float(start_time),  # Always use voiceover timing
-                    output_end=float(end_time),
-                    style=existing.style or style,
-                    position=existing.position or "bottom-center",
-                    animation=existing.animation or animation,
-                )
-            else:
-                subtitle = ManifestSubtitle(
-                    id=f"SUB_S{scene_num}",
-                    text=display_text,
-                    output_start=float(start_time),
-                    output_end=float(end_time),
-                    style=style,
-                    position="bottom-center",
-                    animation=animation,
-                )
-                logger.info(f"Added subtitle for scene {scene_num}: '{display_text[:30]}...' @ {start_time:.2f}s")
+            # Check if text has [pause] - split into multiple subtitles
+            pause_segments = self._split_text_by_pause(raw_text, start_time, end_time)
 
-            result.append(subtitle)
+            if pause_segments:
+                # Create separate subtitle for each segment
+                for j, seg in enumerate(pause_segments):
+                    sub_id = f"SUB{scene_num}_{chr(65+j)}"  # SUB1_A, SUB1_B, etc.
+
+                    # Get style from existing or determine from segment
+                    seg_style = style
+                    seg_animation = animation
+                    if scene_num in existing_by_scene:
+                        existing = existing_by_scene[scene_num]
+                        seg_style = existing.style or style
+                        seg_animation = existing.animation or animation
+
+                    subtitle = ManifestSubtitle(
+                        id=sub_id,
+                        text=seg["text"],
+                        output_start=seg["start"],
+                        output_end=seg["end"],
+                        style=seg_style,
+                        position="bottom-center",
+                        animation=seg_animation,
+                    )
+                    result.append(subtitle)
+                    logger.info(f"Added split subtitle {sub_id}: '{seg['text'][:30]}...' @ {seg['start']:.2f}s")
+            else:
+                # No pause - single subtitle
+                # Clean up text - remove ElevenLabs audio tags for display
+                display_text = raw_text
+                for tag in ["[shouts]", "[whispers]", "[whisper]", "[pause]", "[soft]", "[excited]",
+                            "[shout]", "[dramatic]", "[sarcastic]", "[sighs]", "[laughs]", "[sad]",
+                            "[angry]", "[happily]", "[short pause]", "[long pause]"]:
+                    display_text = display_text.replace(tag, "").strip()
+                display_text = re.sub(r'<[^>]+>', '', display_text)
+                display_text = " ".join(display_text.split())
+
+                if not display_text or len(display_text) < 3:
+                    continue
+
+                # Use GEN3b style if available, but always use correct timing from voiceover
+                if scene_num in existing_by_scene:
+                    existing = existing_by_scene[scene_num]
+                    subtitle = ManifestSubtitle(
+                        id=existing.id,
+                        text=display_text,
+                        output_start=float(start_time),  # Always use voiceover timing
+                        output_end=float(end_time),
+                        style=existing.style or style,
+                        position=existing.position or "bottom-center",
+                        animation=existing.animation or animation,
+                    )
+                else:
+                    subtitle = ManifestSubtitle(
+                        id=f"SUB_S{scene_num}",
+                        text=display_text,
+                        output_start=float(start_time),
+                        output_end=float(end_time),
+                        style=style,
+                        position="bottom-center",
+                        animation=animation,
+                    )
+                    logger.info(f"Added subtitle for scene {scene_num}: '{display_text[:30]}...' @ {start_time:.2f}s")
+
+                result.append(subtitle)
 
         result.sort(key=lambda s: s.output_start)
         logger.info(f"Merged subtitles: {len(result)} total (timing source: {'voiceover_timing.json' if vo_timing else 'scene boundaries'})")

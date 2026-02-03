@@ -559,6 +559,7 @@ class AudioMixConfig:
     sfx_events: List[SFXEvent] = field(default_factory=list)
     foley_events: List[SFXEvent] = field(default_factory=list)
     vo_segments: List[Tuple[float, float]] = field(default_factory=list)  # (start, end) for ducking
+    vo_delay: float = 0.0  # Delay VO start (e.g., for hook offset)
 
 
 # Default volume levels for each layer
@@ -603,6 +604,7 @@ class AudioMixer:
         vo_path: Optional[Path] = None,
         music_path: Optional[Path] = None,
         bed_path: Optional[Path] = None,
+        vo_delay: float = 0.0,
     ) -> AudioMixConfig:
         """
         Create default audio mix configuration.
@@ -612,11 +614,12 @@ class AudioMixer:
             vo_path: Path to voiceover audio
             music_path: Path to background music (SUNO)
             bed_path: Path to ambient bed audio
+            vo_delay: Delay VO start (e.g., for hook offset)
 
         Returns:
             AudioMixConfig with default settings
         """
-        config = AudioMixConfig(total_duration=total_duration)
+        config = AudioMixConfig(total_duration=total_duration, vo_delay=vo_delay)
 
         if vo_path and vo_path.exists():
             config.vo = AudioLayerConfig(
@@ -716,9 +719,13 @@ class AudioMixer:
         inputs = []
         input_idx = input_offset  # Start after video input
 
-        # VO layer
+        # VO layer (with optional delay for hook offset)
         if config.vo and config.vo.file_path:
-            filters.append(f"[{input_idx}:a]volume={config.vo.volume}[vo]")
+            if config.vo_delay > 0:
+                delay_ms = int(config.vo_delay * 1000)
+                filters.append(f"[{input_idx}:a]adelay={delay_ms}|{delay_ms},volume={config.vo.volume}[vo]")
+            else:
+                filters.append(f"[{input_idx}:a]volume={config.vo.volume}[vo]")
             inputs.append("vo")
             input_idx += 1
 

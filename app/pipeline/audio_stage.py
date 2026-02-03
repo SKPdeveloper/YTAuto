@@ -204,6 +204,13 @@ class AudioStage(BasePipelineStage):
         scenes = project_brief.get("scenes", [])
         voiceover_segments = []
 
+        # Placeholder texts that should NOT be voiced
+        placeholder_texts = [
+            "tagline", "(can be empty)", "", "final vo (can be empty)",
+            "loop setup", "loop close", "closing loop", "loop", "(loop)",
+            "opening loop", "loop back", "visual loop", "end loop"
+        ]
+
         for i, scene in enumerate(scenes):
             scene_num = scene.get("scene_number", i + 1)
             audio_prompt = (
@@ -212,8 +219,16 @@ class AudioStage(BasePipelineStage):
                 scene.get("audio_prompt") or
                 scene.get("voiceover_text", "")
             )
+
             # Skip empty or placeholder texts
-            if audio_prompt and audio_prompt.lower().strip() not in ["tagline", "(can be empty)", ""]:
+            prompt_lower = audio_prompt.lower().strip() if audio_prompt else ""
+            is_placeholder = (
+                not audio_prompt or
+                prompt_lower in placeholder_texts or
+                (len(prompt_lower) < 20 and "loop" in prompt_lower)
+            )
+
+            if not is_placeholder:
                 voiceover_segments.append({
                     "scene_number": scene_num,
                     "text": audio_prompt,
@@ -224,13 +239,14 @@ class AudioStage(BasePipelineStage):
             return None
 
         # Generate each segment separately and track timing
+        # NOTE: Timing tracks ACTUAL audio positions (no gaps) since FFmpeg concat
+        # doesn't add silence between segments. Subtitles sync to this timing.
         segment_files = []
         timing_data = {
             "segments": [],
             "total_duration": 0.0,
         }
         current_time = 0.0
-        gap_duration = 0.3  # 300ms gap between segments
 
         try:
             for seg in voiceover_segments:
@@ -264,7 +280,7 @@ class AudioStage(BasePipelineStage):
 
                 segment_files.append(segment_path)
 
-                # Record timing
+                # Record timing - tracks actual position in concatenated audio (no gaps)
                 timing_data["segments"].append({
                     "scene_number": scene_num,
                     "text": text,
@@ -275,9 +291,9 @@ class AudioStage(BasePipelineStage):
                 })
 
                 logger.info(f"[{self.project_id}] VO segment {scene_num}: {duration:.2f}s @ {current_time:.2f}s")
-                current_time += duration + gap_duration
+                current_time += duration  # No gap - matches actual audio
 
-            timing_data["total_duration"] = round(current_time - gap_duration, 3)
+            timing_data["total_duration"] = round(current_time, 3)
 
             # Concatenate all segments using FFmpeg
             if segment_files:

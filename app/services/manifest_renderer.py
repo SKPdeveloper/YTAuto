@@ -52,14 +52,13 @@ class RenderConfig:
     output_width: int = 1080
     output_height: int = 1920  # 9:16 vertical
     fps: int = 60
-    # Topaz FFmpeg не має libx264, використовуємо NVIDIA NVENC (GPU)
-    # Fallback: h264_mf (MediaFoundation) якщо немає NVIDIA
-    video_codec: str = "h264_nvenc"
+    # Codec auto-detected: h264_nvenc (NVIDIA GPU) or libx264 (CPU fallback)
+    video_codec: str = "auto"  # "auto" = detect, or force specific codec
     audio_codec: str = "aac"
     video_bitrate: str = "8M"
     audio_bitrate: str = "192k"
-    preset: str = "p4"  # NVENC presets: p1-p7 (p4=medium)
-    crf: int = 23  # NVENC CQ mode (18-28 recommended)
+    preset: str = "medium"  # libx264: ultrafast-veryslow, NVENC: p1-p7
+    crf: int = 23  # Quality (18-28 recommended)
 
 
 class ManifestRenderer:
@@ -80,6 +79,7 @@ class ManifestRenderer:
         """Initialize ManifestRenderer with optional config."""
         self.config = config or RenderConfig()
         self.audio_mixer = AudioMixer()
+
         # Використовуємо повний FFmpeg (має ass/subtitles фільтри та libx264)
         # Topaz FFmpeg не має цих фільтрів!
         if hasattr(settings, 'FFMPEG_PATH') and settings.FFMPEG_PATH and settings.FFMPEG_PATH.exists():
@@ -89,11 +89,67 @@ class ManifestRenderer:
         else:
             self.ffmpeg_path = "ffmpeg"
 
+        # Auto-detect video codec if set to "auto"
+        if self.config.video_codec == "auto":
+            self.config.video_codec = self._detect_video_codec()
+
+        # Adjust preset for codec type
+        if "nvenc" in self.config.video_codec and self.config.preset == "medium":
+            self.config.preset = "p4"  # NVENC equivalent of "medium"
+
         logger.info("ManifestRenderer initialized:")
         logger.info(f"  FFmpeg: {self.ffmpeg_path}")
         logger.info(f"  Output: {self.config.output_width}x{self.config.output_height}")
         logger.info(f"  FPS: {self.config.fps}")
         logger.info(f"  Codec: {self.config.video_codec}")
+
+    def _detect_video_codec(self) -> str:
+        """
+        Auto-detect best available video encoder.
+
+        Priority:
+        1. h264_nvenc (NVIDIA GPU) - fastest
+        2. libx264 (CPU) - universal fallback
+
+        Returns:
+            Codec name string
+        """
+        try:
+            # Check if NVENC is available by querying FFmpeg encoders
+            result = subprocess.run(
+                [self.ffmpeg_path, "-encoders", "-hide_banner"],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+
+            if result.returncode == 0 and "h264_nvenc" in result.stdout:
+                # NVENC listed, but need to verify CUDA is actually working
+                # Try a quick encode test
+                test_result = subprocess.run(
+                    [
+                        self.ffmpeg_path, "-y",
+                        "-f", "lavfi", "-i", "nullsrc=s=64x64:d=0.1",
+                        "-c:v", "h264_nvenc", "-f", "null", "-"
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+
+                if test_result.returncode == 0:
+                    logger.info("  Codec auto-detect: h264_nvenc (NVIDIA GPU)")
+                    return "h264_nvenc"
+                else:
+                    logger.warning("  NVENC listed but CUDA unavailable, using libx264")
+
+        except subprocess.TimeoutExpired:
+            logger.warning("  Codec detection timeout, using libx264")
+        except Exception as e:
+            logger.warning(f"  Codec detection failed: {e}, using libx264")
+
+        logger.info("  Codec auto-detect: libx264 (CPU)")
+        return "libx264"
 
     def _get_encoder_params(self) -> List[str]:
         """Повертає параметри кодека в залежності від типу.
@@ -748,12 +804,16 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             "music/ambient.mp3",
         ])
 
+        # Hook duration offset - audio starts after hook
+        hook_duration = manifest.hook.duration if manifest.hook else 0.3
+
         # Create audio mix configuration with actual video duration
         audio_config = self.audio_mixer.create_default_config(
             total_duration=actual_duration,
             vo_path=project_dir / "voiceover.mp3",
             music_path=music_path,
             bed_path=bed_path,
+            vo_delay=hook_duration,  # VO starts after hook
         )
 
         # Add SFX events from manifest
@@ -882,13 +942,17 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         Auto-discover and add SFX files when manifest doesn't specify them.
 
         Uses GEN3a action_peaks for timing when available, otherwise uses scene midpoint.
+        All scene SFX timestamps include hook offset since scenes start after hook.
 
         Looks for:
-        - sonic_hook.mp3 -> plays at 0.0s (hook impact)
-        - scene_N_sfx.mp3 -> plays at action_peak or scene midpoint
+        - sonic_hook.mp3 -> plays at 0.0s (during hook)
+        - scene_N_sfx.mp3 -> plays at action_peak or scene midpoint + hook offset
         """
         sfx_dir = project_dir / "sfx"
         logger.info(f"  Auto-SFX: Checking {sfx_dir}")
+
+        # Hook duration - scene SFX need this offset
+        hook_duration = manifest.hook.duration if manifest.hook else 0.3
 
         # Load GEN3a analysis for action_peaks timing
         gen3a_path = project_dir / "gen3a_analysis.json"
@@ -905,7 +969,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     peak = peaks[0]
                     action_peaks_by_scene[scene_num] = peak.get("source_timestamp", 0)
 
-        # Add sonic hook at the beginning
+        # Add sonic hook at the beginning (no offset - plays during hook)
         hook_sfx = sfx_dir / "sonic_hook.mp3"
         if hook_sfx.exists():
             self.audio_mixer.add_sfx_event(
@@ -918,21 +982,25 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             logger.info(f"  Auto-added SFX: sonic_hook.mp3 @ 0.0s")
 
         # Add per-scene SFX at action peaks (or scene midpoint as fallback)
+        # All scene SFX get hook offset since scenes start after hook
         for scene in manifest.scenes:
             sfx_file = sfx_dir / f"scene_{scene.scene_number}_sfx.mp3"
             if sfx_file.exists():
-                # Calculate SFX timestamp
+                # Calculate SFX timestamp (relative to scene start)
                 if scene.scene_number in action_peaks_by_scene:
                     # Transform source_timestamp to output_timestamp using speed_map
                     source_time = action_peaks_by_scene[scene.scene_number]
                     output_time = self._transform_source_to_output(source_time, scene)
-                    timestamp = scene.timeline_start + output_time
+                    relative_time = output_time
                     reason = f"scene_{scene.scene_number}_action_peak"
                 else:
                     # Fallback: use scene midpoint
                     scene_duration = scene.timeline_end - scene.timeline_start
-                    timestamp = scene.timeline_start + (scene_duration / 2)
+                    relative_time = scene_duration / 2
                     reason = f"scene_{scene.scene_number}_midpoint"
+
+                # Final timestamp = hook_offset + scene_start + relative_time_in_scene
+                timestamp = hook_duration + scene.timeline_start + relative_time
 
                 self.audio_mixer.add_sfx_event(
                     audio_config,

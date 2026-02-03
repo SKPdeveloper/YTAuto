@@ -5,7 +5,7 @@ Configuration Manager для Edible House Automator
 """
 
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -255,10 +255,39 @@ class Settings(BaseSettings):
         description="Шлях до Topaz FFmpeg executable (для AI upscaling з tvai фільтрами)"
     )
 
-    FFMPEG_PATH: Path = Field(
-        default=Path(r"C:\Users\SKP\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.0.1-full_build\bin\ffmpeg.exe"),
-        description="Шлях до повного FFmpeg (для рендерингу з субтитрами, libx264, ass фільтрами)"
+    FFMPEG_PATH: Optional[Path] = Field(
+        default=None,
+        description="Шлях до повного FFmpeg (auto-detect якщо None)"
     )
+
+    @field_validator("FFMPEG_PATH", mode="before")
+    @classmethod
+    def auto_detect_ffmpeg(cls, v):
+        """Auto-detect full FFmpeg path if not specified."""
+        import shutil
+        import os
+
+        if v and Path(v).exists():
+            return Path(v)
+
+        # Try to find ffmpeg in PATH first
+        ffmpeg_in_path = shutil.which("ffmpeg")
+        if ffmpeg_in_path:
+            return Path(ffmpeg_in_path)
+
+        # Common WinGet installation paths (try current user first)
+        username = os.environ.get("USERNAME", "")
+        winget_paths = [
+            Path(f"C:/Users/{username}/AppData/Local/Microsoft/WinGet/Packages/Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/ffmpeg-8.0.1-full_build/bin/ffmpeg.exe"),
+            Path("C:/ffmpeg/bin/ffmpeg.exe"),
+            Path("C:/Program Files/ffmpeg/bin/ffmpeg.exe"),
+        ]
+
+        for path in winget_paths:
+            if path.exists():
+                return path
+
+        return None  # Will fallback to Topaz FFmpeg in manifest_renderer
 
     # Frame Interpolation (Step 1: FPS Boost)
     TOPAZ_FPS_MODEL: str = Field(
