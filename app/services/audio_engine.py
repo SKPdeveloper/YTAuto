@@ -772,30 +772,20 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                         'text': clean_vo,
                     })
 
-        # Match sentences to scenes
+        # Match sentences to scenes SEQUENTIALLY
+        # The voiceover script is generated in scene order, so sentences map 1:1 to scenes
         segments = []
-        current_scene_idx = 0
 
-        for sent in sentences:
-            # Find which scene this sentence belongs to
-            scene_number = 1  # Default
-
-            if scene_vo_segments:
-                # Try to match by checking if sentence text is part of scene voiceover
-                for idx, scene_vo in enumerate(scene_vo_segments[current_scene_idx:], start=current_scene_idx):
-                    # Check if sentence is contained in this scene's voiceover
-                    # Use fuzzy matching - first few words
-                    sent_words = sent['text'].split()[:3]
-                    if any(word.lower() in scene_vo['text'].lower() for word in sent_words if len(word) > 2):
-                        scene_number = scene_vo['scene_number']
-                        current_scene_idx = idx
-                        break
-                else:
-                    # If no match found, use last known scene or increment
-                    if segments:
-                        scene_number = segments[-1]['scene_number']
-                    else:
-                        scene_number = 1
+        for sent_idx, sent in enumerate(sentences):
+            # Sequential matching: sentence N maps to scene N (if available)
+            if sent_idx < len(scene_vo_segments):
+                scene_number = scene_vo_segments[sent_idx]['scene_number']
+            elif scene_vo_segments:
+                # More sentences than scenes - assign to last scene
+                scene_number = scene_vo_segments[-1]['scene_number']
+            else:
+                # No scene info - default to scene 1
+                scene_number = 1
 
             segments.append({
                 'scene_number': scene_number,
