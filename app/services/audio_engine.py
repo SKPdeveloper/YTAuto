@@ -1201,18 +1201,23 @@ class AudioMixer:
             input_idx += 1
 
         # MUSIC layer with ducking
+        # IMPORTANT: Add apad to ensure music plays for full video duration
+        # This prevents music from cutting off when VO ends
         if config.music and config.music.file_path:
+            # Trim music to video duration (if longer) or pad with silence (if shorter)
+            music_prep = f"[{input_idx}:a]atrim=0:{config.total_duration},apad=whole_dur={config.total_duration}"
             if config.vo_segments:
-                # Build ducking filter
-                duck_filter = self._build_ducking_filter(
-                    input_idx,
+                # Build ducking filter with prepared music
+                filters.append(f"{music_prep}[music_prep]")
+                duck_filter = self._build_ducking_filter_from_label(
+                    "music_prep",
                     config.music.volume,
                     config.music.ducked_volume,
                     config.vo_segments,
                 )
                 filters.append(duck_filter)
             else:
-                filters.append(f"[{input_idx}:a]volume={config.music.volume}[music]")
+                filters.append(f"{music_prep},volume={config.music.volume}[music]")
             inputs.append("music")
             input_idx += 1
 
@@ -1245,8 +1250,10 @@ class AudioMixer:
             input_labels = "".join(f"[{i}]" for i in inputs)
             # Use duration=longest so music/ambient continue for full video length
             # VO may be shorter than video, but music should play throughout
+            # IMPORTANT: normalize=0 prevents volume reduction when mixing many inputs
+            # Without this, amix divides volume by sqrt(N) where N is number of inputs
             # Then trim to total_duration to match video length
-            filters.append(f"{input_labels}amix=inputs={len(inputs)}:duration=longest[amixed]")
+            filters.append(f"{input_labels}amix=inputs={len(inputs)}:duration=longest:normalize=0[amixed]")
             filters.append(f"[amixed]atrim=0:{config.total_duration}[aout]")
 
         return ";".join(filters)
@@ -1276,6 +1283,40 @@ class AudioMixer:
             volume_expr = str(normal_volume)
 
         return f"[{input_idx}:a]volume='{volume_expr}':eval=frame[music]"
+
+    def _build_ducking_filter_from_label(
+        self,
+        label: str,
+        normal_volume: float,
+        ducked_volume: float,
+        vo_segments: List[Tuple[float, float]],
+    ) -> str:
+        """
+        Build FFmpeg filter for volume ducking during VO segments.
+
+        Similar to _build_ducking_filter but accepts a label string instead of input index.
+        Used when the audio stream has been pre-processed (e.g., with atrim/apad).
+
+        Args:
+            label: The label name of the pre-processed stream (e.g., "music_prep")
+            normal_volume: Volume level when VO is not playing
+            ducked_volume: Volume level when VO is playing (ducked)
+            vo_segments: List of (start, end) tuples for VO segments
+
+        Returns:
+            FFmpeg filter string like "[music_prep]volume='...'[music]"
+        """
+        expr_parts = []
+        for start, end in vo_segments:
+            expr_parts.append(f"between(t,{start},{end})")
+
+        if expr_parts:
+            conditions = "+".join(expr_parts)
+            volume_expr = f"if({conditions},{ducked_volume},{normal_volume})"
+        else:
+            volume_expr = str(normal_volume)
+
+        return f"[{label}]volume='{volume_expr}':eval=frame[music]"
 
     def get_input_files(self, config: AudioMixConfig) -> List[Tuple[str, Path]]:
         """

@@ -1,5 +1,4 @@
 @echo off
-chcp 65001 >nul
 REM ============================================================================
 REM Edible House Automator - Web UI Server
 REM ============================================================================
@@ -7,12 +6,12 @@ REM ============================================================================
 cd /d "%~dp0"
 
 echo.
-echo ╔══════════════════════════════════════════════════════════════╗
-echo ║         EDIBLE HOUSE AUTOMATOR - Web UI                      ║
-echo ╚══════════════════════════════════════════════════════════════╝
+echo ================================================================
+echo          EDIBLE HOUSE AUTOMATOR - Web UI
+echo ================================================================
 echo.
 
-REM Вибір Python
+REM Python selection
 if exist "python\python.exe" (
     set PYTHON=python\python.exe
 ) else if exist "venv\Scripts\python.exe" (
@@ -21,7 +20,7 @@ if exist "python\python.exe" (
     set PYTHON=python
 )
 
-REM Перевірка .env
+REM Check .env
 if not exist config\.env (
     echo ERROR: config\.env not found!
     echo Please run setup.bat first.
@@ -31,11 +30,11 @@ if not exist config\.env (
 
 echo Starting Web UI server...
 echo.
-echo ────────────────────────────────────────────────────────────────
+echo ----------------------------------------------------------------
 echo   Dashboard:  http://localhost:8000
 echo   Control:    http://localhost:8000/control
 echo   API Docs:   http://localhost:8000/docs
-echo ────────────────────────────────────────────────────────────────
+echo ----------------------------------------------------------------
 echo.
 echo Press Ctrl+C to stop the server.
 echo.

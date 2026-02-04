@@ -1601,10 +1601,15 @@ CRITICAL REQUIREMENTS:
                 # Get primary_sounds: prefer sounds[].id, fallback to primary_sounds
                 if gen1.audio.foley_palette.sounds:
                     primary = [s.id for s in gen1.audio.foley_palette.sounds]
-                    search = [s.search for s in gen1.audio.foley_palette.sounds]
+                    search_from_sounds = [s.search for s in gen1.audio.foley_palette.sounds]
                 else:
                     primary = gen1.audio.foley_palette.primary_sounds or []
-                    search = gen1.audio.foley_palette.search_terms or primary  # fallback to primary if no search_terms
+                    search_from_sounds = []
+
+                # MERGE both search sources: sounds[].search + search_terms (deduplicated)
+                search_terms_list = gen1.audio.foley_palette.search_terms or []
+                merged_search = list(dict.fromkeys(search_from_sounds + search_terms_list))  # preserves order, removes dupes
+                search = merged_search if merged_search else primary  # fallback to primary if no search terms
 
                 foley_palette_data = FoleyPalette(
                     primary_sounds=primary,

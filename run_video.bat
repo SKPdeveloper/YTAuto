@@ -1,21 +1,20 @@
 @echo off
-chcp 65001 >nul
 REM ============================================================================
 REM Edible House Automator - Video Generator
-REM Генерація відео для існуючого проекту (окремий запуск)
+REM Video generation for existing project
 REM
-REM Використання:
-REM   run_video.bat                  - Інтерактивний вибір проекту
-REM   run_video.bat proj_abc123      - Генерація для конкретного проекту
+REM Usage:
+REM   run_video.bat                  - Interactive project selection
+REM   run_video.bat proj_abc123      - Generate for specific project
 REM ============================================================================
 
 cd /d "%~dp0"
 
 echo.
-echo ╔══════════════════════════════════════════════════════════════╗
-echo ║         EDIBLE HOUSE AUTOMATOR - Video Generator             ║
-echo ║         SimpleVideoGenerator (Kling 2.6)                     ║
-echo ╚══════════════════════════════════════════════════════════════╝
+echo ================================================================
+echo          EDIBLE HOUSE AUTOMATOR - Video Generator
+echo          SimpleVideoGenerator (Kling 2.6)
+echo ================================================================
 echo.
 
 REM Вибір Python
@@ -37,14 +36,14 @@ if not exist config\.env (
 REM Обробка аргументів
 if "%~1"=="" (
     echo Available projects:
-    echo ────────────────────────────────────────────────────────────────
+    echo ----------------------------------------------------------------
     dir /b projects\proj_* 2>nul
     if errorlevel 1 (
         echo No projects found in projects\ directory.
         pause
         exit /b 1
     )
-    echo ────────────────────────────────────────────────────────────────
+    echo ----------------------------------------------------------------
     echo.
     set /p PROJECT_ID="Enter project ID: "
 ) else (
@@ -66,7 +65,7 @@ if not exist "projects\%PROJECT_ID%" (
 
 echo.
 echo Project: %PROJECT_ID%
-echo ────────────────────────────────────────────────────────────────
+echo ----------------------------------------------------------------
 echo.
 
 REM Показати статус сцен
@@ -82,14 +81,14 @@ for /d %%d in (projects\%PROJECT_ID%\scene_*) do (
 )
 
 echo.
-echo ────────────────────────────────────────────────────────────────
+echo ----------------------------------------------------------------
 echo Starting video generation...
 echo.
 
 %PYTHON% run_video_gen.py %PROJECT_ID%
 
 echo.
-echo ────────────────────────────────────────────────────────────────
+echo ----------------------------------------------------------------
 echo Video generation finished.
 echo.
 pause

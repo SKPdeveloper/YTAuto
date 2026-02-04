@@ -1,22 +1,21 @@
 @echo off
-chcp 65001 >nul
 REM ============================================================================
 REM Edible House Automator - Pipeline Runner (No UI)
-REM Запуск повного пайплайну без веб-інтерфейсу
+REM Run full pipeline without web interface
 REM
-REM Використання:
-REM   run_pipeline.bat                    - Запуск з вільною темою
-REM   run_pipeline.bat "Chocolate Castle" - Запуск з конкретною темою
-REM   run_pipeline.bat --resume proj_xxx  - Відновити проект
+REM Usage:
+REM   run_pipeline.bat                    - Run with free topic
+REM   run_pipeline.bat "Chocolate Castle" - Run with specific topic
+REM   run_pipeline.bat --resume proj_xxx  - Resume project
 REM ============================================================================
 
 cd /d "%~dp0"
 
 echo.
-echo ╔══════════════════════════════════════════════════════════════╗
-echo ║         EDIBLE HOUSE AUTOMATOR - Pipeline                    ║
-echo ║         Headless Mode (No UI)                                ║
-echo ╚══════════════════════════════════════════════════════════════╝
+echo ================================================================
+echo          EDIBLE HOUSE AUTOMATOR - Pipeline
+echo          Headless Mode (No UI)
+echo ================================================================
 echo.
 
 REM Вибір Python
@@ -42,7 +41,7 @@ if not exist config\.env (
 )
 
 echo.
-echo ────────────────────────────────────────────────────────────────
+echo ----------------------------------------------------------------
 
 REM Обробка аргументів
 if "%~1"=="" (
@@ -71,7 +70,7 @@ if "%~1"=="" (
 )
 
 echo.
-echo ────────────────────────────────────────────────────────────────
+echo ----------------------------------------------------------------
 echo Pipeline finished.
 echo.
 pause

@@ -1,27 +1,26 @@
 @echo off
-chcp 65001 >nul
 REM ============================================================================
 REM Edible House Automator - Main Launcher
 REM ============================================================================
 
 :menu
 cls
-echo ╔══════════════════════════════════════════════════════════════╗
-echo ║         EDIBLE HOUSE AUTOMATOR v2.0                          ║
-echo ║         AI Video Generation Pipeline                         ║
-echo ╚══════════════════════════════════════════════════════════════╝
+echo ================================================================
+echo          EDIBLE HOUSE AUTOMATOR v2.0
+echo          AI Video Generation Pipeline
+echo ================================================================
 echo.
-echo   [1] Web UI           - Запустити веб-інтерфейс (localhost:8000)
-echo   [2] Pipeline (FREE)  - Запустити пайплайн з вільною темою
-echo   [3] Pipeline (TOPIC) - Запустити пайплайн з конкретною темою
-echo   [4] Video Gen        - Згенерувати відео для проекту
-echo   [5] Resume           - Відновити проект
+echo   [1] Web UI           - Start web interface (localhost:8000)
+echo   [2] Pipeline (FREE)  - Run pipeline with free topic
+echo   [3] Pipeline (TOPIC) - Run pipeline with specific topic
+echo   [4] Video Gen        - Generate video for project
+echo   [5] Resume           - Resume project
 echo.
-echo   [S] Setup            - Налаштування та встановлення
-echo   [Q] Quit             - Вихід
+echo   [S] Setup            - Setup and installation
+echo   [Q] Quit             - Exit
 echo.
-echo ──────────────────────────────────────────────────────────────────
-set /p choice="Вибери опцію: "
+echo ----------------------------------------------------------------
+set /p choice="Select option: "
 
 if /i "%choice%"=="1" goto web
 if /i "%choice%"=="2" goto pipeline_free
@@ -53,11 +52,11 @@ goto :eof
 :web
 call :check_env
 echo.
-echo ════════════════════════════════════════════════════════════════
+echo ================================================================
 echo   Starting Web UI...
 echo   Local:   http://localhost:8000
 echo   Control: http://localhost:8000/control
-echo ════════════════════════════════════════════════════════════════
+echo ================================================================
 echo.
 %PYTHON% run_web.py
 pause
@@ -66,10 +65,10 @@ goto menu
 :pipeline_free
 call :check_env
 echo.
-echo ════════════════════════════════════════════════════════════════
+echo ================================================================
 echo   Starting Pipeline with FREE topic...
 echo   AI will generate a random topic
-echo ════════════════════════════════════════════════════════════════
+echo ================================================================
 echo.
 %PYTHON% run_real_pipeline.py --free -y
 pause
@@ -78,9 +77,9 @@ goto menu
 :pipeline_topic
 call :check_env
 echo.
-echo ════════════════════════════════════════════════════════════════
+echo ================================================================
 echo   Enter topic for video generation:
-echo ════════════════════════════════════════════════════════════════
+echo ================================================================
 echo.
 set /p topic="Topic: "
 if "%topic%"=="" (
@@ -98,9 +97,9 @@ goto menu
 :video_gen
 call :check_env
 echo.
-echo ════════════════════════════════════════════════════════════════
+echo ================================================================
 echo   Video Generation for existing project
-echo ════════════════════════════════════════════════════════════════
+echo ================================================================
 echo.
 echo Available projects:
 dir /b projects\proj_* 2>nul
@@ -121,9 +120,9 @@ goto menu
 :resume
 call :check_env
 echo.
-echo ════════════════════════════════════════════════════════════════
+echo ================================================================
 echo   Resume existing project
-echo ════════════════════════════════════════════════════════════════
+echo ================================================================
 echo.
 echo Available projects:
 dir /b projects\proj_* 2>nul

@@ -1807,10 +1807,24 @@ class ProjectOrchestrator:
 
             try:
                 voiceover_path = project_dir / "voiceover.mp3"
+                alignment_path = project_dir / "vo_alignment.json"
                 subtitles_path = project_dir / "subtitles.ass"
+                timing_path = project_dir / "voiceover_timing.json"
 
-                if not voiceover_path.exists() and 'voiceover' in project_data:
-                    logger.info("[POST] Step 2: Generating voiceover with synced subtitles...")
+                # Check if we need to generate or regenerate voiceover
+                # CRITICAL: We need BOTH voiceover AND alignment for proper subtitle sync
+                needs_generation = not voiceover_path.exists()
+                needs_alignment = voiceover_path.exists() and not alignment_path.exists()
+
+                if (needs_generation or needs_alignment) and 'voiceover' in project_data:
+                    if needs_alignment:
+                        logger.warning("[POST] Step 2: Voiceover exists but NO alignment! Regenerating for sync...")
+                        # Delete old files to force regeneration with timestamps
+                        voiceover_path.unlink(missing_ok=True)
+                        subtitles_path.unlink(missing_ok=True)
+                        timing_path.unlink(missing_ok=True)
+                    else:
+                        logger.info("[POST] Step 2: Generating voiceover with synced subtitles...")
 
                     from app.services.glaze_models import VoiceoverSettings, VoiceoverConfig
 
@@ -1832,13 +1846,12 @@ class ProjectOrchestrator:
                     logger.success(f"[POST]   Alignment: {alignment_path}")
                     logger.success(f"[POST]   Subtitles: {subtitles_path}")
                     logger.success(f"[POST]   Timing (for GEN3b): {timing_path}")
-                elif voiceover_path.exists():
-                    logger.info(f"[POST] Step 2: Voiceover already exists: {voiceover_path}")
+                elif voiceover_path.exists() and alignment_path.exists():
+                    logger.info(f"[POST] Step 2: Voiceover with alignment already exists")
                     if subtitles_path.exists():
-                        logger.info(f"[POST] Step 2: Subtitles already exist: {subtitles_path}")
-                    timing_path = project_dir / "voiceover_timing.json"
+                        logger.info(f"[POST]   Subtitles: {subtitles_path}")
                     if timing_path.exists():
-                        logger.info(f"[POST] Step 2: Timing already exists: {timing_path}")
+                        logger.info(f"[POST]   Timing: {timing_path}")
                 else:
                     logger.warning("[POST] No voiceover config found, skipping")
 

@@ -542,14 +542,18 @@ class Gen1FoleyPalette(BaseModel):
                 data['scene_assignments'] = scene_assignments
 
             # Convert primary_sounds + search_terms to sounds format
+            # IMPORTANT: Preserve search_terms separately since they may have MORE items than primary_sounds
             if 'primary_sounds' in data and 'sounds' not in data:
                 primary = data.get('primary_sounds', [])
                 search = data.get('search_terms', primary)  # fallback to primary if no search
                 sounds = []
+                # Create sound objects for each primary sound
                 for i, s in enumerate(primary):
                     search_term = search[i] if i < len(search) else s
                     sounds.append({"id": s.replace(" ", "_"), "search": search_term})
                 data['sounds'] = sounds
+                # Keep search_terms intact - it may have MORE items than primary_sounds
+                # The merge code in prompt_router.py will combine both sources
 
             # Convert sounds to primary_sounds for legacy code
             if 'sounds' in data and 'primary_sounds' not in data:

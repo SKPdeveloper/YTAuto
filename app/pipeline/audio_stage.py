@@ -185,22 +185,66 @@ class AudioStage(BasePipelineStage):
         project_brief: dict
     ) -> Optional[Path]:
         """
-        Generate combined voiceover from all scene audio_prompts.
+        Generate voiceover with character-level timestamps for perfect subtitle sync.
 
-        Generates each segment separately to track timing, then concatenates.
-        Saves timing metadata to voiceover_timing.json for subtitle sync.
+        Uses ElevenLabs convert_with_timestamps API for character-level alignment.
+        Saves:
+        - voiceover.mp3: Combined audio
+        - vo_alignment.json: Character-level timestamps (for word-by-word subtitles)
+        - voiceover_timing.json: Scene-level timing (for GEN3b)
+        - subtitles.ass: Netflix-style word-by-word subtitles
         """
-        import subprocess
         import json
 
         voiceover_path = project_dir / "voiceover.mp3"
+        alignment_path = project_dir / "vo_alignment.json"
         timing_path = project_dir / "voiceover_timing.json"
+        subtitles_path = project_dir / "subtitles.ass"
 
-        if voiceover_path.exists() and timing_path.exists():
-            logger.info(f"[{self.project_id}] Voiceover already exists with timing")
+        # Check if voiceover with alignment already exists
+        if voiceover_path.exists() and alignment_path.exists():
+            logger.info(f"[{self.project_id}] Voiceover with alignment already exists")
             return voiceover_path
 
-        # Collect all scene voiceover texts with scene numbers
+        # Try to use full_script from voiceover config (preferred - single call with timestamps)
+        voiceover_config = project_brief.get("voiceover", {})
+        full_script = voiceover_config.get("full_script", "")
+
+        if full_script:
+            # Use unified generation with character-level timestamps
+            try:
+                from app.services.glaze_models import VoiceoverSettings, VoiceoverConfig
+
+                settings_data = voiceover_config.get("settings", {})
+                vo_config = VoiceoverConfig(
+                    settings=VoiceoverSettings(**settings_data) if settings_data else VoiceoverSettings(),
+                    full_script=full_script,
+                    total_duration_seconds=voiceover_config.get("total_duration_seconds", 30),
+                )
+
+                logger.info(f"[{self.project_id}] Generating voiceover with ElevenLabs timestamps...")
+
+                # Generate with timestamps - this saves all required files
+                result_vo, result_align, result_subs, result_timing = await self.audio_engine.generate_voiceover_and_subtitles(
+                    voiceover_config=vo_config,
+                    project_dir=project_dir,
+                    hook_offset=0.3,  # Standard hook offset
+                )
+
+                logger.success(f"[{self.project_id}] Voiceover generated with character-level alignment")
+                logger.info(f"[{self.project_id}]   Audio: {result_vo}")
+                logger.info(f"[{self.project_id}]   Alignment: {result_align}")
+                logger.info(f"[{self.project_id}]   Subtitles: {result_subs}")
+                logger.info(f"[{self.project_id}]   Timing: {result_timing}")
+
+                return result_vo
+
+            except Exception as e:
+                logger.warning(f"[{self.project_id}] Unified voiceover generation failed: {e}")
+                logger.info(f"[{self.project_id}] Falling back to segment-by-segment generation...")
+
+        # Fallback: Collect scene voiceover texts and generate segment by segment
+        # This is less accurate (no character-level timestamps) but works for legacy projects
         scenes = project_brief.get("scenes", [])
         voiceover_segments = []
 
@@ -238,9 +282,8 @@ class AudioStage(BasePipelineStage):
             logger.warning(f"[{self.project_id}] No voiceover text found in project brief")
             return None
 
-        # Generate each segment separately and track timing
-        # NOTE: Timing tracks ACTUAL audio positions (no gaps) since FFmpeg concat
-        # doesn't add silence between segments. Subtitles sync to this timing.
+        # Generate each segment separately and track timing (legacy fallback)
+        import subprocess
         segment_files = []
         timing_data = {
             "segments": [],
@@ -315,7 +358,8 @@ class AudioStage(BasePipelineStage):
                 with open(timing_path, "w", encoding="utf-8") as f:
                     json.dump(timing_data, f, indent=2, ensure_ascii=False)
 
-                logger.success(f"[{self.project_id}] Voiceover generated: {voiceover_path}")
+                logger.success(f"[{self.project_id}] Voiceover generated (legacy mode): {voiceover_path}")
+                logger.warning(f"[{self.project_id}] No character-level alignment - subtitles may be less accurate")
                 logger.info(f"[{self.project_id}] Timing saved: {timing_path}")
 
                 # Cleanup concat list

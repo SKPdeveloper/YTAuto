@@ -1,17 +1,16 @@
 @echo off
-chcp 65001 >nul
 REM ============================================================================
 REM Edible House Automator - Setup Script
-REM Перший запуск: створює venv та встановлює dependencies
+REM First run: creates venv and installs dependencies
 REM ============================================================================
 
 cd /d "%~dp0"
 
 echo.
-echo ╔══════════════════════════════════════════════════════════════╗
-echo ║         EDIBLE HOUSE AUTOMATOR - Setup                       ║
-echo ║         Version 2.0                                          ║
-echo ╚══════════════════════════════════════════════════════════════╝
+echo ================================================================
+echo          EDIBLE HOUSE AUTOMATOR - Setup
+echo          Version 2.0
+echo ================================================================
 echo.
 
 REM ============================================================================
@@ -101,9 +100,9 @@ echo [5/6] Setting up configuration...
 if not exist config\.env (
     copy config\.env.example config\.env >nul
     echo.
-    echo ╔══════════════════════════════════════════════════════════════╗
-    echo ║   IMPORTANT: Configure your API keys!                        ║
-    echo ╚══════════════════════════════════════════════════════════════╝
+    echo ================================================================
+    echo    IMPORTANT: Configure your API keys!
+    echo ================================================================
     echo.
     echo File config\.env has been created from template.
     echo.
@@ -132,13 +131,13 @@ if exist "C:\Program Files\Topaz Labs LLC\Topaz Video AI\ffmpeg.exe" (
 echo.
 
 REM ============================================================================
-REM Завершення
+REM Complete
 REM ============================================================================
-echo ════════════════════════════════════════════════════════════════
+echo ================================================================
 echo.
-echo ╔══════════════════════════════════════════════════════════════╗
-echo ║                    Setup Complete!                           ║
-echo ╚══════════════════════════════════════════════════════════════╝
+echo ================================================================
+echo                     Setup Complete!
+echo ================================================================
 echo.
 echo Available commands:
 echo.
@@ -152,6 +151,6 @@ echo   1. Edit config\.env and add your API keys
 echo   2. Start AdsPower and open Higgsfield profile
 echo   3. Run: run.bat
 echo.
-echo ════════════════════════════════════════════════════════════════
+echo ================================================================
 echo.
 pause
