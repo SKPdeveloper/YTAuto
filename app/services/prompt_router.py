@@ -23,7 +23,9 @@ from google import genai
 from google.genai import types
 
 from app.core.config import settings
+from app.core.paths import get_project_path
 from app.utils.logger import logger
+from app.utils.yt_metadata_parser import parse_gen1_to_yt_file
 from app.services.gen_models import (
     # Contract Constants
     REQUIRED_GEN1_FIELDS,
@@ -489,6 +491,17 @@ class PromptRouter:
 
             # Detailed scene logging
             self._log_gen1_scenes(gen1_output)
+
+            # Generate YT.txt for easy manual posting
+            if project_id:
+                try:
+                    project_dir = get_project_path(project_id)
+                    project_dir.mkdir(parents=True, exist_ok=True)
+                    yt_path = project_dir / "YT.txt"
+                    parse_gen1_to_yt_file(gen1_output.model_dump(), yt_path)
+                    logger.info(f"[GEN1] Saved YT.txt to {yt_path}")
+                except Exception as yt_err:
+                    logger.warning(f"[GEN1] Failed to save YT.txt: {yt_err}")
 
             return gen1_output
 
