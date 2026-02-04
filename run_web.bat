@@ -39,6 +39,6 @@ echo.
 echo Press Ctrl+C to stop the server.
 echo.
 
-%PYTHON% run_web.py
+%PYTHON% run_web.py --host 0.0.0.0
 
 pause
