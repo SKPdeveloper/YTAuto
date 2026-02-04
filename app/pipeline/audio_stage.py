@@ -67,7 +67,11 @@ class AudioStage(BasePipelineStage):
             logger.debug(f"[{self.project_id}] AudioStage: Only {video_count}/6 videos found, skipping")
 
         # Check if audio files already exist (check multiple possible locations)
-        voiceover_exists = (project_dir / "voiceover.mp3").exists()
+        # IMPORTANT: voiceover requires BOTH mp3 AND alignment for word-by-word subtitles
+        voiceover_mp3_exists = (project_dir / "voiceover.mp3").exists()
+        voiceover_alignment_exists = (project_dir / "vo_alignment.json").exists()
+        voiceover_complete = voiceover_mp3_exists and voiceover_alignment_exists
+
         music_exists = (
             (project_dir / "music.mp3").exists() or
             (project_dir / "music" / "background.mp3").exists()
@@ -78,10 +82,13 @@ class AudioStage(BasePipelineStage):
         sfx_exists = sfx_dir.exists() and any(sfx_dir.glob("*.mp3"))
 
         # Run if we have videos but missing any audio asset
-        should_run = has_videos and (not voiceover_exists or not music_exists or not sfx_exists)
+        # NOTE: voiceover_complete requires BOTH mp3 and alignment - no fallback!
+        should_run = has_videos and (not voiceover_complete or not music_exists or not sfx_exists)
 
         if has_videos and not should_run:
-            logger.debug(f"[{self.project_id}] AudioStage: All audio exists (vo={voiceover_exists}, music={music_exists}, sfx={sfx_exists})")
+            logger.debug(f"[{self.project_id}] AudioStage: All audio exists (vo={voiceover_complete}, music={music_exists}, sfx={sfx_exists})")
+        elif has_videos and voiceover_mp3_exists and not voiceover_alignment_exists:
+            logger.warning(f"[{self.project_id}] AudioStage: voiceover.mp3 exists but vo_alignment.json missing - will regenerate with timestamps")
 
         return should_run
 
@@ -201,10 +208,15 @@ class AudioStage(BasePipelineStage):
         timing_path = project_dir / "voiceover_timing.json"
         subtitles_path = project_dir / "subtitles.ass"
 
-        # Check if voiceover with alignment already exists
+        # Check if voiceover with alignment already exists (BOTH required)
         if voiceover_path.exists() and alignment_path.exists():
             logger.info(f"[{self.project_id}] Voiceover with alignment already exists")
             return voiceover_path
+
+        # If only voiceover exists without alignment, delete it to force regeneration
+        if voiceover_path.exists() and not alignment_path.exists():
+            logger.warning(f"[{self.project_id}] voiceover.mp3 exists without vo_alignment.json - deleting to regenerate with timestamps")
+            voiceover_path.unlink()
 
         # Try to use full_script from voiceover config (preferred - single call with timestamps)
         voiceover_config = project_brief.get("voiceover", {})
@@ -240,137 +252,14 @@ class AudioStage(BasePipelineStage):
                 return result_vo
 
             except Exception as e:
-                logger.warning(f"[{self.project_id}] Unified voiceover generation failed: {e}")
-                logger.info(f"[{self.project_id}] Falling back to segment-by-segment generation...")
+                # NO FALLBACK - voiceover with timestamps is required for word-by-word subtitles
+                logger.error(f"[{self.project_id}] Voiceover generation with timestamps FAILED: {e}")
+                logger.error(f"[{self.project_id}] This is a critical error - word-by-word subtitles require ElevenLabs timestamps")
+                raise RuntimeError(f"Voiceover generation failed: {e}. ElevenLabs timestamps are required for word-by-word subtitles.")
 
-        # Fallback: Collect scene voiceover texts and generate segment by segment
-        # This is less accurate (no character-level timestamps) but works for legacy projects
-        scenes = project_brief.get("scenes", [])
-        voiceover_segments = []
-
-        # Placeholder texts that should NOT be voiced
-        placeholder_texts = [
-            "tagline", "(can be empty)", "", "final vo (can be empty)",
-            "loop setup", "loop close", "closing loop", "loop", "(loop)",
-            "opening loop", "loop back", "visual loop", "end loop"
-        ]
-
-        for i, scene in enumerate(scenes):
-            scene_num = scene.get("scene_number", i + 1)
-            audio_prompt = (
-                scene.get("voiceover_segment") or
-                scene.get("voiceover") or
-                scene.get("audio_prompt") or
-                scene.get("voiceover_text", "")
-            )
-
-            # Skip empty or placeholder texts
-            prompt_lower = audio_prompt.lower().strip() if audio_prompt else ""
-            is_placeholder = (
-                not audio_prompt or
-                prompt_lower in placeholder_texts or
-                (len(prompt_lower) < 20 and "loop" in prompt_lower)
-            )
-
-            if not is_placeholder:
-                voiceover_segments.append({
-                    "scene_number": scene_num,
-                    "text": audio_prompt,
-                })
-
-        if not voiceover_segments:
-            logger.warning(f"[{self.project_id}] No voiceover text found in project brief")
-            return None
-
-        # Generate each segment separately and track timing (legacy fallback)
-        import subprocess
-        segment_files = []
-        timing_data = {
-            "segments": [],
-            "total_duration": 0.0,
-        }
-        current_time = 0.0
-
-        try:
-            for seg in voiceover_segments:
-                scene_num = seg["scene_number"]
-                text = seg["text"]
-
-                # Generate individual segment
-                segment_path = project_dir / f"vo_segment_{scene_num}.mp3"
-
-                if not segment_path.exists():
-                    generated = await self.audio_engine.generate_and_save_voiceover(
-                        text=text,
-                        output_path=segment_path,
-                    )
-                    if not generated or not generated.exists():
-                        logger.warning(f"[{self.project_id}] Failed to generate VO segment {scene_num}")
-                        continue
-
-                # Get segment duration using ffprobe
-                result = subprocess.run([
-                    "ffprobe", "-v", "error",
-                    "-show_entries", "format=duration",
-                    "-of", "default=noprint_wrappers=1:nokey=1",
-                    str(segment_path)
-                ], capture_output=True, text=True)
-
-                if result.returncode == 0:
-                    duration = float(result.stdout.strip())
-                else:
-                    duration = 2.0  # Fallback
-
-                segment_files.append(segment_path)
-
-                # Record timing - tracks actual position in concatenated audio (no gaps)
-                timing_data["segments"].append({
-                    "scene_number": scene_num,
-                    "text": text,
-                    "start_time": round(current_time, 3),
-                    "end_time": round(current_time + duration, 3),
-                    "duration": round(duration, 3),
-                    "file": segment_path.name,
-                })
-
-                logger.info(f"[{self.project_id}] VO segment {scene_num}: {duration:.2f}s @ {current_time:.2f}s")
-                current_time += duration  # No gap - matches actual audio
-
-            timing_data["total_duration"] = round(current_time, 3)
-
-            # Concatenate all segments using FFmpeg
-            if segment_files:
-                # Create concat list file
-                concat_list_path = project_dir / "vo_concat_list.txt"
-                with open(concat_list_path, "w") as f:
-                    for seg_file in segment_files:
-                        f.write(f"file '{seg_file.name}'\n")
-
-                # Concatenate with FFmpeg
-                concat_cmd = [
-                    "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-                    "-i", str(concat_list_path),
-                    "-c", "copy", str(voiceover_path)
-                ]
-                subprocess.run(concat_cmd, capture_output=True)
-
-                # Save timing metadata
-                with open(timing_path, "w", encoding="utf-8") as f:
-                    json.dump(timing_data, f, indent=2, ensure_ascii=False)
-
-                logger.success(f"[{self.project_id}] Voiceover generated (legacy mode): {voiceover_path}")
-                logger.warning(f"[{self.project_id}] No character-level alignment - subtitles may be less accurate")
-                logger.info(f"[{self.project_id}] Timing saved: {timing_path}")
-
-                # Cleanup concat list
-                concat_list_path.unlink(missing_ok=True)
-
-                return voiceover_path
-
-        except Exception as e:
-            logger.error(f"[{self.project_id}] Voiceover generation failed: {e}")
-
-        return None
+        # No full_script in voiceover config - this is an error
+        logger.error(f"[{self.project_id}] No full_script found in voiceover config - cannot generate voiceover")
+        raise ValueError("No full_script found in project_brief.voiceover - voiceover generation requires full_script")
 
     async def _generate_music(
         self,

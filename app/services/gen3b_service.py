@@ -394,22 +394,30 @@ NO markdown formatting."""
         # Hook duration offset - subtitles start after hook
         HOOK_OFFSET = 0.3
 
-        # Try to load voiceover_timing.json for accurate timing
+        # REQUIRE voiceover_timing.json for accurate timing (no fallback!)
         vo_timing = {}
-        if project_dir:
-            timing_path = project_dir / "voiceover_timing.json"
-            if timing_path.exists():
-                import json
-                with open(timing_path, "r", encoding="utf-8") as f:
-                    timing_data = json.load(f)
-                for seg in timing_data.get("segments", []):
-                    # Add hook offset to timing - voiceover plays after hook
-                    vo_timing[seg["scene_number"]] = {
-                        "start_time": seg["start_time"] + HOOK_OFFSET,
-                        "end_time": seg["end_time"] + HOOK_OFFSET,
-                        "text": seg["text"],
-                    }
-                logger.info(f"Loaded voiceover timing for {len(vo_timing)} segments (with {HOOK_OFFSET}s hook offset)")
+        if not project_dir:
+            raise ValueError("project_dir is required for subtitle timing - cannot load voiceover_timing.json")
+
+        timing_path = project_dir / "voiceover_timing.json"
+        if not timing_path.exists():
+            raise FileNotFoundError(
+                f"voiceover_timing.json not found at {timing_path}. "
+                f"Ensure AudioStage completed successfully with ElevenLabs timestamps. "
+                f"Required files: voiceover.mp3, vo_alignment.json, voiceover_timing.json"
+            )
+
+        import json
+        with open(timing_path, "r", encoding="utf-8") as f:
+            timing_data = json.load(f)
+        for seg in timing_data.get("segments", []):
+            # Add hook offset to timing - voiceover plays after hook
+            vo_timing[seg["scene_number"]] = {
+                "start_time": seg["start_time"] + HOOK_OFFSET,
+                "end_time": seg["end_time"] + HOOK_OFFSET,
+                "text": seg["text"],
+            }
+        logger.info(f"Loaded voiceover timing for {len(vo_timing)} segments (with {HOOK_OFFSET}s hook offset)")
 
         # Build lookup of existing GEN3b subtitles by scene
         existing_by_scene = {}
@@ -438,28 +446,18 @@ NO markdown formatting."""
             if is_placeholder:
                 continue
 
-            # Determine timing - prefer voiceover_timing.json
+            # Determine timing - REQUIRE voiceover_timing.json (no fallback!)
             if scene_num in vo_timing:
                 start_time = vo_timing[scene_num]["start_time"]
                 end_time = vo_timing[scene_num]["end_time"]
                 logger.debug(f"Scene {scene_num}: Using VO timing {start_time}-{end_time}s")
             else:
-                # Fallback to scene timing
-                manifest_scene = None
-                for ms in manifest_scenes:
-                    if ms.scene_number == scene_num:
-                        manifest_scene = ms
-                        break
-
-                if manifest_scene:
-                    start_time = manifest_scene.timeline_start
-                    end_time = manifest_scene.timeline_end
-                else:
-                    timestamp_str = gen1_scene.get("timestamp", "0:00")
-                    parts = timestamp_str.split(":")
-                    start_time = float(parts[0]) * 60 + float(parts[1]) if len(parts) == 2 else 0.0
-                    duration = gen1_scene.get("duration_seconds", 2.0)
-                    end_time = start_time + duration
+                # NO FALLBACK - voiceover_timing.json is required for accurate subtitles
+                raise ValueError(
+                    f"Scene {scene_num} missing from voiceover_timing.json. "
+                    f"Ensure AudioStage generated voiceover with timestamps (vo_alignment.json + voiceover_timing.json). "
+                    f"Scene boundaries fallback has been removed - accurate subtitle timing requires voiceover timestamps."
+                )
 
             # Determine style based on voice direction tags
             style = "NORMAL"
@@ -543,84 +541,12 @@ NO markdown formatting."""
                 result.append(subtitle)
 
         result.sort(key=lambda s: s.output_start)
-        logger.info(f"Merged subtitles: {len(result)} total (timing source: {'voiceover_timing.json' if vo_timing else 'scene boundaries'})")
+        logger.info(f"Merged subtitles: {len(result)} total (timing source: voiceover_timing.json)")
         return result
 
-    def _generate_subtitles_from_voiceover(
-        self,
-        gen1_brief: Dict[str, Any],
-        manifest_scenes: List[ManifestScene],
-    ) -> List[ManifestSubtitle]:
-        """
-        Generate subtitles from voiceover in gen1_brief scenes.
-
-        This is used as fallback when GEN3b generates bad subtitles.
-        Extracts voiceover_segment from each scene in gen1_brief.
-        """
-        subtitles = []
-        gen1_scenes = gen1_brief.get("scenes", [])
-
-        for i, gen1_scene in enumerate(gen1_scenes):
-            # Get voiceover text from scene
-            text = gen1_scene.get("voiceover_segment", "") or gen1_scene.get("voiceover", "")
-            if not text or text.lower() == "tagline":
-                continue
-
-            # Clean up text - remove voice direction tags for display
-            display_text = text
-            for tag in ["[shouts]", "[whispers]", "[pause]", "[whisper]", "[shout]", "[sighs]",
-                        "[laughs]", "[excited]", "[soft]", "[dramatic]", "[sarcastic]",
-                        "[sad]", "[angry]", "[happily]", "[short pause]", "[long pause]"]:
-                display_text = display_text.replace(tag, "").strip()
-            display_text = " ".join(display_text.split())  # Normalize whitespace
-
-            if not display_text or len(display_text) < 3:
-                continue
-
-            # Get timing from manifest scene (if exists) or calculate
-            scene_num = gen1_scene.get("scene_number", i + 1)
-            manifest_scene = None
-            for ms in manifest_scenes:
-                if ms.scene_number == scene_num:
-                    manifest_scene = ms
-                    break
-
-            if manifest_scene:
-                start_time = manifest_scene.timeline_start
-                end_time = manifest_scene.timeline_end
-            else:
-                # Parse timestamp "0:02" format
-                timestamp_str = gen1_scene.get("timestamp", "0:00")
-                parts = timestamp_str.split(":")
-                start_time = float(parts[0]) * 60 + float(parts[1]) if len(parts) == 2 else 0.0
-                duration = gen1_scene.get("duration_seconds", 2.0)
-                end_time = start_time + duration
-
-            # Determine style based on voice direction tags
-            style = "NORMAL"
-            animation = "BOUNCE"
-
-            if "[whisper" in text.lower():
-                style = "WHISPER"
-                animation = "FADE_ELEGANT"
-            elif "[shout" in text.lower():
-                style = "Impact"
-                animation = "SHAKE"
-
-            subtitle = ManifestSubtitle(
-                id=f"SUB_VO{i+1}",
-                text=display_text,
-                output_start=float(start_time),
-                output_end=float(end_time),
-                style=style,
-                position="bottom-center",
-                animation=animation,
-            )
-            subtitles.append(subtitle)
-            logger.debug(f"Generated subtitle from VO: '{display_text[:30]}...' @ {start_time}-{end_time}s")
-
-        logger.info(f"Generated {len(subtitles)} subtitles from gen1_brief scenes")
-        return subtitles
+    # NOTE: _generate_subtitles_from_voiceover fallback method was REMOVED
+    # Subtitle timing now REQUIRES voiceover_timing.json from AudioStage
+    # If voiceover_timing.json is missing, the pipeline will fail with a clear error
 
     def _parse_subtitles(self, items: list) -> List[ManifestSubtitle]:
         """Parse subtitles from Gemini format to ManifestSubtitle."""
