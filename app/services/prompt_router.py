@@ -1827,7 +1827,7 @@ CRITICAL REQUIREMENTS:
                 title=gen1.youtube_title or gen1.metadata.title,
                 description=gen1.youtube_description or "",
                 pinned_comment=gen1.youtube_pinned_comment or gen1.engagement.easter_egg.comment_bait or "",
-                hashtags=gen1.engagement.hashtags,
+                hashtags=gen1.youtube_hashtags or gen1.engagement.hashtags,
                 tags=gen1.youtube_tags,
             ),
             # Viral audit with scores from GEN1 viral_assessment
