@@ -1663,8 +1663,280 @@ class Gen3aOutput(BaseModel):
 
 
 # ============================================================================
-# GEN3b MODELS - FFmpeg Manifest Generator v1.3.1
+# GEN3b MODELS - FFmpeg Manifest Generator v1.3.2
 # ============================================================================
+
+# ---------------------------------------------------------------------------
+# Music Analysis (from GEN3a)
+# ---------------------------------------------------------------------------
+
+class MusicBeat(BaseModel):
+    """Beat в музичному аналізі."""
+    timestamp: float = Field(..., description="Timestamp біту")
+    strength: str = Field(default="MEDIUM", description="STRONG/MEDIUM/WEAK")
+    beat_number: int = Field(default=1, description="Номер біту в такті")
+
+
+class MusicAnalysis(BaseModel):
+    """Музичний аналіз з GEN3a."""
+    bpm: float = Field(..., description="BPM треку")
+    time_signature: str = Field(default="4/4", description="Розмір")
+    beats: List[MusicBeat] = Field(default_factory=list, description="Всі біти")
+    strong_beats_for_cuts: List[float] = Field(default_factory=list, description="Біти для cuts")
+
+
+# ---------------------------------------------------------------------------
+# Visual Classification (from GEN3a)
+# ---------------------------------------------------------------------------
+
+class VisualClassification(BaseModel):
+    """Візуальна класифікація сцени."""
+    primary_type: str = Field(default="EPIC_WIDE", description="Основний тип")
+    secondary_type: Optional[str] = Field(default=None, description="Другорядний тип")
+    confidence: float = Field(default=0.9, description="Впевненість")
+    reasoning: str = Field(default="", description="Причина")
+    dominant_elements: List[str] = Field(default_factory=list, description="Домінуючі елементи")
+    scale: str = Field(default="MEDIUM", description="Масштаб")
+    camera_motion: str = Field(default="STATIC", description="Рух камери")
+    effect_palette_recommendation: str = Field(default="DRAMATIC", description="Рекомендована палітра")
+
+
+# ---------------------------------------------------------------------------
+# Glitch Detection (from GEN3a)
+# ---------------------------------------------------------------------------
+
+class GlitchInfo(BaseModel):
+    """Інформація про glitch."""
+    id: str = Field(..., description="ID glitch")
+    source_start: float = Field(..., description="Початок в source")
+    source_end: float = Field(..., description="Кінець в source")
+    type: str = Field(default="MORPH_ARTIFACT", description="Тип glitch")
+    severity: str = Field(default="LOW", description="Серйозність")
+    description: str = Field(default="", description="Опис")
+    recommended_action: str = Field(default="MASK", description="Рекомендована дія")
+
+
+# ---------------------------------------------------------------------------
+# Action Peak (from GEN3a)
+# ---------------------------------------------------------------------------
+
+class ActionPeak(BaseModel):
+    """Action peak в сцені."""
+    id: str = Field(..., description="ID peak")
+    source_timestamp: float = Field(..., description="Timestamp в source")
+    type: str = Field(default="MOTION_BURST", description="Тип")
+    intensity: float = Field(default=0.5, description="Інтенсивність 0-1")
+    beat_aligned: bool = Field(default=False, description="Чи на біті")
+    nearest_beat: float = Field(default=0.0, description="Найближчий біт")
+
+
+# ---------------------------------------------------------------------------
+# Easter Egg Verification (from GEN3a)
+# ---------------------------------------------------------------------------
+
+class EasterEggVerification(BaseModel):
+    """Верифікація easter egg."""
+    found: bool = Field(default=False, description="Чи знайдено")
+    source_timestamp: float = Field(default=0.0, description="Timestamp")
+    visibility_score: float = Field(default=0.0, description="Видимість 0-1")
+    position_in_frame: str = Field(default="NOT_FOUND", description="Позиція")
+    safe_zone_compliant: bool = Field(default=True, description="В safe zone")
+
+
+# ---------------------------------------------------------------------------
+# Canvas Config (from GEN3b)
+# ---------------------------------------------------------------------------
+
+class Resolution(BaseModel):
+    """Роздільна здатність."""
+    width: int = Field(default=1080, description="Ширина")
+    height: int = Field(default=1920, description="Висота")
+
+
+class CanvasConfig(BaseModel):
+    """Конфігурація canvas."""
+    source_resolution: Resolution = Field(default_factory=lambda: Resolution(width=1080, height=1920))
+    working_resolution: Resolution = Field(default_factory=lambda: Resolution(width=1404, height=2496))
+    final_resolution: Resolution = Field(default_factory=lambda: Resolution(width=1080, height=1920))
+
+
+# ---------------------------------------------------------------------------
+# FPS Config (from GEN3b)
+# ---------------------------------------------------------------------------
+
+class FpsConfig(BaseModel):
+    """Конфігурація FPS."""
+    target_fps: int = Field(default=30, description="Цільовий FPS")
+    source_fps: str = Field(default="auto_detect", description="FPS джерела")
+    conversion_filter: str = Field(default="fps=30", description="FFmpeg filter")
+
+
+# ---------------------------------------------------------------------------
+# Font Config (from GEN3b)
+# ---------------------------------------------------------------------------
+
+class FontConfig(BaseModel):
+    """Конфігурація шрифту."""
+    font_name: str = Field(default="Montserrat-Bold", description="Назва шрифту")
+    fontfile: str = Field(default="", description="Шлях до файлу")
+    fallback: str = Field(default="DejaVu-Sans-Bold", description="Fallback шрифт")
+
+
+# ---------------------------------------------------------------------------
+# Beat Sync Report (from GEN3b)
+# ---------------------------------------------------------------------------
+
+class BeatSyncScore(BaseModel):
+    """Оцінка синхронізації з бітами."""
+    transitions_on_beat: int = Field(default=0, description="Кількість переходів на біті")
+    effects_on_beat: int = Field(default=0, description="Кількість ефектів на біті")
+    overall_sync_quality: str = Field(default="GOOD", description="Загальна якість")
+    final_score: float = Field(default=0.7, description="Фінальна оцінка 0-1")
+
+
+class SceneTransitionBeat(BaseModel):
+    """Інформація про перехід між сценами."""
+    from_scene: int = Field(..., description="З якої сцени")
+    to_scene: int = Field(..., description="В яку сцену")
+    timestamp: float = Field(..., description="Час переходу")
+    nearest_beat: float = Field(..., description="Найближчий біт")
+    offset: float = Field(default=0.0, description="Зміщення від біту")
+    aligned: bool = Field(default=True, description="Чи вирівняно")
+
+
+class BeatSyncReport(BaseModel):
+    """Звіт синхронізації з бітами."""
+    music_bpm: float = Field(default=120.0, description="BPM")
+    strong_beats_used: List[float] = Field(default_factory=list, description="Використані сильні біти")
+    scene_transitions: List[SceneTransitionBeat] = Field(default_factory=list, description="Переходи")
+    sync_score: BeatSyncScore = Field(default_factory=BeatSyncScore)
+
+
+# ---------------------------------------------------------------------------
+# Transition Info (from GEN3b timeline)
+# ---------------------------------------------------------------------------
+
+class TransitionBeatInfo(BaseModel):
+    """Інформація про біт для переходу."""
+    timestamp: float = Field(..., description="Час")
+    nearest_beat: float = Field(..., description="Найближчий біт")
+    on_beat: bool = Field(default=False, description="Чи на біті")
+    offset: float = Field(default=0.0, description="Зміщення")
+
+
+class TransitionToNext(BaseModel):
+    """Перехід до наступної сцени."""
+    type: str = Field(default="HARD_CUT", description="Тип переходу")
+    beat_info: Optional[TransitionBeatInfo] = Field(default=None, description="Інформація про біт")
+
+
+# ---------------------------------------------------------------------------
+# Visual Type (from GEN3b timeline)
+# ---------------------------------------------------------------------------
+
+class SceneVisualType(BaseModel):
+    """Візуальний тип сцени з GEN3b."""
+    primary: str = Field(default="EPIC_WIDE", description="Основний тип")
+    secondary: Optional[str] = Field(default=None, description="Другорядний тип")
+    effect_palette: str = Field(default="DRAMATIC", description="Палітра ефектів")
+    source: str = Field(default="", description="Джерело класифікації")
+
+
+# ---------------------------------------------------------------------------
+# Easter Egg Protection (from GEN3b)
+# ---------------------------------------------------------------------------
+
+class EasterEggProtection(BaseModel):
+    """Захист easter egg в сцені."""
+    object: str = Field(default="", description="Об'єкт")
+    verified: bool = Field(default=False, description="Верифіковано")
+    applied_restrictions: Dict[str, str] = Field(default_factory=dict, description="Застосовані обмеження")
+
+
+# ---------------------------------------------------------------------------
+# Loop Processing (from GEN3b)
+# ---------------------------------------------------------------------------
+
+class LoopProcessing(BaseModel):
+    """Обробка loop для сцени 6."""
+    reverse: bool = Field(default=True, description="Чи реверсувати")
+    duration_match: Dict[str, Any] = Field(default_factory=dict, description="Відповідність тривалості")
+
+
+# ---------------------------------------------------------------------------
+# Output Config (from GEN3b)
+# ---------------------------------------------------------------------------
+
+class VideoOutputConfig(BaseModel):
+    """Конфігурація відео виходу."""
+    codec: str = Field(default="libx264", description="Кодек")
+    preset: str = Field(default="slow", description="Preset")
+    crf: int = Field(default=18, description="CRF якість")
+    pix_fmt: str = Field(default="yuv420p", description="Pixel format")
+
+
+class AudioOutputConfig(BaseModel):
+    """Конфігурація аудіо виходу."""
+    codec: str = Field(default="aac", description="Кодек")
+    bitrate: str = Field(default="192k", description="Бітрейт")
+
+
+class OutputConfig(BaseModel):
+    """Повна конфігурація виходу."""
+    filename: str = Field(default="output_final.mp4", description="Ім'я файлу")
+    video: VideoOutputConfig = Field(default_factory=VideoOutputConfig)
+    audio: AudioOutputConfig = Field(default_factory=AudioOutputConfig)
+
+
+# ---------------------------------------------------------------------------
+# Validation Result (from GEN3b)
+# ---------------------------------------------------------------------------
+
+class ValidationResult(BaseModel):
+    """Результат валідації від GEN3b."""
+    duration: Dict[str, Any] = Field(default_factory=dict)
+    scenes: Dict[str, Any] = Field(default_factory=dict)
+    loop: Dict[str, Any] = Field(default_factory=dict)
+    glitches: Dict[str, Any] = Field(default_factory=dict)
+    easter_egg: Dict[str, Any] = Field(default_factory=dict)
+    hook: Dict[str, Any] = Field(default_factory=dict)
+    content_aware_effects: Dict[str, Any] = Field(default_factory=dict)
+    subtitle_styles: Dict[str, Any] = Field(default_factory=dict)
+    beat_sync: Dict[str, Any] = Field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Creative Summary (from GEN3b)
+# ---------------------------------------------------------------------------
+
+class CreativeSummary(BaseModel):
+    """Творчий підсумок від GEN3b."""
+    hook_style: str = Field(default="", description="Стиль хуку")
+    hook_reasoning: str = Field(default="", description="Причина вибору")
+    effects_by_palette: Dict[str, int] = Field(default_factory=dict)
+    subtitle_style: str = Field(default="", description="Стиль субтитрів")
+    subtitle_word_count: int = Field(default=0, description="Кількість слів")
+    beat_sync_quality: str = Field(default="", description="Якість синхронізації")
+    variety_score: float = Field(default=0.0, description="Оцінка різноманітності")
+    loop_ready: bool = Field(default=True, description="Готовність до loop")
+
+
+# ---------------------------------------------------------------------------
+# Effect Selection Log (from GEN3b)
+# ---------------------------------------------------------------------------
+
+class EffectSelectionLog(BaseModel):
+    """Лог вибору ефектів для сцени."""
+    palette_used: str = Field(default="", description="Використана палітра")
+    visual_type: str = Field(default="", description="Візуальний тип")
+    effects_applied: int = Field(default=0, description="Кількість ефектів")
+    reason: Optional[str] = Field(default=None, description="Причина")
+    forbidden_checked: List[str] = Field(default_factory=list, description="Перевірені заборонені")
+
+
+# ---------------------------------------------------------------------------
+# Core Manifest Models
+# ---------------------------------------------------------------------------
 
 class ManifestEffect(BaseModel):
     """Ефект для manifest.json."""
@@ -1674,6 +1946,9 @@ class ManifestEffect(BaseModel):
     params: Dict[str, Any] = Field(default_factory=dict, description="Параметри ефекту")
     effect_id: Optional[str] = Field(default=None, description="ID ефекту")
     ffmpeg_filter: Optional[str] = Field(default=None, description="FFmpeg filter string")
+    palette_source: Optional[str] = Field(default=None, description="Джерело палітри")
+    trigger: Optional[str] = Field(default=None, description="Тригер ефекту")
+    is_hook_effect: bool = Field(default=False, description="Чи це хук-ефект")
 
 
 class ManifestCut(BaseModel):
@@ -1684,7 +1959,8 @@ class ManifestCut(BaseModel):
 
 
 class ManifestScene(BaseModel):
-    """Сцена в manifest.json."""
+    """Сцена в manifest.json - розширена версія з GEN3a/GEN3b даними."""
+    # Core fields
     scene_number: int = Field(..., description="Номер сцени")
     source_file: str = Field(..., description="Файл джерела")
     timeline_start: float = Field(..., description="Початок на timeline")
@@ -1692,6 +1968,23 @@ class ManifestScene(BaseModel):
     speed_segments: List[SpeedSegment] = Field(default_factory=list)
     effects: List[ManifestEffect] = Field(default_factory=list)
     cuts: List[ManifestCut] = Field(default_factory=list)
+
+    # From GEN3a - scene analysis
+    source_duration: float = Field(default=10.0, description="Тривалість source відео")
+    video_quality: float = Field(default=0.8, description="Якість відео 0-1")
+    glitches: List[GlitchInfo] = Field(default_factory=list, description="Знайдені glitches")
+    action_peaks: List[ActionPeak] = Field(default_factory=list, description="Action peaks")
+    dead_spots: List[Dict[str, Any]] = Field(default_factory=list, description="Dead spots")
+    visual_classification: Optional[VisualClassification] = Field(default=None, description="Візуальна класифікація")
+    easter_egg_verification: Optional[EasterEggVerification] = Field(default=None, description="Верифікація easter egg")
+
+    # From GEN3b - timeline item
+    special_flags: List[str] = Field(default_factory=list, description="Спеціальні флаги (HOOK_SCENE, EASTER_EGG_SCENE, etc)")
+    visual_type: Optional[SceneVisualType] = Field(default=None, description="Візуальний тип з GEN3b")
+    transition_to_next: Optional[TransitionToNext] = Field(default=None, description="Перехід до наступної сцени")
+    effect_selection_log: Optional[EffectSelectionLog] = Field(default=None, description="Лог вибору ефектів")
+    easter_egg_protection: Optional[EasterEggProtection] = Field(default=None, description="Захист easter egg")
+    loop_processing: Optional[LoopProcessing] = Field(default=None, description="Обробка loop (для сцени 6)")
 
 
 class ManifestSubtitle(BaseModel):
@@ -1741,8 +2034,8 @@ class HookSection(BaseModel):
 
 
 class Gen3bManifest(BaseModel):
-    """Повний manifest.json від GEN3b v1.3.1."""
-    version: str = Field(default="1.3.1", description="Версія GEN3b")
+    """Повний manifest.json від GEN3b v1.3.2 - з 100% даних з GEN3a та GEN3b."""
+    version: str = Field(default="1.3.2", description="Версія GEN3b manifest")
     project_id: str = Field(default="", description="ID проекту")
     generated_at: str = Field(default="", description="Час генерації")
 
@@ -1753,7 +2046,7 @@ class Gen3bManifest(BaseModel):
     # Hook
     hook: HookSection = Field(default_factory=lambda: HookSection(style="CLASSIC", duration=0.3))
 
-    # Scenes
+    # Scenes (з розширеними полями)
     scenes: List[ManifestScene] = Field(default_factory=list)
 
     # Audio
@@ -1768,6 +2061,30 @@ class Gen3bManifest(BaseModel):
     # Loop info
     loop_point: float = Field(default=0.0, description="Точка loop")
     loop_compliant: bool = Field(default=True)
+
+    # =========================================================================
+    # NEW FIELDS FROM GEN3a (v1.3.2)
+    # =========================================================================
+    music_analysis: Optional[MusicAnalysis] = Field(default=None, description="Музичний аналіз з GEN3a")
+    hook_variety_analysis: Optional[Dict[str, Any]] = Field(default=None, description="Аналіз різноманітності хуків")
+
+    # =========================================================================
+    # NEW FIELDS FROM GEN3b (v1.3.2)
+    # =========================================================================
+    canvas: Optional[CanvasConfig] = Field(default=None, description="Конфігурація canvas")
+    fps_config: Optional[FpsConfig] = Field(default=None, description="Конфігурація FPS")
+    font_config: Optional[FontConfig] = Field(default=None, description="Конфігурація шрифту")
+    beat_sync_report: Optional[BeatSyncReport] = Field(default=None, description="Звіт синхронізації з бітами")
+    filter_chain: List[str] = Field(default_factory=list, description="Порядок FFmpeg фільтрів")
+    output_config: Optional[OutputConfig] = Field(default=None, description="Конфігурація виходу")
+    validation: Optional[ValidationResult] = Field(default=None, description="Результат валідації")
+    creative_summary: Optional[CreativeSummary] = Field(default=None, description="Творчий підсумок")
+
+    # =========================================================================
+    # RAW BACKUPS (v1.3.2) - для 100% відновлення даних
+    # =========================================================================
+    gen3a_raw: Optional[Dict[str, Any]] = Field(default=None, description="Повний GEN3a output")
+    gen3b_raw: Optional[Dict[str, Any]] = Field(default=None, description="Повний GEN3b output")
 
 
 # ============================================================================

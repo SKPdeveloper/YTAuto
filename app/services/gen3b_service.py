@@ -25,6 +25,7 @@ from google.genai import types
 from app.core.config import settings
 from app.utils.logger import logger
 from app.services.gen_models import (
+    # Core models
     Gen3aOutput,
     Gen3bManifest,
     ManifestScene,
@@ -36,6 +37,32 @@ from app.services.gen_models import (
     ManifestSFXEvent,
     HookSection,
     SpeedSegment,
+    # GEN3a models (v1.3.2)
+    MusicAnalysis,
+    MusicBeat,
+    VisualClassification,
+    GlitchInfo,
+    ActionPeak,
+    EasterEggVerification,
+    # GEN3b models (v1.3.2)
+    CanvasConfig,
+    Resolution,
+    FpsConfig,
+    FontConfig,
+    BeatSyncReport,
+    BeatSyncScore,
+    SceneTransitionBeat,
+    TransitionToNext,
+    TransitionBeatInfo,
+    SceneVisualType,
+    EasterEggProtection,
+    LoopProcessing,
+    OutputConfig,
+    VideoOutputConfig,
+    AudioOutputConfig,
+    ValidationResult,
+    CreativeSummary,
+    EffectSelectionLog,
 )
 
 
@@ -558,11 +585,25 @@ NO markdown formatting."""
 
                 # Extract timing - Gemini nests in "timing" object
                 timing = item.get("timing", {})
-                output_start = timing.get("output_start") or item.get("output_start", 0.0)
-                output_end = timing.get("output_end") or item.get("output_end", 0.0)
+                output_start = (
+                    timing.get("output_start") or
+                    timing.get("segment_start") or
+                    item.get("output_start", 0.0)
+                )
+                output_end = (
+                    timing.get("output_end") or
+                    timing.get("segment_end") or
+                    item.get("output_end", 0.0)
+                )
 
-                # Extract text
-                text = item.get("text", "")
+                # Extract text - GEN3b nests in text_source.clean_text
+                text_source = item.get("text_source", {})
+                text = (
+                    item.get("text") or
+                    text_source.get("clean_text") or
+                    text_source.get("original") or
+                    ""
+                )
                 if not text:
                     continue
 
@@ -604,22 +645,44 @@ NO markdown formatting."""
         gen3a_analysis: Gen3aOutput,
         gen1_brief: Dict[str, Any] = None,
     ) -> Gen3bManifest:
-        """Convert parsed JSON to Gen3bManifest model."""
-        # Parse hook section
+        """
+        Convert parsed JSON to Gen3bManifest model.
+
+        v1.3.2: Preserves 100% of data from GEN3a and GEN3b.
+        """
+        # =====================================================================
+        # HOOK SECTION - with effects from hook_sequence
+        # =====================================================================
         hook_data = data.get("hook", {})
+        hook_sequence = data.get("hook_sequence", {})
+
+        # Parse hook effects from hook_sequence (GEN3b provides them there)
+        hook_effects_raw = (
+            hook_data.get("effects") or
+            hook_sequence.get("effects") or
+            []
+        )
+        hook_effects = self._safe_parse_list(hook_effects_raw, ManifestEffect)
+
         hook = HookSection(
-            style=hook_data.get("style", gen3a_analysis.hook_variety_analysis.recommended_style),
-            duration=hook_data.get("duration", 0.3),
-            effects=self._safe_parse_list(hook_data.get("effects", []), ManifestEffect),
+            style=hook_data.get("style") or hook_sequence.get("style_selected") or gen3a_analysis.hook_variety_analysis.recommended_style,
+            duration=hook_data.get("duration") or hook_sequence.get("duration") or 0.3,
+            effects=hook_effects,
             sfx=hook_data.get("sfx", ""),
         )
 
-        # Parse scenes (try multiple keys: scenes, timeline)
+        # =====================================================================
+        # SCENES - with full GEN3a and GEN3b data
+        # =====================================================================
         scenes = []
         raw_scenes = data.get("scenes") or data.get("timeline", [])
         logger.info(f"Raw scenes count: {len(raw_scenes)}")
         if not raw_scenes:
             logger.warning(f"No scenes in data. Keys: {list(data.keys())}")
+
+        # Build lookup for GEN3a scene data
+        gen3a_scenes_map = {s.scene_number: s for s in gen3a_analysis.scenes}
+
         for i, scene_data in enumerate(raw_scenes):
             try:
                 # Handle multiple possible field names (Gemini uses nested structure)
@@ -629,6 +692,8 @@ NO markdown formatting."""
                     scene_data.get("scene") or
                     (i + 1)
                 )
+                scene_number = int(scene_number) if scene_number else i + 1
+
                 source_file = (
                     scene_data.get("source_file") or
                     scene_data.get("source") or
@@ -674,35 +739,186 @@ NO markdown formatting."""
                 # Gemini may return cuts as dict {"has_cuts": false} or list
                 cuts_data = scene_data.get("cuts", [])
                 if isinstance(cuts_data, dict):
-                    # Extract actual cut list from dict, or empty if no cuts
                     cuts_data = cuts_data.get("cut_list", cuts_data.get("cuts", []))
                     if not isinstance(cuts_data, list):
                         cuts_data = []
 
+                # -----------------------------------------------------------------
+                # GET GEN3a DATA FOR THIS SCENE
+                # -----------------------------------------------------------------
+                gen3a_scene = gen3a_scenes_map.get(scene_number)
+
+                # Parse GEN3a fields
+                glitches = []
+                action_peaks = []
+                visual_classification = None
+                easter_egg_verification = None
+                source_duration = 10.0
+                video_quality = 0.8
+                dead_spots = []
+
+                if gen3a_scene:
+                    source_duration = gen3a_scene.source_duration
+                    video_quality = gen3a_scene.video_quality
+                    dead_spots = gen3a_scene.dead_spots or []
+
+                    # Parse glitches
+                    for g in gen3a_scene.glitches or []:
+                        glitches.append(GlitchInfo(
+                            id=g.id,
+                            source_start=g.source_start,
+                            source_end=g.source_end,
+                            type=g.type,
+                            severity=g.severity,
+                            description=g.description,
+                            recommended_action=g.recommended_action,
+                        ))
+
+                    # Parse action peaks
+                    for ap in gen3a_scene.action_peaks or []:
+                        action_peaks.append(ActionPeak(
+                            id=ap.id,
+                            source_timestamp=ap.source_timestamp,
+                            type=ap.type,
+                            intensity=ap.intensity,
+                            beat_aligned=ap.beat_aligned,
+                            nearest_beat=ap.nearest_beat,
+                        ))
+
+                    # Parse visual classification
+                    if gen3a_scene.visual_classification:
+                        vc = gen3a_scene.visual_classification
+                        visual_classification = VisualClassification(
+                            primary_type=vc.primary_type,
+                            secondary_type=vc.secondary_type,
+                            confidence=vc.confidence,
+                            reasoning=vc.reasoning,
+                            dominant_elements=vc.dominant_elements or [],
+                            scale=vc.scale,
+                            camera_motion=vc.camera_motion,
+                            effect_palette_recommendation=vc.effect_palette_recommendation,
+                        )
+
+                    # Parse easter egg verification
+                    if gen3a_scene.easter_egg_verification:
+                        eev = gen3a_scene.easter_egg_verification
+                        easter_egg_verification = EasterEggVerification(
+                            found=eev.found,
+                            source_timestamp=eev.source_timestamp,
+                            visibility_score=eev.visibility_score,
+                            position_in_frame=eev.position_in_frame,
+                            safe_zone_compliant=eev.safe_zone_compliant,
+                        )
+
+                # -----------------------------------------------------------------
+                # PARSE GEN3b SCENE-SPECIFIC DATA
+                # -----------------------------------------------------------------
+                special_flags = scene_data.get("special_flags", [])
+
+                # Visual type from GEN3b
+                visual_type_data = scene_data.get("visual_type", {})
+                visual_type = None
+                if visual_type_data:
+                    visual_type = SceneVisualType(
+                        primary=visual_type_data.get("primary", "EPIC_WIDE"),
+                        secondary=visual_type_data.get("secondary"),
+                        effect_palette=visual_type_data.get("effect_palette", "DRAMATIC"),
+                        source=visual_type_data.get("source", ""),
+                    )
+
+                # Transition to next
+                transition_data = scene_data.get("transition_to_next", {})
+                transition_to_next = None
+                if transition_data:
+                    beat_info_data = transition_data.get("beat_info", {})
+                    beat_info = None
+                    if beat_info_data:
+                        beat_info = TransitionBeatInfo(
+                            timestamp=beat_info_data.get("timestamp", 0.0),
+                            nearest_beat=beat_info_data.get("nearest_beat", 0.0),
+                            on_beat=beat_info_data.get("on_beat", False),
+                            offset=beat_info_data.get("offset", 0.0),
+                        )
+                    transition_to_next = TransitionToNext(
+                        type=transition_data.get("type", "HARD_CUT"),
+                        beat_info=beat_info,
+                    )
+
+                # Effect selection log
+                effect_log_data = scene_data.get("effect_selection_log", {})
+                effect_selection_log = None
+                if effect_log_data:
+                    effect_selection_log = EffectSelectionLog(
+                        palette_used=effect_log_data.get("palette_used", ""),
+                        visual_type=effect_log_data.get("visual_type", ""),
+                        effects_applied=effect_log_data.get("effects_applied", 0),
+                        reason=effect_log_data.get("reason"),
+                        forbidden_checked=effect_log_data.get("forbidden_checked", []),
+                    )
+
+                # Easter egg protection
+                ee_protection_data = scene_data.get("easter_egg_protection", {})
+                easter_egg_protection = None
+                if ee_protection_data:
+                    easter_egg_protection = EasterEggProtection(
+                        object=ee_protection_data.get("object", ""),
+                        verified=ee_protection_data.get("verified", False),
+                        applied_restrictions=ee_protection_data.get("applied_restrictions", {}),
+                    )
+
+                # Loop processing
+                loop_proc_data = scene_data.get("loop_processing", {})
+                loop_processing = None
+                if loop_proc_data:
+                    loop_processing = LoopProcessing(
+                        reverse=loop_proc_data.get("reverse", True),
+                        duration_match=loop_proc_data.get("duration_match", {}),
+                    )
+
+                # -----------------------------------------------------------------
+                # CREATE SCENE WITH ALL DATA
+                # -----------------------------------------------------------------
                 scene = ManifestScene(
-                    scene_number=int(scene_number) if scene_number else i + 1,
+                    # Core fields
+                    scene_number=scene_number,
                     source_file=str(source_file),
                     timeline_start=float(timeline_start),
                     timeline_end=float(timeline_end),
                     speed_segments=self._safe_parse_list(speed_data, SpeedSegment),
                     effects=self._safe_parse_list(effects_data, ManifestEffect),
                     cuts=self._safe_parse_list(cuts_data, ManifestCut),
+                    # GEN3a fields
+                    source_duration=source_duration,
+                    video_quality=video_quality,
+                    glitches=glitches,
+                    action_peaks=action_peaks,
+                    dead_spots=dead_spots,
+                    visual_classification=visual_classification,
+                    easter_egg_verification=easter_egg_verification,
+                    # GEN3b fields
+                    special_flags=special_flags,
+                    visual_type=visual_type,
+                    transition_to_next=transition_to_next,
+                    effect_selection_log=effect_selection_log,
+                    easter_egg_protection=easter_egg_protection,
+                    loop_processing=loop_processing,
                 )
                 scenes.append(scene)
             except Exception as e:
                 logger.warning(f"Failed to parse scene {i+1}: {e}")
+                import traceback
+                logger.debug(traceback.format_exc())
 
-        # Parse subtitles - handle nested structure {"items": [...]} or flat list
+        # =====================================================================
+        # SUBTITLES
+        # =====================================================================
         subtitles_data = data.get("subtitles", [])
         if isinstance(subtitles_data, dict):
-            # Gemini may return {"style_system_version": "1.3", "items": [...]}
-            subtitles_data = subtitles_data.get("items", [])
+            subtitles_data = subtitles_data.get("items") or subtitles_data.get("segments") or []
         subtitles = self._parse_subtitles(subtitles_data)
 
-        # ALWAYS merge with gen1_brief to ensure all voiceover scenes have subtitles
         logger.info(f"  Pre-merge subtitles: {len(subtitles)}, gen1_brief has scenes: {bool(gen1_brief and gen1_brief.get('scenes'))}")
         if gen1_brief and gen1_brief.get("scenes"):
-            # Get project_dir for voiceover_timing.json
             from app.core.config import settings
             project_dir = Path(settings.PROJECTS_DIR) / gen3a_analysis.project_id
             subtitles = self._merge_subtitles_with_voiceover(subtitles, gen1_brief, scenes, project_dir)
@@ -710,13 +926,48 @@ NO markdown formatting."""
         elif not subtitles:
             logger.warning("No gen1_brief scenes available for subtitle generation")
 
-        # Parse audio layers with safe defaults
-        audio_data = data.get("audio_layers", {})
+        # =====================================================================
+        # AUDIO LAYERS - FIX: check both "audio" and "audio_layers"
+        # =====================================================================
+        audio_data = data.get("audio_layers") or data.get("audio", {})
+
+        # GEN3b may nest layers inside "audio.layers"
+        if "layers" in audio_data:
+            audio_layers_list = audio_data.get("layers", [])
+            # Convert list format to dict format
+            audio_dict = {}
+            for layer in audio_layers_list:
+                layer_type = layer.get("type", "").upper()
+                if layer_type == "MUSIC":
+                    audio_dict["music"] = {
+                        "layer": "MUSIC",
+                        "file": layer.get("file", ""),
+                        "volume": self._db_to_linear(layer.get("volume_db", 0)),
+                        "duck_during_vo": layer.get("ducking", {}).get("enabled", False),
+                        "duck_amount": 0.4,
+                    }
+                elif layer_type == "VOICEOVER":
+                    audio_dict["vo"] = {
+                        "layer": "VO",
+                        "file": layer.get("file", ""),
+                        "volume": self._db_to_linear(layer.get("volume_db", 0)),
+                    }
+                elif layer_type == "SFX":
+                    # Parse SFX events
+                    sfx_events = []
+                    for event in layer.get("events", []):
+                        sfx_events.append({
+                            "id": event.get("id", ""),
+                            "output_timestamp": event.get("timestamp", 0.0),
+                            "effect": event.get("id", ""),
+                            "file": event.get("file", ""),
+                            "volume": self._db_to_linear(event.get("volume_db", 0)),
+                        })
+                    audio_dict["sfx_events"] = sfx_events
+            audio_data = audio_dict
 
         def safe_audio_layer(layer_data, layer_name: str) -> ManifestAudioLayer:
-            """Create audio layer with safe defaults."""
             if isinstance(layer_data, dict) and layer_data:
-                # Ensure 'layer' field exists
                 layer_data.setdefault("layer", layer_name)
                 return ManifestAudioLayer(**layer_data)
             return ManifestAudioLayer(layer=layer_name)
@@ -729,11 +980,142 @@ NO markdown formatting."""
             foley_events=self._safe_parse_list(audio_data.get("foley_events", []), ManifestSFXEvent),
         )
 
-        # Parse global effects
+        # =====================================================================
+        # GLOBAL EFFECTS
+        # =====================================================================
         global_effects = self._safe_parse_list(data.get("global_effects", []), ManifestEffect)
 
+        # =====================================================================
+        # NEW GEN3a FIELDS
+        # =====================================================================
+        # Music analysis
+        music_analysis = None
+        if gen3a_analysis.music_analysis:
+            ma = gen3a_analysis.music_analysis
+            beats = []
+            for b in ma.beats or []:
+                beats.append(MusicBeat(
+                    timestamp=b.timestamp,
+                    strength=b.strength,
+                    beat_number=b.beat_number,
+                ))
+            music_analysis = MusicAnalysis(
+                bpm=ma.bpm,
+                time_signature=ma.time_signature,
+                beats=beats,
+                strong_beats_for_cuts=ma.strong_beats_for_cuts or [],
+            )
+
+        # Hook variety analysis (as dict for flexibility)
+        hook_variety_analysis = None
+        if gen3a_analysis.hook_variety_analysis:
+            hva = gen3a_analysis.hook_variety_analysis
+            hook_variety_analysis = {
+                "recommended_style": hva.recommended_style,
+                "reasoning": hva.reasoning,
+                "avoid_styles": hva.avoid_styles or [],
+                "scene1_energy": hva.scene1_energy,
+            }
+
+        # =====================================================================
+        # NEW GEN3b FIELDS
+        # =====================================================================
+        # Canvas
+        canvas = None
+        canvas_data = data.get("canvas", {})
+        if canvas_data:
+            canvas = CanvasConfig(
+                source_resolution=Resolution(**canvas_data.get("source_resolution", {"width": 1080, "height": 1920})),
+                working_resolution=Resolution(**canvas_data.get("working_resolution", {"width": 1404, "height": 2496})),
+                final_resolution=Resolution(**canvas_data.get("final_resolution", {"width": 1080, "height": 1920})),
+            )
+
+        # FPS config
+        fps_config = None
+        fps_data = data.get("fps_config", {})
+        if fps_data:
+            fps_config = FpsConfig(
+                target_fps=fps_data.get("target_fps", 30),
+                source_fps=fps_data.get("source_fps", "auto_detect"),
+                conversion_filter=fps_data.get("conversion_filter", "fps=30"),
+            )
+
+        # Font config
+        font_config = None
+        font_data = data.get("font_config", {})
+        if font_data:
+            font_config = FontConfig(
+                font_name=font_data.get("font_name", "Montserrat-Bold"),
+                fontfile=font_data.get("fontfile", ""),
+                fallback=font_data.get("fallback", "DejaVu-Sans-Bold"),
+            )
+
+        # Beat sync report
+        beat_sync_report = None
+        bsr_data = data.get("beat_sync_report", {})
+        if bsr_data:
+            sync_score_data = bsr_data.get("sync_score", {})
+            scene_transitions = []
+            for t in bsr_data.get("scene_transitions", []):
+                scene_transitions.append(SceneTransitionBeat(
+                    from_scene=t.get("from_scene", 0),
+                    to_scene=t.get("to_scene", 0),
+                    timestamp=t.get("timestamp", 0.0),
+                    nearest_beat=t.get("nearest_beat", 0.0),
+                    offset=t.get("offset", 0.0),
+                    aligned=t.get("aligned", True),
+                ))
+            beat_sync_report = BeatSyncReport(
+                music_bpm=bsr_data.get("music_bpm", 120.0),
+                strong_beats_used=bsr_data.get("strong_beats_used", []),
+                scene_transitions=scene_transitions,
+                sync_score=BeatSyncScore(
+                    transitions_on_beat=sync_score_data.get("transitions_on_beat", 0),
+                    effects_on_beat=sync_score_data.get("effects_on_beat", 0),
+                    overall_sync_quality=sync_score_data.get("overall_sync_quality", "GOOD"),
+                    final_score=sync_score_data.get("final_score", 0.7),
+                ),
+            )
+
+        # Filter chain
+        filter_chain = data.get("filter_chain", {}).get("order", [])
+
+        # Output config
+        output_config = None
+        oc_data = data.get("output_config", {})
+        if oc_data:
+            output_config = OutputConfig(
+                filename=oc_data.get("filename", "output_final.mp4"),
+                video=VideoOutputConfig(**oc_data.get("video", {})),
+                audio=AudioOutputConfig(**oc_data.get("audio", {})),
+            )
+
+        # Validation
+        validation = None
+        val_data = data.get("validation", {})
+        if val_data:
+            validation = ValidationResult(**val_data)
+
+        # Creative summary
+        creative_summary = None
+        cs_data = data.get("creative_summary", {})
+        if cs_data:
+            creative_summary = CreativeSummary(
+                hook_style=cs_data.get("hook_style", ""),
+                hook_reasoning=cs_data.get("hook_reasoning", ""),
+                effects_by_palette=cs_data.get("effects_by_palette", {}),
+                subtitle_style=cs_data.get("subtitle_style", ""),
+                subtitle_word_count=cs_data.get("subtitle_word_count", 0),
+                beat_sync_quality=cs_data.get("beat_sync_quality", ""),
+                variety_score=cs_data.get("variety_score", 0.0),
+                loop_ready=cs_data.get("loop_ready", True),
+            )
+
+        # =====================================================================
+        # BUILD AND RETURN MANIFEST
+        # =====================================================================
         return Gen3bManifest(
-            version="1.3.1",
+            version="1.3.2",
             project_id=gen3a_analysis.project_id,
             generated_at=datetime.now().isoformat(),
             total_duration=data.get("total_duration", gen3a_analysis.gen3b_handoff.total_output_duration),
@@ -745,7 +1127,29 @@ NO markdown formatting."""
             global_effects=global_effects,
             loop_point=data.get("loop_point", 0.0),
             loop_compliant=data.get("loop_compliant", gen3a_analysis.gen3b_handoff.loop_compliant),
+            # NEW GEN3a fields
+            music_analysis=music_analysis,
+            hook_variety_analysis=hook_variety_analysis,
+            # NEW GEN3b fields
+            canvas=canvas,
+            fps_config=fps_config,
+            font_config=font_config,
+            beat_sync_report=beat_sync_report,
+            filter_chain=filter_chain,
+            output_config=output_config,
+            validation=validation,
+            creative_summary=creative_summary,
+            # RAW BACKUPS for 100% data preservation
+            gen3a_raw=gen3a_analysis.model_dump() if hasattr(gen3a_analysis, 'model_dump') else None,
+            gen3b_raw=data,
         )
+
+    def _db_to_linear(self, db_value: float) -> float:
+        """Convert dB to linear volume (0-1 range)."""
+        if db_value is None or db_value == 0:
+            return 1.0
+        import math
+        return min(1.0, max(0.0, math.pow(10, db_value / 20)))
 
     async def generate_simple_manifest(
         self,
@@ -756,6 +1160,7 @@ NO markdown formatting."""
         Generate a simple manifest without LLM call (for testing).
 
         Uses GEN3a analysis directly to create manifest.
+        v1.3.2: Now includes all GEN3a data.
         """
         logger.info("Generating simple manifest from GEN3a analysis...")
 
@@ -763,6 +1168,57 @@ NO markdown formatting."""
         current_time = 0.3  # After hook
 
         for scene_analysis in gen3a_analysis.scenes:
+            # Parse GEN3a scene data
+            glitches = [
+                GlitchInfo(
+                    id=g.id,
+                    source_start=g.source_start,
+                    source_end=g.source_end,
+                    type=g.type,
+                    severity=g.severity,
+                    description=g.description,
+                    recommended_action=g.recommended_action,
+                )
+                for g in scene_analysis.glitches or []
+            ]
+
+            action_peaks = [
+                ActionPeak(
+                    id=ap.id,
+                    source_timestamp=ap.source_timestamp,
+                    type=ap.type,
+                    intensity=ap.intensity,
+                    beat_aligned=ap.beat_aligned,
+                    nearest_beat=ap.nearest_beat,
+                )
+                for ap in scene_analysis.action_peaks or []
+            ]
+
+            visual_classification = None
+            if scene_analysis.visual_classification:
+                vc = scene_analysis.visual_classification
+                visual_classification = VisualClassification(
+                    primary_type=vc.primary_type,
+                    secondary_type=vc.secondary_type,
+                    confidence=vc.confidence,
+                    reasoning=vc.reasoning,
+                    dominant_elements=vc.dominant_elements or [],
+                    scale=vc.scale,
+                    camera_motion=vc.camera_motion,
+                    effect_palette_recommendation=vc.effect_palette_recommendation,
+                )
+
+            easter_egg_verification = None
+            if scene_analysis.easter_egg_verification:
+                eev = scene_analysis.easter_egg_verification
+                easter_egg_verification = EasterEggVerification(
+                    found=eev.found,
+                    source_timestamp=eev.source_timestamp,
+                    visibility_score=eev.visibility_score,
+                    position_in_frame=eev.position_in_frame,
+                    safe_zone_compliant=eev.safe_zone_compliant,
+                )
+
             scene = ManifestScene(
                 scene_number=scene_analysis.scene_number,
                 source_file=f"gen3a_work/{scene_analysis.scene_number}.mp4",
@@ -776,9 +1232,17 @@ NO markdown formatting."""
                         source_end=g.source_end,
                         reason=g.type,
                     )
-                    for g in scene_analysis.glitches
+                    for g in scene_analysis.glitches or []
                     if g.recommended_action == "CUT"
                 ],
+                # GEN3a fields
+                source_duration=scene_analysis.source_duration,
+                video_quality=scene_analysis.video_quality,
+                glitches=glitches,
+                action_peaks=action_peaks,
+                dead_spots=scene_analysis.dead_spots or [],
+                visual_classification=visual_classification,
+                easter_egg_verification=easter_egg_verification,
             )
             scenes.append(scene)
             current_time += scene_analysis.output_duration
@@ -791,8 +1255,38 @@ NO markdown formatting."""
             sfx="impact_hit.mp3",
         )
 
+        # Build music analysis
+        music_analysis = None
+        if gen3a_analysis.music_analysis:
+            ma = gen3a_analysis.music_analysis
+            beats = [
+                MusicBeat(
+                    timestamp=b.timestamp,
+                    strength=b.strength,
+                    beat_number=b.beat_number,
+                )
+                for b in ma.beats or []
+            ]
+            music_analysis = MusicAnalysis(
+                bpm=ma.bpm,
+                time_signature=ma.time_signature,
+                beats=beats,
+                strong_beats_for_cuts=ma.strong_beats_for_cuts or [],
+            )
+
+        # Hook variety analysis
+        hook_variety_analysis = None
+        if gen3a_analysis.hook_variety_analysis:
+            hva = gen3a_analysis.hook_variety_analysis
+            hook_variety_analysis = {
+                "recommended_style": hva.recommended_style,
+                "reasoning": hva.reasoning,
+                "avoid_styles": hva.avoid_styles or [],
+                "scene1_energy": hva.scene1_energy,
+            }
+
         return Gen3bManifest(
-            version="1.3.1",
+            version="1.3.2",
             project_id=gen3a_analysis.project_id,
             generated_at=datetime.now().isoformat(),
             total_duration=current_time,
@@ -804,6 +1298,11 @@ NO markdown formatting."""
             global_effects=[],
             loop_point=0.0,
             loop_compliant=gen3a_analysis.gen3b_handoff.loop_compliant,
+            # GEN3a fields
+            music_analysis=music_analysis,
+            hook_variety_analysis=hook_variety_analysis,
+            # RAW backup
+            gen3a_raw=gen3a_analysis.model_dump() if hasattr(gen3a_analysis, 'model_dump') else None,
         )
 
     def save_manifest(
