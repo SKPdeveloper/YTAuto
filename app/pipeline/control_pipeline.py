@@ -70,6 +70,11 @@ class ControlPipeline:
             logger.info(f"Created project: {project_id}")
             logger.info(f"Title: {self.project.title}")
 
+            # Notify UI about project_id immediately (for "new topic" feature)
+            from app.api.control_routes import state, broadcast_event
+            state.current_project_id = project_id
+            await broadcast_event("project_created", {"project_id": project_id})
+
             # Stage 2: Generate script
             await self._notify_stage("GENERATING_SCRIPT", 10)
             await self.orchestrator._generate_script(self.project)
@@ -107,9 +112,9 @@ class ControlPipeline:
             # Stage 10: Video Approval (перед Topaz)
             approval_result = await self._video_approval()
 
-            if approval_result == "rejected":
+            if approval_result in ("rejected", "needs_editing"):
                 await self._notify_stage("REJECTED", 0)
-                logger.warning("[PIPELINE] Video rejected by user")
+                logger.warning(f"[PIPELINE] Video {approval_result} by user")
                 return project_id
 
             # Stage 11: Topaz upscaling (если approved)
@@ -170,6 +175,10 @@ class ControlPipeline:
             result = await self._request_approval("primary", {
                 "images": candidates_data
             })
+
+            if result.get("action") == "abort":
+                logger.info("Pipeline aborted by user (new topic requested)")
+                raise Exception("Pipeline aborted - new topic requested")
 
             if result.get("action") == "reject_all":
                 logger.info("User rejected all PRIMARY candidates, regenerating...")
@@ -970,6 +979,11 @@ class ControlPipeline:
         })
 
         action = result.get("action", "approved")
+
+        if action == "abort":
+            logger.info("Pipeline aborted by user (new topic requested)")
+            raise Exception("Pipeline aborted - new topic requested")
+
         logger.info(f"[PIPELINE] Video approval result: {action}")
 
         return action
@@ -1219,10 +1233,17 @@ class ControlPipeline:
         from app.modules.topaz_queue import TopazQueue
 
         project_dir = settings.PROJECTS_DIR / self.project.project_id
-        input_video = project_dir / "final.mp4"
 
-        if not input_video.exists():
-            logger.warning("[PIPELINE] No final.mp4 for Topaz, skipping")
+        # Search multiple possible video names (user may have edited/renamed)
+        input_video = None
+        for name in ["final.mp4", "final_video.mp4", "assembled_video.mp4", "final_raw.mp4"]:
+            path = project_dir / name
+            if path.exists() and path.stat().st_size > 0:
+                input_video = path
+                break
+
+        if not input_video:
+            logger.warning("[PIPELINE] No final video found for Topaz, skipping")
             return
 
         output_video = project_dir / "final_4k.mp4"
