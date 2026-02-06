@@ -155,6 +155,8 @@ class ControlPipeline:
             logger.info(f"Generated {len(self.primary_candidates)} PRIMARY candidates")
 
             # Prepare candidates data for UI
+            import time
+            cache_bust = int(time.time() * 1000)
             candidates_data = []
             for i, path in enumerate(self.primary_candidates):
                 # Get relative URL for serving via /projects/
@@ -164,7 +166,7 @@ class ControlPipeline:
 
                 candidates_data.append({
                     "index": i,
-                    "url": f"/projects/{rel_path}",
+                    "url": f"/projects/{rel_path}?t={cache_bust}",
                     "score": 85 - i * 5,  # Mock scores for now
                     "grade": "A" if i == 0 else "B"
                 })

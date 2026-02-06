@@ -709,16 +709,44 @@ async def submit_video_approval(request: VideoApprovalDecision):
     }
 
 
+def _save_session_state(project_id: str, project_dir: Path) -> None:
+    """
+    Save current session state to session.json for later resumption.
+    """
+    session_data = {
+        "project_id": project_id,
+        "saved_at": datetime.now().isoformat(),
+        "stage": state.current_stage,
+        "progress": state.progress,
+        "final_video_path": state.final_video_path,
+        "topaz_video_path": state.topaz_video_path,
+        "all_scenes": state.all_scenes,
+        "status": "needs_editing"
+    }
+
+    session_path = project_dir / "session.json"
+    try:
+        with open(session_path, 'w', encoding='utf-8') as f:
+            json.dump(session_data, f, ensure_ascii=False, indent=2)
+        logger.info(f"Session saved: {session_path}")
+    except Exception as e:
+        logger.error(f"Failed to save session: {e}")
+
+
 def _rename_project_for_editing(project_id: str) -> Optional[str]:
     """
     Rename project folder by appending _ДОМОНТУВАТИ suffix.
     Creates a TOPAZ.bat script inside for one-click upscaling after manual edit.
+    Saves session state for later resumption.
     Returns the new folder name, or None if rename failed.
     """
     project_dir = settings.PROJECTS_DIR / project_id
     if not project_dir.exists():
         logger.warning(f"Cannot rename: folder not found {project_dir}")
         return None
+
+    # Save session state BEFORE rename
+    _save_session_state(project_id, project_dir)
 
     # Create TOPAZ.bat BEFORE rename (folder still accessible by old name)
     _create_topaz_bat(project_dir)
@@ -1087,6 +1115,141 @@ async def broadcast_event(event: str, data: dict):
         await state.ws_manager.broadcast(event, data)
     else:
         logger.warning(f"No WebSocket manager set, cannot broadcast: {event}")
+
+
+# ============================================================================
+# SESSION RECOVERY
+# ============================================================================
+
+@router.get("/recoverable-sessions")
+async def get_recoverable_sessions():
+    """
+    Get list of projects that can be recovered (with session.json or _ДОМОНТУВАТИ suffix).
+    """
+    recoverable = []
+
+    if not settings.PROJECTS_DIR.exists():
+        return {"sessions": []}
+
+    for project_dir in settings.PROJECTS_DIR.iterdir():
+        if not project_dir.is_dir():
+            continue
+
+        session_path = project_dir / "session.json"
+        if session_path.exists():
+            try:
+                with open(session_path, 'r', encoding='utf-8') as f:
+                    session_data = json.load(f)
+
+                # Check if final video exists
+                final_video = None
+                for name in ["final.mp4", "final_video.mp4", "assembled_video.mp4"]:
+                    if (project_dir / name).exists():
+                        final_video = f"/projects/{project_dir.name}/{name}"
+                        break
+
+                recoverable.append({
+                    "project_id": project_dir.name,
+                    "original_id": session_data.get("project_id", project_dir.name),
+                    "saved_at": session_data.get("saved_at"),
+                    "stage": session_data.get("stage"),
+                    "status": session_data.get("status", "unknown"),
+                    "final_video": final_video,
+                    "needs_editing": "_ДОМОНТУВАТИ" in project_dir.name
+                })
+            except Exception as e:
+                logger.warning(f"Failed to read session from {session_path}: {e}")
+
+    # Sort by saved_at descending
+    recoverable.sort(key=lambda x: x.get("saved_at", ""), reverse=True)
+
+    return {"sessions": recoverable}
+
+
+class ResumeSessionRequest(BaseModel):
+    project_id: str
+
+
+@router.post("/resume-session")
+async def resume_session(request: ResumeSessionRequest):
+    """
+    Resume a saved session. Loads session state and prepares for continuation.
+    """
+    project_dir = settings.PROJECTS_DIR / request.project_id
+    if not project_dir.exists():
+        raise HTTPException(status_code=404, detail=f"Project not found: {request.project_id}")
+
+    session_path = project_dir / "session.json"
+    if not session_path.exists():
+        raise HTTPException(status_code=404, detail="No session.json found")
+
+    try:
+        with open(session_path, 'r', encoding='utf-8') as f:
+            session_data = json.load(f)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read session: {e}")
+
+    # Restore state
+    state.current_project_id = request.project_id
+    state.current_stage = session_data.get("stage", "RESUMED")
+    state.progress = session_data.get("progress", 0)
+    state.all_scenes = session_data.get("all_scenes", [])
+
+    # Find final video
+    video_path, video_url = find_final_video(request.project_id)
+    if video_url:
+        state.final_video_path = video_url
+
+    state.topaz_video_path = session_data.get("topaz_video_path")
+    state.pipeline_running = False
+    state.awaiting_approval = False
+    state.awaiting_video_approval = False
+
+    logger.info(f"Session resumed: {request.project_id}")
+
+    # Broadcast state restoration
+    await broadcast_event("session_resumed", {
+        "project_id": request.project_id,
+        "stage": state.current_stage,
+        "final_video": video_url
+    })
+
+    return {
+        "status": "resumed",
+        "project_id": request.project_id,
+        "stage": state.current_stage,
+        "final_video": video_url,
+        "all_scenes": state.all_scenes
+    }
+
+
+@router.post("/continue-to-topaz")
+async def continue_to_topaz():
+    """
+    Continue a resumed session to Topaz processing.
+    Called after user manually edited the video and wants to proceed.
+    """
+    if not state.current_project_id:
+        raise HTTPException(status_code=400, detail="No active project")
+
+    # Find the current video file
+    video_path, video_url = find_final_video(state.current_project_id)
+    if not video_path:
+        raise HTTPException(status_code=404, detail="No final video found")
+
+    state.final_video_path = video_url
+
+    # Start Topaz processing
+    project_dir = settings.PROJECTS_DIR / state.current_project_id
+    output_video = project_dir / "final_enhanced.mp4"
+
+    asyncio.create_task(run_topaz_processing(state.current_project_id, video_path, output_video))
+
+    return {
+        "status": "started",
+        "project_id": state.current_project_id,
+        "video_path": video_url
+    }
 
 
 # ============================================================================

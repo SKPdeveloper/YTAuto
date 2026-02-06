@@ -2,8 +2,29 @@
 <html lang="uk">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>{% block title %}Edible House Automator{% endblock %}</title>
+
+    <!-- PWA Meta Tags -->
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="EH Control">
+    <meta name="application-name" content="EH Control">
+    <meta name="theme-color" content="#0a0a0a">
+    <meta name="msapplication-TileColor" content="#0a0a0a">
+    <meta name="msapplication-navbutton-color" content="#0a0a0a">
+
+    <!-- PWA Manifest -->
+    <link rel="manifest" href="/static/manifest.json">
+
+    <!-- iOS Icons -->
+    <link rel="apple-touch-icon" href="/static/icons/icon-152.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="/static/icons/icon-192.png">
+    <link rel="apple-touch-icon" sizes="152x152" href="/static/icons/icon-152.png">
+    <link rel="apple-touch-icon" sizes="144x144" href="/static/icons/icon-144.png">
+    <link rel="apple-touch-icon" sizes="120x120" href="/static/icons/icon-128.png">
+    <link rel="apple-touch-icon" sizes="76x76" href="/static/icons/icon-72.png">
 
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
