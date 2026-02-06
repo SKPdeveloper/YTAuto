@@ -54,6 +54,7 @@ class ControlState:
         self.approval_event: Optional[asyncio.Event] = None
         self.selected_image_index: Optional[int] = None
         self.rejected_all: bool = False
+        self.abort_pipeline: bool = False  # Signal to abort current pipeline
 
         # Video approval (pre-Topaz)
         self.awaiting_video_approval: bool = False
@@ -86,6 +87,31 @@ state = ControlState()
 def get_state() -> ControlState:
     """Get control state instance."""
     return state
+
+
+def find_final_video(project_id: str) -> tuple[Optional[Path], Optional[str]]:
+    """
+    Find the final video file in the project directory.
+    Searches multiple possible names. Returns (absolute_path, relative_url) or (None, None).
+    """
+    project_dir = settings.PROJECTS_DIR / project_id
+    if not project_dir.exists():
+        return None, None
+
+    # Search in priority order
+    candidates = [
+        "final.mp4",
+        "final_video.mp4",
+        "assembled_video.mp4",
+        "final_raw.mp4",
+    ]
+
+    for name in candidates:
+        path = project_dir / name
+        if path.exists() and path.stat().st_size > 0:
+            return path, f"/projects/{project_id}/{name}"
+
+    return None, None
 
 
 def get_control_state() -> ControlState:
@@ -200,6 +226,13 @@ async def scheduler_loop():
 @router.get("/current-state")
 async def get_current_state():
     """Get current control state for page refresh."""
+    # Always resolve video path from disk (user may have replaced the file)
+    final_video_path = state.final_video_path
+    if state.current_project_id:
+        _, fresh_url = find_final_video(state.current_project_id)
+        if fresh_url:
+            final_video_path = fresh_url
+
     return {
         "pipeline_running": state.pipeline_running,
         "current_stage": state.current_stage,
@@ -209,7 +242,7 @@ async def get_current_state():
         "candidate_images": state.candidate_images,
         "scene_images": state.scene_images,
         "project_id": state.current_project_id,
-        "final_video_path": state.final_video_path,
+        "final_video_path": final_video_path,
         "topaz_video_path": state.topaz_video_path,
         # Video approval (pre-upscale)
         "awaiting_video_approval": state.awaiting_video_approval,
@@ -314,6 +347,80 @@ async def reject_all_images():
     return {"status": "rejected"}
 
 
+class NewTopicRequest(BaseModel):
+    project_id: Optional[str] = None  # Client can pass current project_id
+
+
+@router.post("/new-topic")
+async def start_new_topic(request: NewTopicRequest = None):
+    """
+    Cancel current project and start pipeline with a new topic.
+    Archives current project as 'test' before restarting.
+    """
+    # Use client-provided project_id if server state is empty
+    old_project_id = state.current_project_id
+    if not old_project_id and request and request.project_id:
+        old_project_id = request.project_id
+
+    # Signal abort to current pipeline
+    state.abort_pipeline = True
+    state.rejected_all = True
+    state.selected_image_index = None
+
+    # Release any waiting approval events
+    if state.approval_event:
+        state.approval_event.set()
+    if state.video_approval_event:
+        state.video_approval_event.set()
+
+    # Wait a moment for pipeline to see abort flag
+    await asyncio.sleep(0.2)
+
+    # Archive current project if it exists
+    if old_project_id:
+        try:
+            from scripts.publish_archive import archive_project
+            archive_result = archive_project(old_project_id, category="test")
+            logger.info(f"Archived {old_project_id} as test: {archive_result.get('status')}")
+        except Exception as e:
+            logger.warning(f"Failed to archive {old_project_id}: {e}")
+
+    # Reset state completely
+    state.awaiting_approval = False
+    state.approval_type = ""
+    state.candidate_images = []
+    state.scene_images = []
+    state.all_scenes = []
+    state.approved_scenes = set()
+    state.kicked_scenes = []
+    state.current_project_id = None
+    state.pipeline_running = False
+    state.current_stage = ""
+    state.progress = 0
+    state.awaiting_video_approval = False
+    state.final_video_path = None
+    state.topaz_video_path = None
+    state.image_retry_count = 0
+    state.video_retry_count = 0
+
+    # Clear abort flag before starting new pipeline
+    state.abort_pipeline = False
+
+    # Start new pipeline
+    asyncio.create_task(start_pipeline_internal())
+
+    # Broadcast state reset to all clients
+    await broadcast_event("pipeline_reset", {"old_project_id": old_project_id})
+
+    logger.info(f"New topic requested, archived {old_project_id}, starting fresh pipeline")
+
+    return {
+        "status": "ok",
+        "old_project_id": old_project_id,
+        "new_project_id": "pending"
+    }
+
+
 @router.post("/kick")
 async def kick_scene(request: KickRequest):
     """Kick scene image and regenerate."""
@@ -376,16 +483,15 @@ async def start_topaz_processing(request: TopazRequest):
     """Start Topaz Video AI post-processing."""
     from app.modules.topaz_queue import TopazQueue
 
-    project_dir = settings.PROJECTS_DIR / request.project_id
-    input_video = project_dir / "final.mp4"
-
-    if not input_video.exists():
+    video_path, _ = find_final_video(request.project_id)
+    if not video_path:
         raise HTTPException(status_code=404, detail="Final video not found")
 
+    project_dir = settings.PROJECTS_DIR / request.project_id
     output_video = project_dir / "final_enhanced.mp4"
 
     # Start Topaz in background
-    asyncio.create_task(run_topaz_processing(request.project_id, input_video, output_video))
+    asyncio.create_task(run_topaz_processing(request.project_id, video_path, output_video))
 
     return {"status": "started", "project_id": request.project_id}
 
@@ -513,7 +619,7 @@ async def reject_video(request: VideoApproveRequest):
 
 class VideoApprovalDecision(BaseModel):
     """Request body for video approval decision."""
-    decision: str  # 'approved', 'rejected', 'skip_upscale'
+    decision: str  # 'approved', 'rejected', 'skip_upscale', 'needs_editing'
     project_id: Optional[str] = None
 
 
@@ -526,6 +632,27 @@ async def get_video_approval_status():
     }
 
 
+@router.get("/refresh-video")
+async def refresh_video():
+    """Re-scan project directory for the current final video file."""
+    project_id = state.video_approval_project_id or state.current_project_id
+    if not project_id:
+        raise HTTPException(status_code=400, detail="No active project")
+
+    video_path, video_url = find_final_video(project_id)
+    if not video_path:
+        raise HTTPException(status_code=404, detail="No final video found in project directory")
+
+    state.final_video_path = video_url
+    logger.info(f"Video refreshed from disk: {video_path.name} ({video_path.stat().st_size / (1024*1024):.1f} MB)")
+
+    return {
+        "video_url": video_url,
+        "filename": video_path.name,
+        "size_mb": round(video_path.stat().st_size / (1024 * 1024), 1),
+    }
+
+
 @router.post("/video-approval")
 async def submit_video_approval(request: VideoApprovalDecision):
     """
@@ -535,31 +662,235 @@ async def submit_video_approval(request: VideoApprovalDecision):
     - approved: Continue to Topaz upscaling
     - rejected: Stop pipeline, user will fix manually
     - skip_upscale: Mark complete without upscaling
+    - needs_editing: Stop pipeline + rename folder with _ДОМОНТУВАТИ suffix
     """
     if not state.awaiting_video_approval:
         raise HTTPException(status_code=400, detail="No video approval pending")
 
-    if request.decision not in ('approved', 'rejected', 'skip_upscale'):
-        raise HTTPException(status_code=400, detail="Invalid decision. Use: approved, rejected, skip_upscale")
+    valid = ('approved', 'rejected', 'skip_upscale', 'needs_editing')
+    if request.decision not in valid:
+        raise HTTPException(status_code=400, detail=f"Invalid decision. Use: {', '.join(valid)}")
 
-    state.video_approval_result = request.decision
+    # Resolve the current video from disk (user may have replaced/renamed it)
+    project_id = state.video_approval_project_id or state.current_project_id
+    if project_id and request.decision in ('approved', 'skip_upscale'):
+        video_path, video_url = find_final_video(project_id)
+        if video_path:
+            state.final_video_path = video_url
+            logger.info(f"Resolved final video from disk: {video_path.name}")
+        else:
+            logger.warning(f"No final video found in project {project_id}")
 
-    # Signal the waiting VideoApprovalStage
+    # needs_editing → pipeline treats as rejected, then we rename the folder
+    effective_decision = "rejected" if request.decision == "needs_editing" else request.decision
+    state.video_approval_result = effective_decision
+
+    # Signal the waiting pipeline
     if state.video_approval_event:
         state.video_approval_event.set()
 
     logger.info(f"Video approval decision: {request.decision}")
 
+    renamed_to = None
+    if request.decision == "needs_editing" and project_id:
+        renamed_to = _rename_project_for_editing(project_id)
+
     await broadcast_event("video_approval_decision", {
         "decision": request.decision,
-        "project_id": state.video_approval_project_id
+        "project_id": project_id,
+        "renamed_to": renamed_to,
     })
 
     return {
         "status": "ok",
         "decision": request.decision,
-        "project_id": state.video_approval_project_id
+        "project_id": project_id,
+        "renamed_to": renamed_to,
     }
+
+
+def _rename_project_for_editing(project_id: str) -> Optional[str]:
+    """
+    Rename project folder by appending _ДОМОНТУВАТИ suffix.
+    Creates a TOPAZ.bat script inside for one-click upscaling after manual edit.
+    Returns the new folder name, or None if rename failed.
+    """
+    project_dir = settings.PROJECTS_DIR / project_id
+    if not project_dir.exists():
+        logger.warning(f"Cannot rename: folder not found {project_dir}")
+        return None
+
+    # Create TOPAZ.bat BEFORE rename (folder still accessible by old name)
+    _create_topaz_bat(project_dir)
+
+    # Strip existing suffix if re-marking
+    base_name = project_id.replace("_ДОМОНТУВАТИ", "")
+    new_name = f"{base_name}_ДОМОНТУВАТИ"
+    new_dir = settings.PROJECTS_DIR / new_name
+
+    if new_dir.exists():
+        logger.info(f"Folder already marked: {new_name}")
+        return new_name
+
+    try:
+        project_dir.rename(new_dir)
+        logger.info(f"Project renamed: {project_id} → {new_name}")
+        return new_name
+    except Exception as e:
+        logger.error(f"Failed to rename project folder: {e}")
+        return None
+
+
+def _create_topaz_bat(project_dir: Path) -> None:
+    """
+    Create TOPAZ.bat in the project folder.
+    Two-stage pipeline: FPS interpolation → 4K upscaling.
+    """
+    topaz_ffmpeg = str(settings.TOPAZ_FFMPEG_PATH).replace("/", "\\")
+    topaz_dir = str(settings.TOPAZ_FFMPEG_PATH.parent).replace("/", "\\")
+    model_dir = r"C:\ProgramData\Topaz Labs LLC\Topaz Video AI\models"
+
+    fps_model = settings.TOPAZ_FPS_MODEL
+    target_fps = settings.TOPAZ_TARGET_FPS
+    upscale_model = settings.TOPAZ_UPSCALE_MODEL
+    out_w = settings.TOPAZ_OUTPUT_WIDTH
+    out_h = settings.TOPAZ_OUTPUT_HEIGHT
+    codec = settings.TOPAZ_CODEC
+    bitrate = settings.TOPAZ_BITRATE
+
+    bat_content = f'''@echo off
+chcp 65001 >nul
+title TOPAZ - Interpolation + Upscale
+cd /d "%~dp0"
+
+echo ============================================
+echo   TOPAZ VIDEO AI - Post-Edit Pipeline
+echo ============================================
+echo.
+
+set "TVAI_MODEL_DIR={model_dir}"
+set "TVAI_MODEL_DATA_DIR={model_dir}"
+
+:: --- Find input video ---
+set "INPUT="
+if exist "final.mp4" set "INPUT=final.mp4"
+if exist "final_video.mp4" set "INPUT=final_video.mp4"
+if exist "assembled_video.mp4" set "INPUT=assembled_video.mp4"
+
+if "%INPUT%"=="" (
+    echo [ERROR] No video found! Place final.mp4 or final_video.mp4 in this folder.
+    pause
+    exit /b 1
+)
+
+echo [INPUT]  %INPUT%
+echo.
+
+:: --- Stage 1: FPS Interpolation ---
+echo [STAGE 1/2] FPS Interpolation ^({fps_model}, {target_fps}fps^)
+echo -------------------------------------------
+
+"{topaz_ffmpeg}" ^
+    -hide_banner -nostdin -y ^
+    -hwaccel auto ^
+    -i "%INPUT%" ^
+    -vf "tvai_fi=model={fps_model}:fps={target_fps}/1:device=0" ^
+    -c:v {codec} ^
+    -b:v {bitrate} ^
+    -pix_fmt yuv420p ^
+    -c:a copy ^
+    "final_60fps.mp4"
+
+if %ERRORLEVEL% neq 0 (
+    echo.
+    echo [ERROR] FPS Interpolation failed!
+    pause
+    exit /b 1
+)
+
+echo.
+echo [OK] FPS Interpolation complete: final_60fps.mp4
+echo.
+
+:: --- Stage 2: 4K Upscaling ---
+echo [STAGE 2/2] 4K Upscaling ^({upscale_model}, {out_w}x{out_h}^)
+echo -------------------------------------------
+
+"{topaz_ffmpeg}" ^
+    -hide_banner -nostdin -y ^
+    -hwaccel auto ^
+    -i "final_60fps.mp4" ^
+    -vf "tvai_up=model={upscale_model}:scale=0:w={out_w}:h={out_h}:device=0,scale={out_w}:{out_h}" ^
+    -c:v {codec} ^
+    -b:v {bitrate} ^
+    -pix_fmt yuv420p ^
+    -c:a copy ^
+    "final_4k.mp4"
+
+if %ERRORLEVEL% neq 0 (
+    echo.
+    echo [ERROR] Upscaling failed!
+    pause
+    exit /b 1
+)
+
+echo.
+echo ============================================
+echo   DONE! Output: final_4k.mp4
+echo ============================================
+echo.
+
+:: --- Cleanup intermediate ---
+del "final_60fps.mp4" 2>nul
+echo [CLEANUP] Deleted intermediate final_60fps.mp4
+
+echo.
+pause
+'''
+
+    bat_path = project_dir / "TOPAZ.bat"
+    try:
+        bat_path.write_text(bat_content, encoding="utf-8")
+        logger.info(f"Created TOPAZ.bat in {project_dir}")
+    except Exception as e:
+        logger.error(f"Failed to create TOPAZ.bat: {e}")
+
+
+# ============================================================================
+# ARCHIVE ENDPOINT
+# ============================================================================
+
+class ArchiveRequest(BaseModel):
+    project_id: str
+    category: str = "published"  # published, failed, test
+
+
+@router.post("/archive-project")
+async def archive_project_endpoint(request: ArchiveRequest):
+    """
+    Archive a project: cleanup intermediates (if published) + move to archive/.
+
+    Categories:
+    - published: cleanup + move to archive/published/
+    - failed: move as-is to archive/failed/
+    - test: move as-is to archive/test/
+    """
+    from scripts.publish_archive import archive_project
+
+    if request.category not in ("published", "failed", "test"):
+        raise HTTPException(status_code=400, detail=f"Invalid category: {request.category}")
+
+    result = archive_project(
+        project_id=request.project_id,
+        category=request.category,
+    )
+
+    if result["status"] == "error":
+        raise HTTPException(status_code=400, detail=result["message"])
+
+    logger.info(f"Project archived: {request.project_id} -> {request.category}")
+
+    return result
 
 
 # ============================================================================
@@ -654,6 +985,18 @@ async def on_approval_required(approval_type: str, data: dict):
             **data
         })
 
+        # Send Telegram notification
+        try:
+            from app.services.telegram_notifier import get_telegram_notifier
+            telegram = get_telegram_notifier()
+            await telegram.send_approval_required(
+                project_id=state.current_project_id or "unknown",
+                approval_type="video",
+                count=1,
+            )
+        except Exception as e:
+            logger.warning(f"Telegram notification failed: {e}")
+
         # Wait for user action
         await state.video_approval_event.wait()
 
@@ -696,10 +1039,26 @@ async def on_approval_required(approval_type: str, data: dict):
         **data
     })
 
+    # Send Telegram notification (works even when phone is locked)
+    try:
+        from app.services.telegram_notifier import get_telegram_notifier
+        telegram = get_telegram_notifier()
+        await telegram.send_approval_required(
+            project_id=state.current_project_id or "unknown",
+            approval_type=approval_type,
+            count=len(state.candidate_images),
+        )
+    except Exception as e:
+        logger.warning(f"Telegram notification failed: {e}")
+
     # Wait for user action
     await state.approval_event.wait()
 
     state.awaiting_approval = False
+
+    # Check if pipeline was aborted (new topic requested)
+    if state.abort_pipeline:
+        return {"action": "abort"}
 
     # Return the result
     if state.rejected_all:

@@ -193,6 +193,14 @@ class PostProcessStage(BasePipelineStage):
             project_id=self.project_id
         )
 
+        # Generate _publish.bat for post-upload cleanup
+        try:
+            from scripts.publish_archive import generate_bat_file
+            generate_bat_file(project_dir)
+            logger.info(f"[{self.project_id}] Generated _publish.bat")
+        except Exception as e:
+            logger.warning(f"[{self.project_id}] Failed to generate _publish.bat: {e}")
+
         return StageResult(
             success=True,
             stage_name=self.name,
@@ -280,6 +288,14 @@ class PostProcessStage(BasePipelineStage):
             title=self.project.title or "Video Complete",
             final_video_path=final_path
         )
+
+        # Generate _publish.bat for post-upload cleanup
+        try:
+            from scripts.publish_archive import generate_bat_file
+            generate_bat_file(project_dir)
+            logger.info(f"[{self.project_id}] Generated _publish.bat")
+        except Exception as e:
+            logger.warning(f"[{self.project_id}] Failed to generate _publish.bat: {e}")
 
         return StageResult(
             success=True,

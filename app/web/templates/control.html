@@ -136,6 +136,90 @@
     .blink {
         animation: blink 1s infinite;
     }
+
+    /* Fullscreen Lightbox */
+    .lightbox-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        background: #000;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        touch-action: none;
+        user-select: none;
+        -webkit-user-select: none;
+    }
+
+    .lightbox-overlay img {
+        max-width: 100%;
+        max-height: 100%;
+        object-fit: contain;
+    }
+
+    .lightbox-counter {
+        position: absolute;
+        top: env(safe-area-inset-top, 16px);
+        left: 50%;
+        transform: translateX(-50%);
+        color: #fff;
+        font-size: 14px;
+        font-weight: 900;
+        letter-spacing: 0.15em;
+        text-transform: uppercase;
+        padding: 8px 20px;
+        background: rgba(255,255,255,0.1);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        border-radius: 999px;
+        pointer-events: none;
+        margin-top: 16px;
+    }
+
+    .lightbox-hint {
+        position: absolute;
+        bottom: env(safe-area-inset-bottom, 16px);
+        left: 50%;
+        transform: translateX(-50%);
+        color: rgba(255,255,255,0.4);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.2em;
+        pointer-events: none;
+        text-align: center;
+        margin-bottom: 24px;
+    }
+
+    .lightbox-select-btn {
+        position: absolute;
+        bottom: env(safe-area-inset-bottom, 16px);
+        right: 16px;
+        background: #fff;
+        color: #000;
+        font-weight: 900;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        border: none;
+        padding: 12px 24px;
+        font-size: 14px;
+        margin-bottom: 24px;
+        cursor: pointer;
+    }
+
+    .lightbox-selected-badge {
+        position: absolute;
+        top: env(safe-area-inset-top, 16px);
+        right: 16px;
+        background: #fff;
+        color: #000;
+        font-weight: 900;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        padding: 8px 16px;
+        font-size: 12px;
+        margin-top: 16px;
+        pointer-events: none;
+    }
 </style>
 {% endblock %}
 
@@ -148,14 +232,23 @@
             <h1 class="text-4xl font-black tracking-tight">CONTROL PANEL</h1>
             <p class="text-gray-500 uppercase tracking-widest text-xs mt-1">PIPELINE MANAGEMENT SYSTEM</p>
         </div>
-        <button
-            @click="startPipeline()"
-            :disabled="pipelineRunning"
-            class="brutal-btn flex items-center space-x-3"
-        >
-            <span class="status-dot" :class="pipelineRunning ? 'bg-green-500 blink' : 'bg-gray-600'"></span>
-            <span x-text="pipelineRunning ? 'RUNNING' : 'START'"></span>
-        </button>
+        <div class="flex items-center space-x-3">
+            <button
+                @click="testSound()"
+                class="brutal-btn bg-gray-700 hover:bg-gray-600 px-3 py-2 text-sm"
+                title="Test sound alert"
+            >
+                🔔
+            </button>
+            <button
+                @click="startPipeline()"
+                :disabled="pipelineRunning"
+                class="brutal-btn flex items-center space-x-3"
+            >
+                <span class="status-dot" :class="pipelineRunning ? 'bg-green-500 blink' : 'bg-gray-600'"></span>
+                <span x-text="pipelineRunning ? 'RUNNING' : 'START'"></span>
+            </button>
+        </div>
     </div>
 
     <!-- SCHEDULE -->
@@ -218,15 +311,34 @@
                 <h2 class="text-xl font-black uppercase tracking-wide">SCENE 1 // PRIMARY REFERENCE</h2>
                 <p class="text-gray-500 text-xs uppercase mt-1">SELECT ONE OR REJECT ALL</p>
             </div>
-            <button @click="rejectAllImages()" class="brutal-btn brutal-btn-danger">
-                ALL TRASH
-            </button>
+            <div class="flex gap-2">
+                <button @click="confirmNewTopic()" class="brutal-btn bg-purple-700 hover:bg-purple-600 text-sm px-3">
+                    НОВА ТЕМА
+                </button>
+                <button @click="rejectAllImages()" class="brutal-btn brutal-btn-danger">
+                    ALL TRASH
+                </button>
+            </div>
         </div>
 
-        <div class="grid grid-cols-4 gap-4">
+        <!-- New topic confirmation dialog -->
+        <div x-show="newTopicConfirm" class="bg-purple-900/30 border-2 border-purple-500 p-4 mb-4">
+            <p class="text-purple-400 text-sm uppercase font-bold mb-2">СКАСУВАТИ І ПОЧАТИ З НОВОЇ ТЕМИ?</p>
+            <p class="text-gray-400 text-xs mb-4">Поточний проєкт буде переміщено в archive/test/</p>
+            <div class="flex gap-3">
+                <button @click="startNewTopic()" class="brutal-btn bg-purple-600 hover:bg-purple-500 flex-1">
+                    ТАК, НОВА ТЕМА
+                </button>
+                <button @click="newTopicConfirm = false" class="brutal-btn bg-gray-700 flex-1">
+                    СКАСУВАТИ
+                </button>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-4" x-show="!newTopicConfirm">
             <template x-for="(img, idx) in candidateImages" :key="idx">
                 <div
-                    @click="selectImage(idx)"
+                    @click="openLightbox(idx)"
                     :class="{'selected': selectedImage === idx}"
                     class="image-grid-item relative cursor-pointer"
                 >
@@ -243,7 +355,7 @@
             </template>
         </div>
 
-        <div class="mt-6 flex justify-end">
+        <div class="mt-6 flex justify-end" x-show="!newTopicConfirm">
             <button
                 @click="approveSelected()"
                 :disabled="selectedImage === null"
@@ -329,36 +441,47 @@
 
     <!-- FINAL VIDEO APPROVAL (2nd and LAST user interaction) -->
     <div class="brutal-card p-6" x-show="finalVideoPath || awaitingVideoApproval">
-        <div class="flex items-center justify-between mb-6">
-            <div>
-                <h2 class="text-xl font-black uppercase tracking-wide">FINAL VIDEO</h2>
-                <p class="text-gray-500 text-xs uppercase mt-1">
-                    <template x-if="awaitingVideoApproval">
-                        <span class="text-yellow-400 blink">APPROVAL REQUIRED BEFORE TOPAZ</span>
-                    </template>
-                    <template x-if="!awaitingVideoApproval && finalVideoPath">
-                        <span x-text="finalVideoPath"></span>
-                    </template>
-                </p>
+        <div class="mb-6">
+            <div class="flex items-center justify-between">
+                <div>
+                    <h2 class="text-xl font-black uppercase tracking-wide">FINAL VIDEO</h2>
+                    <p class="text-gray-500 text-xs uppercase mt-1">
+                        <template x-if="awaitingVideoApproval">
+                            <span class="text-yellow-400 blink">APPROVAL REQUIRED BEFORE TOPAZ</span>
+                        </template>
+                        <template x-if="!awaitingVideoApproval && finalVideoPath">
+                            <span x-text="finalVideoPath"></span>
+                        </template>
+                    </p>
+                </div>
+                <!-- Refresh button — always visible -->
+                <button @click="refreshVideo()" class="brutal-btn bg-gray-700 hover:bg-gray-600 px-3 py-2" title="Reload video from disk">
+                    ↻
+                </button>
             </div>
-            <div class="flex space-x-3" x-show="awaitingVideoApproval">
-                <button @click="approveVideo()" class="brutal-btn bg-green-600 hover:bg-green-500">
+
+            <!-- Approval buttons — stacked on mobile -->
+            <div class="flex flex-col sm:flex-row gap-3 mt-4" x-show="awaitingVideoApproval">
+                <button @click="approveVideo()" class="brutal-btn bg-green-600 hover:bg-green-500 w-full sm:w-auto text-center">
                     APPROVE → TOPAZ
                 </button>
-                <button @click="skipTopaz()" class="brutal-btn bg-gray-600 hover:bg-gray-500">
+                <button @click="skipTopaz()" class="brutal-btn bg-gray-600 hover:bg-gray-500 w-full sm:w-auto text-center">
                     SKIP TOPAZ
                 </button>
+                <button @click="needsEditing()" class="brutal-btn brutal-btn-danger w-full sm:w-auto text-center">
+                    ДОМОНТУВАТИ
+                </button>
             </div>
-            <div class="flex space-x-3" x-show="!awaitingVideoApproval && finalVideoPath">
+            <div class="flex flex-col sm:flex-row gap-3 mt-4" x-show="!awaitingVideoApproval && finalVideoPath">
                 <button
                     @click="startTopazProcessing()"
                     :disabled="topazProcessing"
-                    class="brutal-btn"
+                    class="brutal-btn w-full sm:w-auto text-center"
                     :class="{'bg-yellow-500': topazProcessing}"
                 >
                     <span x-text="topazProcessing ? 'PROCESSING...' : 'REPROCESS (TOPAZ)'"></span>
                 </button>
-                <a :href="'/projects/' + currentProject + '/final.mp4'" download class="brutal-btn bg-gray-700">
+                <a :href="finalVideoPath" download class="brutal-btn bg-gray-700 w-full sm:w-auto text-center">
                     DOWNLOAD
                 </a>
             </div>
@@ -366,7 +489,7 @@
 
         <div class="relative">
             <video
-                :src="finalVideoPath || '/projects/' + currentProject + '/final.mp4'"
+                :src="finalVideoPath + '?t=' + videoCacheBuster"
                 controls
                 class="w-full border-2"
                 :class="awaitingVideoApproval ? 'border-yellow-500' : 'border-white'"
@@ -463,6 +586,81 @@
         </div>
     </div>
 
+    <!-- FULLSCREEN LIGHTBOX -->
+    <template x-if="lightboxOpen">
+        <div class="lightbox-overlay"
+            @touchstart="lightboxTouchStart($event)"
+            @touchmove="lightboxTouchMove($event)"
+            @touchend="lightboxTouchEnd($event)"
+        >
+            <img :src="candidateImages[lightboxIndex]?.url" :key="lightboxIndex">
+            <div class="lightbox-counter">
+                <span x-text="(lightboxIndex + 1) + ' / ' + candidateImages.length"></span>
+            </div>
+            <div x-show="selectedImage === lightboxIndex" class="lightbox-selected-badge">SELECTED</div>
+            <button @click="selectImage(lightboxIndex); closeLightbox();" class="lightbox-select-btn">
+                SELECT #<span x-text="lightboxIndex + 1"></span>
+            </button>
+            <div class="lightbox-hint">
+                ← SWIPE → NAVIGATE &nbsp;&nbsp;|&nbsp;&nbsp; ↑ SWIPE ↓ CLOSE
+            </div>
+        </div>
+    </template>
+
+    <!-- ARCHIVE PROJECT -->
+    <div class="brutal-card p-6" x-show="currentProject && !pipelineRunning">
+        <div class="mb-4">
+            <h2 class="text-xl font-black uppercase tracking-wide">ARCHIVE</h2>
+            <p class="text-gray-500 text-xs uppercase mt-1">
+                POST-PUBLISH CLEANUP &amp; MOVE TO ARCHIVE
+            </p>
+        </div>
+
+        <!-- Archive confirmation -->
+        <div x-show="archiveConfirm" class="bg-red-900/30 border-2 border-red-500 p-4 mb-4">
+            <p class="text-red-400 text-sm uppercase font-bold mb-3">
+                <span x-text="archiveCategory === 'published' ? 'DELETE INTERMEDIATES + ARCHIVE?' : 'MOVE TO ARCHIVE/' + archiveCategory.toUpperCase() + '?'"></span>
+            </p>
+            <p class="text-gray-400 text-xs mb-4" x-text="'Project: ' + currentProject"></p>
+            <div class="flex gap-3">
+                <button @click="doArchive()" :disabled="archiving" class="brutal-btn brutal-btn-danger flex-1">
+                    <span x-text="archiving ? 'ARCHIVING...' : 'CONFIRM'"></span>
+                </button>
+                <button @click="archiveConfirm = false" :disabled="archiving" class="brutal-btn bg-gray-700 flex-1">
+                    CANCEL
+                </button>
+            </div>
+        </div>
+
+        <!-- Archive result -->
+        <div x-show="archiveResult" class="bg-green-900/30 border-2 border-green-500 p-4 mb-4">
+            <p class="text-green-400 text-sm uppercase font-bold">ARCHIVED</p>
+            <p class="text-gray-400 text-xs mt-1" x-text="archiveResult"></p>
+        </div>
+
+        <!-- Buttons — stacked on mobile -->
+        <div class="flex flex-col sm:flex-row gap-3" x-show="!archiveConfirm && !archiveResult">
+            <button
+                @click="confirmArchive('published')"
+                class="brutal-btn bg-green-700 hover:bg-green-600 w-full sm:w-auto text-center flex-1"
+            >
+                PUBLISHED → ARCHIVE
+            </button>
+            <button
+                @click="confirmArchive('failed')"
+                class="brutal-btn brutal-btn-danger w-full sm:w-auto text-center flex-1"
+            >
+                ARCHIVE AS FAILED
+            </button>
+            <button
+                @click="confirmArchive('test')"
+                class="brutal-btn bg-gray-600 hover:bg-gray-500 w-full sm:w-auto text-center flex-1"
+            >
+                ARCHIVE AS TEST
+            </button>
+        </div>
+    </div>
+
     <!-- ACTIVITY LOG -->
     <div class="brutal-card p-6">
         <h2 class="text-xl font-black uppercase tracking-wide mb-4">LOG</h2>
@@ -496,6 +694,89 @@
 {% block scripts %}
 <script src="/static/js/control-push.js"></script>
 <script>
+// Sound notification using Web Audio API
+const SoundAlert = {
+    audioContext: null,
+    enabled: false,
+
+    init() {
+        // Create AudioContext on first user interaction (required by browsers)
+        if (!this.audioContext) {
+            this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        // iOS requires resume after user gesture
+        if (this.audioContext.state === 'suspended') {
+            this.audioContext.resume().then(() => {
+                console.log('[SoundAlert] AudioContext resumed');
+                this.enabled = true;
+            });
+        } else {
+            this.enabled = true;
+        }
+    },
+
+    play(type = 'approval') {
+        if (!this.audioContext || !this.enabled) {
+            console.warn('[SoundAlert] Not initialized or not enabled');
+            return;
+        }
+
+        // Resume if suspended (can happen after tab switch)
+        if (this.audioContext.state === 'suspended') {
+            this.audioContext.resume();
+        }
+
+        const ctx = this.audioContext;
+        const now = ctx.currentTime;
+
+        if (type === 'approval') {
+            // Attention sound: 3 rising tones
+            [440, 554, 659].forEach((freq, i) => {
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.frequency.value = freq;
+                osc.type = 'sine';
+                gain.gain.setValueAtTime(0.3, now + i * 0.15);
+                gain.gain.exponentialRampToValueAtTime(0.01, now + i * 0.15 + 0.14);
+                osc.start(now + i * 0.15);
+                osc.stop(now + i * 0.15 + 0.15);
+            });
+        } else if (type === 'success') {
+            // Success sound: pleasant chord
+            [523, 659, 784].forEach((freq) => {
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.frequency.value = freq;
+                osc.type = 'sine';
+                gain.gain.setValueAtTime(0.2, now);
+                gain.gain.exponentialRampToValueAtTime(0.01, now + 0.5);
+                osc.start(now);
+                osc.stop(now + 0.5);
+            });
+        } else if (type === 'error') {
+            // Error sound: low buzz
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.frequency.value = 200;
+            osc.type = 'sawtooth';
+            gain.gain.setValueAtTime(0.3, now);
+            gain.gain.exponentialRampToValueAtTime(0.01, now + 0.3);
+            osc.start(now);
+            osc.stop(now + 0.3);
+        }
+    }
+};
+
+// Initialize audio on first touch/click (required for iOS)
+document.addEventListener('touchstart', () => SoundAlert.init(), { once: true });
+document.addEventListener('click', () => SoundAlert.init(), { once: true });
+
 function controlPanel() {
     return {
         scheduleTime: '09:00',
@@ -536,6 +817,21 @@ function controlPanel() {
             current_task: null,
             stats: {}
         },
+        // New topic confirmation
+        newTopicConfirm: false,
+        // Archive state
+        archiving: false,
+        archiveConfirm: false,
+        archiveCategory: '',
+        archiveResult: '',
+        // Video cache buster (forces reload after edit)
+        videoCacheBuster: Date.now(),
+        // Lightbox state
+        lightboxOpen: false,
+        lightboxIndex: 0,
+        _touchStartX: 0,
+        _touchStartY: 0,
+        _touchMoved: false,
 
         async init() {
             this.loadSchedule();
@@ -558,6 +854,7 @@ function controlPanel() {
                 this.currentStage = data.current_stage;
                 this.progress = data.progress;
                 this.awaitingApproval = data.awaiting_approval;
+                this.approvalType = data.approval_type || '';
                 this.awaitingVideoApproval = data.awaiting_video_approval;
 
                 // Restore project and video paths
@@ -642,10 +939,31 @@ function controlPanel() {
                 window.ControlPush.notify(event, payload);
             }
 
+            // Play sound alerts for important events
+            if (event === 'approval_required' || event === 'video_approval_required') {
+                SoundAlert.play('approval');
+            } else if (event === 'pipeline_completed' || event === 'topaz_completed') {
+                SoundAlert.play('success');
+            } else if (event === 'pipeline_error') {
+                // Don't play error sound for abort (new topic) - it's expected
+                const msg = (payload.message || '').toLowerCase();
+                if (!msg.includes('abort') && !msg.includes('new topic')) {
+                    SoundAlert.play('error');
+                }
+            }
+
             switch(event) {
+                case 'project_created':
+                    // Project ID is now known - update immediately
+                    this.currentProject = payload.project_id;
+                    this.addLog('info', 'PROJECT CREATED: ' + payload.project_id);
+                    break;
+
                 case 'pipeline_started':
                     this.pipelineRunning = true;
-                    this.currentProject = payload.project_id;
+                    if (payload.project_id && payload.project_id !== 'new') {
+                        this.currentProject = payload.project_id;
+                    }
                     this.addLog('info', 'PIPELINE STARTED // ' + payload.project_id);
                     break;
 
@@ -743,6 +1061,24 @@ function controlPanel() {
                     this.addLog('error', 'ERROR: ' + payload.message);
                     break;
 
+                case 'pipeline_reset':
+                    // Full state reset - new topic requested
+                    this.pipelineRunning = false;
+                    this.awaitingApproval = false;
+                    this.awaitingVideoApproval = false;
+                    this.candidateImages = [];
+                    this.selectedImage = null;
+                    this.allScenes = [];
+                    this.finalVideoPath = '';
+                    this.topazVideoPath = '';
+                    this.currentStage = '';
+                    this.progress = 0;
+                    this.newTopicConfirm = false;
+                    this.archiveConfirm = false;
+                    this.archiveResult = '';
+                    this.addLog('info', 'PIPELINE RESET // OLD PROJECT ARCHIVED');
+                    break;
+
                 case 'log':
                     this.addLog(payload.level || 'info', payload.message.toUpperCase());
                     break;
@@ -802,6 +1138,60 @@ function controlPanel() {
             }
         },
 
+        // Lightbox methods
+        openLightbox(idx) {
+            this.lightboxIndex = idx;
+            this.lightboxOpen = true;
+            document.body.style.overflow = 'hidden';
+        },
+
+        closeLightbox() {
+            this.lightboxOpen = false;
+            document.body.style.overflow = '';
+        },
+
+        lightboxTouchStart(e) {
+            const touch = e.touches[0];
+            this._touchStartX = touch.clientX;
+            this._touchStartY = touch.clientY;
+            this._touchMoved = false;
+        },
+
+        lightboxTouchMove(e) {
+            e.preventDefault();
+            this._touchMoved = true;
+        },
+
+        lightboxTouchEnd(e) {
+            if (!this._touchMoved) {
+                // Simple tap — close
+                this.closeLightbox();
+                return;
+            }
+            const touch = e.changedTouches[0];
+            const dx = touch.clientX - this._touchStartX;
+            const dy = touch.clientY - this._touchStartY;
+            const absDx = Math.abs(dx);
+            const absDy = Math.abs(dy);
+            const threshold = 50;
+
+            if (absDx < threshold && absDy < threshold) return;
+
+            if (absDx > absDy) {
+                // Horizontal swipe — navigate
+                if (dx < -threshold && this.lightboxIndex < this.candidateImages.length - 1) {
+                    this.lightboxIndex++;
+                } else if (dx > threshold && this.lightboxIndex > 0) {
+                    this.lightboxIndex--;
+                }
+            } else {
+                // Vertical swipe — close
+                if (absDy > threshold) {
+                    this.closeLightbox();
+                }
+            }
+        },
+
         selectImage(idx) { this.selectedImage = idx; },
 
         async approveSelected() {
@@ -829,8 +1219,58 @@ function controlPanel() {
             }
         },
 
+        testSound() {
+            SoundAlert.init();
+            SoundAlert.play('approval');
+            this.addLog('info', 'SOUND TEST');
+        },
+
+        confirmNewTopic() {
+            this.newTopicConfirm = true;
+        },
+
+        async startNewTopic() {
+            this.addLog('info', 'STARTING NEW TOPIC...');
+            try {
+                const res = await fetch('/api/control/new-topic', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ project_id: this.currentProject })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'Failed');
+                this.newTopicConfirm = false;
+                this.awaitingApproval = false;
+                this.candidateImages = [];
+                this.selectedImage = null;
+                this.allScenes = [];
+                this.currentProject = '';
+                this.addLog('success', 'NEW TOPIC STARTED: ' + data.new_project_id);
+            } catch(e) {
+                this.addLog('error', 'NEW TOPIC FAILED: ' + e.message);
+            }
+        },
+
+        async refreshVideo() {
+            try {
+                const res = await fetch('/api/control/refresh-video');
+                if (res.ok) {
+                    const data = await res.json();
+                    this.finalVideoPath = data.video_url;
+                    this.videoCacheBuster = Date.now();
+                    this.addLog('info', `VIDEO REFRESHED: ${data.filename} (${data.size_mb} MB)`);
+                } else {
+                    this.addLog('warning', 'NO VIDEO FILE FOUND IN PROJECT');
+                }
+            } catch(e) {
+                this.addLog('error', 'VIDEO REFRESH FAILED');
+            }
+        },
+
         async approveVideo() {
             try {
+                // Refresh video path from disk before approving
+                await this.refreshVideo();
                 await fetch('/api/control/video-approval', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
@@ -854,6 +1294,26 @@ function controlPanel() {
                 this.addLog('info', 'TOPAZ SKIPPED');
             } catch(e) {
                 this.addLog('error', 'SKIP FAILED');
+            }
+        },
+
+        async needsEditing() {
+            try {
+                const res = await fetch('/api/control/video-approval', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ decision: 'needs_editing' })
+                });
+                const data = await res.json();
+                this.awaitingVideoApproval = false;
+                this.pipelineRunning = false;
+                if (data.renamed_to) {
+                    this.addLog('warning', 'ДОМОНТУВАТИ → ' + data.renamed_to);
+                } else {
+                    this.addLog('warning', 'MARKED FOR EDITING');
+                }
+            } catch(e) {
+                this.addLog('error', 'NEEDS_EDITING FAILED');
             }
         },
 
@@ -890,6 +1350,38 @@ function controlPanel() {
         // confirmScenes() removed - auto-confirm mode
 
         // Video preview methods removed - videos auto-download in pipeline
+
+        // Archive methods
+        confirmArchive(category) {
+            this.archiveCategory = category;
+            this.archiveConfirm = true;
+            this.archiveResult = '';
+        },
+
+        async doArchive() {
+            if (!this.currentProject || this.archiving) return;
+            this.archiving = true;
+            this.addLog('info', `ARCHIVING ${this.currentProject} AS ${this.archiveCategory.toUpperCase()}...`);
+            try {
+                const res = await fetch('/api/control/archive-project', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        project_id: this.currentProject,
+                        category: this.archiveCategory
+                    })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'Archive failed');
+                this.archiveConfirm = false;
+                this.archiveResult = `${data.category.toUpperCase()} | ${data.files_deleted} files, ${data.dirs_deleted} dirs deleted | ${data.space_freed_mb} MB freed`;
+                this.addLog('success', `ARCHIVED: ${data.project_id} -> ${data.category} (${data.space_freed_mb} MB freed)`);
+            } catch(e) {
+                this.addLog('error', 'ARCHIVE FAILED: ' + e.message);
+            } finally {
+                this.archiving = false;
+            }
+        },
     }
 }
 </script>

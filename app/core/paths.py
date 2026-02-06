@@ -31,6 +31,12 @@ CONFIG_DIR = BASE_DIR / "config"
 # Временные файлы
 TEMP_DIR = BASE_DIR / "temp"
 
+# Archive directories
+ARCHIVE_DIR = BASE_DIR / "archive"
+ARCHIVE_PUBLISHED_DIR = ARCHIVE_DIR / "published"
+ARCHIVE_FAILED_DIR = ARCHIVE_DIR / "failed"
+ARCHIVE_TEST_DIR = ARCHIVE_DIR / "test"
+
 
 # ============================================================================
 # PROJECT STRUCTURE
@@ -195,7 +201,10 @@ def ensure_directories() -> None:
     Создать все необходимые директории если не существуют.
     Вызывается при старте приложения.
     """
-    for directory in [PROJECTS_DIR, DOWNLOADS_DIR, LOGS_DIR, DATA_DIR, TEMP_DIR]:
+    for directory in [
+        PROJECTS_DIR, DOWNLOADS_DIR, LOGS_DIR, DATA_DIR, TEMP_DIR,
+        ARCHIVE_PUBLISHED_DIR, ARCHIVE_FAILED_DIR, ARCHIVE_TEST_DIR,
+    ]:
         directory.mkdir(parents=True, exist_ok=True)
 
 
@@ -232,6 +241,10 @@ __all__ = [
     "DATA_DIR",
     "CONFIG_DIR",
     "TEMP_DIR",
+    "ARCHIVE_DIR",
+    "ARCHIVE_PUBLISHED_DIR",
+    "ARCHIVE_FAILED_DIR",
+    "ARCHIVE_TEST_DIR",
 
     # Project paths
     "get_project_path",
