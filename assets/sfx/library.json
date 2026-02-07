@@ -1,7 +1,7 @@
 {
   "version": "1.0.0",
-  "total_count": 7,
-  "last_updated": "2026-01-25T11:31:08.604947",
+  "total_count": 28,
+  "last_updated": "2026-02-06T07:53:08.640556",
   "entries": {
     "sfx_0001": {
       "id": "sfx_0001",
@@ -103,6 +103,284 @@
       "mood": "",
       "source_project": "proj_b99d6de73b2b",
       "created_at": "2026-01-25T11:31:08.604947",
+      "usage_count": 0
+    },
+    "sfx_0008": {
+      "id": "sfx_0008",
+      "file": "misc/sfx_0008.mp3",
+      "tags": [],
+      "category": "misc",
+      "description": "Magical chime swell",
+      "duration_ms": 3000,
+      "mood": "",
+      "source_project": "proj_4b27d62b5a6f",
+      "created_at": "2026-02-06T07:50:11.771023",
+      "usage_count": 0
+    },
+    "sfx_0009": {
+      "id": "sfx_0009",
+      "file": "misc/sfx_0009.mp3",
+      "tags": [
+        "soft"
+      ],
+      "category": "misc",
+      "description": "Soft page turning sound",
+      "duration_ms": 3000,
+      "mood": "",
+      "source_project": "proj_4b27d62b5a6f",
+      "created_at": "2026-02-06T07:50:11.808476",
+      "usage_count": 0
+    },
+    "sfx_0010": {
+      "id": "sfx_0010",
+      "file": "ambient/sfx_0010.mp3",
+      "tags": [
+        "echo"
+      ],
+      "category": "ambient",
+      "description": "Echoey room tone",
+      "duration_ms": 3000,
+      "mood": "",
+      "source_project": "proj_4b27d62b5a6f",
+      "created_at": "2026-02-06T07:50:11.843706",
+      "usage_count": 0
+    },
+    "sfx_0011": {
+      "id": "sfx_0011",
+      "file": "misc/sfx_0011.mp3",
+      "tags": [],
+      "category": "misc",
+      "description": "Crisp crystallization crackle",
+      "duration_ms": 3000,
+      "mood": "",
+      "source_project": "proj_4b27d62b5a6f",
+      "created_at": "2026-02-06T07:50:11.879220",
+      "usage_count": 0
+    },
+    "sfx_0012": {
+      "id": "sfx_0012",
+      "file": "misc/sfx_0012.mp3",
+      "tags": [],
+      "category": "misc",
+      "description": "Orchestral swell",
+      "duration_ms": 3000,
+      "mood": "",
+      "source_project": "proj_4b27d62b5a6f",
+      "created_at": "2026-02-06T07:50:11.915181",
+      "usage_count": 0
+    },
+    "sfx_0013": {
+      "id": "sfx_0013",
+      "file": "misc/sfx_0013.mp3",
+      "tags": [],
+      "category": "misc",
+      "description": "Glaze sting finish",
+      "duration_ms": 3000,
+      "mood": "",
+      "source_project": "proj_4b27d62b5a6f",
+      "created_at": "2026-02-06T07:50:11.951367",
+      "usage_count": 0
+    },
+    "sfx_0014": {
+      "id": "sfx_0014",
+      "file": "misc/sfx_0014.mp3",
+      "tags": [
+        "deep"
+      ],
+      "category": "misc",
+      "description": "Crystalline magical shimmer mixed with deep viscous bass",
+      "duration_ms": 2000,
+      "mood": "",
+      "source_project": "proj_4b27d62b5a6f",
+      "created_at": "2026-02-06T07:50:11.985727",
+      "usage_count": 0
+    },
+    "sfx_0015": {
+      "id": "sfx_0015",
+      "file": "whoosh/sfx_0015.mp3",
+      "tags": [
+        "whoosh"
+      ],
+      "category": "whoosh",
+      "description": "Traffic whoosh + wet squish",
+      "duration_ms": 3000,
+      "mood": "",
+      "source_project": "proj_7a7c1261ef6a",
+      "created_at": "2026-02-06T07:52:46.493297",
+      "usage_count": 0
+    },
+    "sfx_0016": {
+      "id": "sfx_0016",
+      "file": "misc/sfx_0016.mp3",
+      "tags": [],
+      "category": "misc",
+      "description": "Sizzling asphalt sound",
+      "duration_ms": 3000,
+      "mood": "",
+      "source_project": "proj_7a7c1261ef6a",
+      "created_at": "2026-02-06T07:52:46.530006",
+      "usage_count": 0
+    },
+    "sfx_0017": {
+      "id": "sfx_0017",
+      "file": "impact/sfx_0017.mp3",
+      "tags": [
+        "deep"
+      ],
+      "category": "impact",
+      "description": "Deep thud impact",
+      "duration_ms": 3000,
+      "mood": "",
+      "source_project": "proj_7a7c1261ef6a",
+      "created_at": "2026-02-06T07:52:46.563144",
+      "usage_count": 0
+    },
+    "sfx_0018": {
+      "id": "sfx_0018",
+      "file": "misc/sfx_0018.mp3",
+      "tags": [],
+      "category": "misc",
+      "description": "Hydraulic spray sound",
+      "duration_ms": 3000,
+      "mood": "",
+      "source_project": "proj_7a7c1261ef6a",
+      "created_at": "2026-02-06T07:52:46.598609",
+      "usage_count": 0
+    },
+    "sfx_0019": {
+      "id": "sfx_0019",
+      "file": "misc/sfx_0019.mp3",
+      "tags": [],
+      "category": "misc",
+      "description": "Crescendo of city noise",
+      "duration_ms": 3000,
+      "mood": "",
+      "source_project": "proj_7a7c1261ef6a",
+      "created_at": "2026-02-06T07:52:46.632844",
+      "usage_count": 0
+    },
+    "sfx_0020": {
+      "id": "sfx_0020",
+      "file": "whoosh/sfx_0020.mp3",
+      "tags": [
+        "whoosh"
+      ],
+      "category": "whoosh",
+      "description": "Loop transition whoosh",
+      "duration_ms": 3000,
+      "mood": "",
+      "source_project": "proj_7a7c1261ef6a",
+      "created_at": "2026-02-06T07:52:46.666886",
+      "usage_count": 0
+    },
+    "sfx_0021": {
+      "id": "sfx_0021",
+      "file": "misc/sfx_0021.mp3",
+      "tags": [
+        "fast"
+      ],
+      "category": "misc",
+      "description": "Fast car pass-by mixed with wet squish sound",
+      "duration_ms": 2000,
+      "mood": "",
+      "source_project": "proj_7a7c1261ef6a",
+      "created_at": "2026-02-06T07:52:46.701490",
+      "usage_count": 0
+    },
+    "sfx_0022": {
+      "id": "sfx_0022",
+      "file": "impact/sfx_0022.mp3",
+      "tags": [
+        "boom"
+      ],
+      "category": "impact",
+      "description": "THE_BOOM impact",
+      "duration_ms": 3000,
+      "mood": "",
+      "source_project": "proj_de28aebfbe30",
+      "created_at": "2026-02-06T07:53:08.413050",
+      "usage_count": 0
+    },
+    "sfx_0023": {
+      "id": "sfx_0023",
+      "file": "food/sfx_0023.mp3",
+      "tags": [
+        "crunch"
+      ],
+      "category": "food",
+      "description": "Crowd murmur + crunch",
+      "duration_ms": 3000,
+      "mood": "",
+      "source_project": "proj_de28aebfbe30",
+      "created_at": "2026-02-06T07:53:08.462156",
+      "usage_count": 0
+    },
+    "sfx_0024": {
+      "id": "sfx_0024",
+      "file": "misc/sfx_0024.mp3",
+      "tags": [],
+      "category": "misc",
+      "description": "Orchestral swell",
+      "duration_ms": 3000,
+      "mood": "",
+      "source_project": "proj_de28aebfbe30",
+      "created_at": "2026-02-06T07:53:08.498862",
+      "usage_count": 0
+    },
+    "sfx_0025": {
+      "id": "sfx_0025",
+      "file": "food/sfx_0025.mp3",
+      "tags": [
+        "crunch",
+        "loud"
+      ],
+      "category": "food",
+      "description": "Loud CRISP crunch",
+      "duration_ms": 3000,
+      "mood": "",
+      "source_project": "proj_de28aebfbe30",
+      "created_at": "2026-02-06T07:53:08.534496",
+      "usage_count": 0
+    },
+    "sfx_0026": {
+      "id": "sfx_0026",
+      "file": "misc/sfx_0026.mp3",
+      "tags": [],
+      "category": "misc",
+      "description": "Crescendo finale",
+      "duration_ms": 3000,
+      "mood": "",
+      "source_project": "proj_de28aebfbe30",
+      "created_at": "2026-02-06T07:53:08.570391",
+      "usage_count": 0
+    },
+    "sfx_0027": {
+      "id": "sfx_0027",
+      "file": "misc/sfx_0027.mp3",
+      "tags": [],
+      "category": "misc",
+      "description": "GLAZE_STING",
+      "duration_ms": 3000,
+      "mood": "",
+      "source_project": "proj_de28aebfbe30",
+      "created_at": "2026-02-06T07:53:08.606354",
+      "usage_count": 0
+    },
+    "sfx_0028": {
+      "id": "sfx_0028",
+      "file": "impact/sfx_0028.mp3",
+      "tags": [
+        "crunch",
+        "hit",
+        "loud",
+        "deep"
+      ],
+      "category": "impact",
+      "description": "Deep orchestral hit mixed with a loud crispy crunch",
+      "duration_ms": 2000,
+      "mood": "",
+      "source_project": "proj_de28aebfbe30",
+      "created_at": "2026-02-06T07:53:08.640556",
       "usage_count": 0
     }
   }
