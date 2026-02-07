@@ -52,7 +52,9 @@ async def run_render(project_id: str, simple: bool = False):
     logger.info(f"  music:          {'OK' if (project_dir / 'music.mp3').exists() or (project_dir / 'music' / 'background.mp3').exists() else 'MISSING'}")
     logger.info(f"  voiceover_timing.json: {'OK' if (project_dir / 'voiceover_timing.json').exists() else 'MISSING (no VO ducking)'}")
 
-    for i in range(1, 7):
+    # Detect scene count from manifest or scene dirs
+    scene_count = len([d for d in project_dir.iterdir() if d.is_dir() and d.name.startswith("scene_")])
+    for i in range(1, scene_count + 1):
         video_path = project_dir / f"scene_{i}" / "video.mp4"
         logger.info(f"  scene_{i}/video.mp4: {'OK' if video_path.exists() else 'MISSING'}")
 

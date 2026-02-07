@@ -1057,9 +1057,9 @@ FOR each major_effect:
 
 ---
 
-## 🔄 SCENE 6 LOOP ENGINEERING
+## 🔄 LAST SCENE (SCENE N) LOOP ENGINEERING
 
-### SYSTEM CONSTANT: Scene 6 is ALWAYS reversed
+### SYSTEM CONSTANT: Last scene (Scene N) is ALWAYS reversed
 
 **Processing order is CRITICAL:**
 ```
@@ -1074,7 +1074,7 @@ FOR each major_effect:
 
 ```json
 "loop_config": {
-  "scene_6_processing": {
+  "scene_N_processing": {
     "step_1_reverse": {
       "operation": "REVERSE",
       "ffmpeg_filter": "reverse"
@@ -1082,7 +1082,7 @@ FOR each major_effect:
     "step_2_speed": {
       "must_match": "scene_1",
       "scene_1_duration": 3.47,
-      "scene_6_duration": 3.47,
+      "scene_N_duration": 3.47,
       "match_confirmed": true
     }
   },
@@ -1262,15 +1262,15 @@ FOR each major_effect:
     },
     
     {
-      "sequence_index": 6,
-      "source_file": "6.mp4",
+      "sequence_index": "N (last scene)",
+      "source_file": "N.mp4",
       "special_flags": ["LOOP_SCENE", "REQUIRES_REVERSE"],
-      
+
       "loop_processing": {
         "reverse": true,
         "duration_match": {
           "scene_1": 3.47,
-          "scene_6": 3.47,
+          "scene_N": 3.47,
           "verified": true
         }
       },
@@ -1362,7 +1362,7 @@ FOR each major_effect:
     "order": [
       "fps_normalize",
       "scale_up",
-      "reverse (scene 6)",
+      "reverse (last scene N)",
       "trim (if cuts)",
       "setpts (speed)",
       "tmix (motion blur)",
@@ -1389,8 +1389,8 @@ FOR each major_effect:
 
   "validation": {
     "duration": {"calculated": 21.35, "within_range": true},
-    "scenes": {"all_present": true, "count": 6},
-    "loop": {"scene_6_reversed": true, "duration_match": true},
+    "scenes": {"all_present": true, "count": "N (6-10)"},
+    "loop": {"scene_N_reversed": true, "duration_match": true},
     "glitches": {"all_handled": true},
     "easter_egg": {"protected": true, "zoom_blocked": true},
     "hook": {"style_selected": true, "not_default_every_time": true},
@@ -1474,8 +1474,8 @@ Before outputting, verify:
 - [ ] Only SUBTLE palette effects allowed
 
 ### Loop
-- [ ] Scene 6 reverse = true
-- [ ] Scene 6 duration = Scene 1 duration
+- [ ] Last scene (Scene N) reverse = true
+- [ ] Last scene (Scene N) duration = Scene 1 duration
 - [ ] Loop transition beat-aligned if possible
 
 ### Audio
@@ -1611,8 +1611,8 @@ Before outputting, verify:
 13. **CUMULATIVE_SCENE_STARTS** — Use for final positioning
 14. **90% HARD CUTS** — Effects only where palette allows
 15. **PROTECT THE EGG** — SUBTLE palette only, no zoom, subtitles at TOP
-16. **SCENE 6 REVERSED FIRST** — Processing order critical
-17. **SCENE 6 = SCENE 1 DURATION** — Must match for loop
+16. **LAST SCENE (N) REVERSED FIRST** — Processing order critical
+17. **SCENE N = SCENE 1 DURATION** — Must match for loop
 18. **VOLUME IN dB** — Always use dB
 
 ---

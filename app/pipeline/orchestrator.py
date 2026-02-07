@@ -86,7 +86,7 @@ class PipelineOrchestrator:
     async def create_project(
         self,
         topic: str,
-        num_scenes: int = 6,
+        num_scenes: int = 8,
         style: str = "cinematic food fantasy",
         target_audience: str = "YouTube Shorts viewers"
     ) -> ProjectData:
@@ -95,7 +95,7 @@ class PipelineOrchestrator:
 
         Args:
             topic: Video topic (or "FREE_TOPIC" for AI choice)
-            num_scenes: Number of scenes (always 6)
+            num_scenes: Number of scenes (6-10, dynamic)
             style: Video style
             target_audience: Target audience
 

@@ -88,7 +88,7 @@ class ImageTimeouts:
     """Image generation timeouts (seconds)"""
     GENERATION: int = 120            # Single image generation
     PRIMARY_GENERATION: int = 180    # 4 candidates for PRIMARY
-    BATCH_GENERATION: int = 300      # Batch of 5 images (scenes 2-6)
+    BATCH_GENERATION: int = 300      # Batch of remaining images (scenes 2-N)
     DOWNLOAD: int = 30               # Image download from CDN
     POLL_INTERVAL: int = 10          # Status check interval
 
@@ -97,7 +97,7 @@ class ImageTimeouts:
 class VideoTimeouts:
     """Video generation timeouts (seconds)"""
     GENERATION: int = 300            # Single video generation (5 min)
-    BATCH_GENERATION: int = 900      # Batch of 6 videos (15 min)
+    BATCH_GENERATION: int = 900      # Batch of 6-10 videos (15 min)
     DOWNLOAD: int = 60               # Video download (larger files)
     POLL_INTERVAL: int = 15          # Status check interval
     INITIAL_WAIT: int = 300          # Initial wait before polling (5 min)

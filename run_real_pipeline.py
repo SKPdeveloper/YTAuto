@@ -173,7 +173,7 @@ class PipelineMonitor:
 # MAIN PIPELINE
 # ============================================================================
 
-async def run_pipeline(topic: Optional[str] = None, num_scenes: int = 6, auto_approve: bool = False):
+async def run_pipeline(topic: Optional[str] = None, num_scenes: int = 8, auto_approve: bool = False):
     """
     Запускає повний pipeline.
 
@@ -349,7 +349,7 @@ async def main():
 
     # Parse arguments
     topic = None
-    num_scenes = 6
+    num_scenes = 8
     auto_confirm = False
     auto_approve = False
     resume_project_id = None

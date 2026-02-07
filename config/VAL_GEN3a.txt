@@ -136,7 +136,7 @@ For each scene in scene_analysis[]:
 ☐ 2.18 cumulative_timing.scene_start_in_final is number >= 0
 ☐ 2.19 cumulative_timing.scene_end_in_final is number > scene_start_in_final
 ☐ 2.20 Scene 1 has special_flags containing "HOOK_SCENE"
-☐ 2.21 Scene 6 has special_flags containing "REQUIRES_REVERSE"
+☐ 2.21 Last scene (Scene N) has special_flags containing "REQUIRES_REVERSE"
 ☐ 2.22 Easter egg scene has special_flags containing "EASTER_EGG_SCENE"
 ```
 
@@ -401,14 +401,14 @@ For each scene:
 
 CUMULATIVE SCENE STARTS:
 ☐ 12.5  cumulative_scene_starts object exists
-☐ 12.6  cumulative_scene_starts has keys: scene_1, scene_2, scene_3, scene_4, scene_5, scene_6
+☐ 12.6  cumulative_scene_starts has keys: scene_1 through scene_N (matching total scene count)
 ☐ 12.7  cumulative_scene_starts.scene_1 = 0.0
 ☐ 12.8  Each subsequent scene start = previous scene start + previous scene output_duration
         (scene_2 = scene_1 + scene_1_output_duration, etc.)
 
 EFFECT PALETTES:
 ☐ 12.9  effect_palettes_by_scene object exists
-☐ 12.10 effect_palettes_by_scene has keys: scene_1 through scene_6
+☐ 12.10 effect_palettes_by_scene has keys: scene_1 through scene_N (matching total scene count)
 ☐ 12.11 Each palette value is valid (SUBTLE, DRAMATIC, SMOOTH, WARM, ENERGETIC)
 ☐ 12.12 Palettes match scene visual_classification.effect_palette_recommendation
 
@@ -434,14 +434,14 @@ HOOK:
 
 ```
 ☐ 13.1  Scene 1 speed_analysis.calculated_output_duration exists
-☐ 13.2  Scene 6 speed_analysis.calculated_output_duration exists
-☐ 13.3  Scene 1 duration = Scene 6 duration (±0.1s tolerance) — CRITICAL
-☐ 13.4  global_analysis.scene_1_scene_6_match object exists
-☐ 13.5  scene_1_scene_6_match.match = true
-☐ 13.6  scene_1_scene_6_match.loop_ready = true
-☐ 13.7  Scene 6 special_flags contains "REQUIRES_REVERSE"
-☐ 13.8  scene_1_scene_6_match.scene_1_duration = Scene 1 actual duration
-☐ 13.9  scene_1_scene_6_match.scene_6_duration = Scene 6 actual duration
+☐ 13.2  Last scene (Scene N) speed_analysis.calculated_output_duration exists
+☐ 13.3  Scene 1 duration = Scene N duration (±0.1s tolerance) — CRITICAL
+☐ 13.4  global_analysis.scene_1_scene_N_match object exists
+☐ 13.5  scene_1_scene_N_match.match = true
+☐ 13.6  scene_1_scene_N_match.loop_ready = true
+☐ 13.7  Last scene (Scene N) special_flags contains "REQUIRES_REVERSE"
+☐ 13.8  scene_1_scene_N_match.scene_1_duration = Scene 1 actual duration
+☐ 13.9  scene_1_scene_N_match.scene_N_duration = Scene N actual duration
 ```
 
 **Severity:** CRITICAL if durations don't match (breaks seamless loop)
@@ -452,8 +452,8 @@ HOOK:
 
 ```
 ☐ 14.1  Easter egg scene_number in gen3a matches gen1_brief.easter_egg.scene_number
-☐ 14.2  Number of scenes = 6
-☐ 14.3  All VO segments reference valid scene numbers (1-6)
+☐ 14.2  Number of scenes = 6-10 (dynamic, matches GEN1 scene count)
+☐ 14.3  All VO segments reference valid scene numbers (1-N)
 ☐ 14.4  All glitch timestamps within scene source_duration bounds
 ☐ 14.5  All action_peak timestamps within scene source_duration bounds
 ☐ 14.6  cumulative_scene_starts values form continuous timeline
@@ -496,9 +496,9 @@ These cause automatic FAIL regardless of score:
 
 | # | Condition | Why Critical |
 |---|-----------|--------------|
-| 1 | scene_analysis.length ≠ 6 | Missing scenes breaks pipeline |
+| 1 | scene_analysis.length not in 6-10 | Missing scenes breaks pipeline |
 | 2 | Any speed_map has gaps | Renders incomplete video |
-| 3 | Scene 1 duration ≠ Scene 6 duration (>0.1s diff) | Breaks seamless loop |
+| 3 | Scene 1 duration ≠ Scene N duration (>0.1s diff) | Breaks seamless loop |
 | 4 | easter_egg_analysis.zoom_forbidden ≠ true | May crop out easter egg |
 | 5 | Glitch with action="CUT" missing cut_impact | GEN3b can't handle timestamps |
 | 6 | music_analysis.source ≠ "precomputed_librosa" | GEN3a shouldn't analyze music |
@@ -549,7 +549,7 @@ When validation fails, generate actionable feedback:
 "CRITICAL FIXES REQUIRED:
 1. Scene 2 speed_analysis.speed_map has gap at 4.5-5.0s - add segment {start: 4.5, end: 5.0, speed: X, reason: Y}
 2. easter_egg_analysis.zoom_forbidden must be true (currently false or missing)
-3. Scene 6 calculated_output_duration (3.82s) must match Scene 1 (3.47s) - adjust Scene 6 speed_map
+3. Last scene (Scene N) calculated_output_duration (3.82s) must match Scene 1 (3.47s) - adjust Scene N speed_map
 
 ERRORS:
 4. Glitch S3_G1 has recommended_action='CUT' but missing cut_impact object
@@ -662,10 +662,10 @@ ERRORS:
         {
           "severity": "CRITICAL",
           "check": "duration_match",
-          "message": "Scene 1 and Scene 6 durations must match for seamless loop",
-          "location": "scene_analysis[0] vs scene_analysis[5]",
+          "message": "Scene 1 and Scene N (last) durations must match for seamless loop",
+          "location": "scene_analysis[0] vs scene_analysis[N-1]",
           "expected": "Equal durations (±0.1s)",
-          "actual": "Scene 1: 3.47s, Scene 6: 3.82s (diff: 0.35s)"
+          "actual": "Scene 1: 3.47s, Scene N: 3.82s (diff: 0.35s)"
         }
       ] 
     },
@@ -714,10 +714,10 @@ ERRORS:
       "severity": "CRITICAL",
       "category": "loop_validation",
       "check": "duration_match",
-      "message": "Scene 1 and Scene 6 must have equal output_duration for seamless loop",
+      "message": "Scene 1 and Scene N (last) must have equal output_duration for seamless loop",
       "location": "speed_analysis.calculated_output_duration",
-      "expected": "Scene 1 duration = Scene 6 duration (±0.1s)",
-      "actual": "Scene 1: 3.47s, Scene 6: 3.82s (difference: 0.35s)"
+      "expected": "Scene 1 duration = Scene N duration (±0.1s)",
+      "actual": "Scene 1: 3.47s, Scene N: 3.82s (difference: 0.35s)"
     },
     {
       "severity": "CRITICAL",
@@ -729,7 +729,7 @@ ERRORS:
       "actual": "cut_impact is undefined"
     }
   ],
-  "feedback_for_retry": "CRITICAL FIXES REQUIRED:\n\n1. SPEED MAP GAP: Scene 2 speed_map has gap at 4.5-5.0s. Add a segment like {\"start\": 4.5, \"end\": 5.0, \"speed\": 2.0, \"reason\": \"fill_gap\"} to ensure continuous coverage.\n\n2. EASTER EGG PROTECTION: Set easter_egg_analysis.zoom_forbidden = true. This is required to prevent cropping out the hidden easter egg object.\n\n3. LOOP DURATION MISMATCH: Scene 6 output duration (3.82s) must equal Scene 1 (3.47s). Adjust Scene 6 speed_map to produce exactly 3.47s output. Try increasing speed in middle segments.\n\n4. MISSING CUT IMPACT: Glitch S3_G1 in Scene 3 has recommended_action='CUT' but no cut_impact object. Add cut_impact with: timestamps_after_cut_shift_by, post_cut_scene_duration, source_duration_removed."
+  "feedback_for_retry": "CRITICAL FIXES REQUIRED:\n\n1. SPEED MAP GAP: Scene 2 speed_map has gap at 4.5-5.0s. Add a segment like {\"start\": 4.5, \"end\": 5.0, \"speed\": 2.0, \"reason\": \"fill_gap\"} to ensure continuous coverage.\n\n2. EASTER EGG PROTECTION: Set easter_egg_analysis.zoom_forbidden = true. This is required to prevent cropping out the hidden easter egg object.\n\n3. LOOP DURATION MISMATCH: Last scene (Scene N) output duration (3.82s) must equal Scene 1 (3.47s). Adjust Scene N speed_map to produce exactly 3.47s output. Try increasing speed in middle segments.\n\n4. MISSING CUT IMPACT: Glitch S3_G1 in Scene 3 has recommended_action='CUT' but no cut_impact object. Add cut_impact with: timestamps_after_cut_shift_by, post_cut_scene_duration, source_duration_removed."
 }
 ```
 
@@ -751,7 +751,7 @@ ERRORS:
 1. **Return ONLY JSON** — No markdown, no explanations outside JSON
 2. **Check version 1.3.1** — Fail immediately if wrong version
 3. **Gaps are CRITICAL** — Speed map gaps break FFmpeg rendering
-4. **Loop MUST match** — Scene 1 duration = Scene 6 duration (±0.1s)
+4. **Loop MUST match** — Scene 1 duration = Scene N (last) duration (±0.1s)
 5. **Protect the egg** — zoom_forbidden must be true
 6. **Music is precomputed** — source must be "precomputed_librosa"
 7. **CUT needs impact** — Every CUT glitch needs cut_impact object
@@ -774,7 +774,7 @@ Quick reference for finding fields:
 | Cut impact | `scene_analysis[N].glitches[M].cut_impact` |
 | Visual type | `scene_analysis[N].visual_classification.primary_type` |
 | Effect palette | `scene_analysis[N].visual_classification.effect_palette_recommendation` |
-| Loop ready | `global_analysis.scene_1_scene_6_match.loop_ready` |
+| Loop ready | `global_analysis.scene_1_scene_N_match.loop_ready` |
 | Easter egg protection | `easter_egg_analysis.zoom_forbidden` |
 | Easter egg best guess | `easter_egg_analysis.best_guess_zone` (string, if verified=false) |
 | Easter egg protection flag | `easter_egg_analysis.protection_applied` (bool, if verified=false) |

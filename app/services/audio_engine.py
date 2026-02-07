@@ -552,8 +552,9 @@ class AudioEngine:
                     # Try to find scene number from location or scene field
                     easter_egg_scene = easter_egg_info.get('scene_number') or easter_egg_info.get('scene')
                     if not easter_egg_scene:
-                        # Default to scene 4 if not specified
-                        easter_egg_scene = 4
+                        # Default to middle scene if not specified
+                        total = len(brief.get('scenes', []))
+                        easter_egg_scene = max(2, total // 2) if total else 4
                     logger.info(f"  Easter egg detected in scene {easter_egg_scene}")
 
         # Parse words with their exact timestamps from character-level data

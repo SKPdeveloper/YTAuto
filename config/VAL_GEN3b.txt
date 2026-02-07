@@ -324,17 +324,17 @@ For each subtitle item:
 ### 9. LOOP VALIDATION CHECKS
 
 ```
-☐ 9.1  Scene 6 exists in timeline
-☐ 9.2  Scene 6 has special_flags containing "REQUIRES_REVERSE"
-☐ 9.3  Scene 6 has loop_processing object
+☐ 9.1  Last scene (Scene N) exists in timeline
+☐ 9.2  Last scene (Scene N) has special_flags containing "REQUIRES_REVERSE"
+☐ 9.3  Last scene (Scene N) has loop_processing object
 ☐ 9.4  loop_processing.reverse = true (CRITICAL)
 ☐ 9.5  loop_processing.duration_match object exists
 ☐ 9.6  duration_match.scene_1 is number > 0
-☐ 9.7  duration_match.scene_6 is number > 0
-☐ 9.8  duration_match.scene_1 = duration_match.scene_6 (±0.1s tolerance) (CRITICAL)
+☐ 9.7  duration_match.scene_N is number > 0
+☐ 9.8  duration_match.scene_1 = duration_match.scene_N (±0.1s tolerance) (CRITICAL)
 ☐ 9.9  duration_match.verified = true
-☐ 9.10 Scene 6 transition_to_next.type = "LOOP_TO_START"
-☐ 9.11 Scene 1 output_timing.duration = Scene 6 output_timing.duration (±0.1s)
+☐ 9.10 Last scene (Scene N) transition_to_next.type = "LOOP_TO_START"
+☐ 9.11 Scene 1 output_timing.duration = Scene N output_timing.duration (±0.1s)
 ```
 
 **Severity:** CRITICAL if reverse not true or duration mismatch
@@ -379,14 +379,14 @@ For each scene's visual_effects array:
 ☐ 11.5  order contains "setpts" (speed processing)
 ☐ 11.6  order contains "crop" (to final resolution)
 ☐ 11.7  order contains "drawtext" (subtitles)
-☐ 11.8  "reverse" appears if Scene 6 needs reverse
+☐ 11.8  "reverse" appears if last scene (Scene N) needs reverse
 ☐ 11.9  Logical order maintained (scale before effects, crop at end)
 ```
 
 **Recommended order:**
 1. fps_normalize
 2. scale_up
-3. reverse (scene 6)
+3. reverse (last scene N)
 4. trim (if cuts)
 5. setpts (speed)
 6. tmix (motion blur)
@@ -429,7 +429,7 @@ For each scene's visual_effects array:
 ☐ 13.6  validation.scenes.all_present = true
 ☐ 13.7  validation.scenes.count = 6
 ☐ 13.8  validation.loop object exists
-☐ 13.9  validation.loop.scene_6_reversed = true
+☐ 13.9  validation.loop.scene_N_reversed = true
 ☐ 13.10 validation.loop.duration_match = true
 ☐ 13.11 validation.glitches.all_handled = true
 ☐ 13.12 validation.easter_egg.protected = true
@@ -454,7 +454,7 @@ For each scene's visual_effects array:
 ☐ 14.4  Each scene's visual_type.effect_palette matches gen3a.gen3b_handoff.effect_palettes_by_scene
 ☐ 14.5  Subtitle styles match gen3a.gen3b_handoff.subtitle_styles_by_segment
 ☐ 14.6  Scene 1 duration matches gen3a.scene_analysis[0].speed_analysis.calculated_output_duration (±0.1s)
-☐ 14.7  Scene 6 duration matches gen3a.scene_analysis[5].speed_analysis.calculated_output_duration (±0.1s)
+☐ 14.7  Last scene (Scene N) duration matches gen3a.scene_analysis[N-1].speed_analysis.calculated_output_duration (±0.1s)
 ☐ 14.8  cumulative_scene_starts match gen3a.gen3b_handoff.cumulative_scene_starts (±0.1s)
 ☐ 14.9  All glitches from gen3a are handled (cuts applied where needed)
 ☐ 14.10 strong_beats_used subset of gen3a.gen3b_handoff.strong_beats_for_cuts
@@ -497,8 +497,8 @@ These cause automatic FAIL regardless of score:
 | # | Condition | Why Critical |
 |---|-----------|--------------|
 | 1 | timeline.length ≠ 6 | Missing scenes breaks video |
-| 2 | Scene 6 reverse ≠ true | Loop won't work |
-| 3 | Scene 1 duration ≠ Scene 6 duration (>0.1s) | Breaks seamless loop |
+| 2 | Last scene (Scene N) reverse ≠ true | Loop won't work |
+| 3 | Scene 1 duration ≠ Scene N duration (>0.1s) | Breaks seamless loop |
 | 4 | Zoom effect on easter egg scene | Crops out hidden object |
 | 5 | metadata.version ≠ "1.3.1" | Version mismatch |
 | 6 | final_resolution ≠ 1080x1920 | Platform rejection |
@@ -550,7 +550,7 @@ When validation fails, generate actionable feedback:
 ```
 "CRITICAL FIXES REQUIRED:
 1. timeline has only 5 scenes - Scene 3 is missing. Add Scene 3 with source_file '3.mp4'
-2. Scene 6 loop_processing.reverse = false - must be true for seamless loop
+2. Last scene (Scene N) loop_processing.reverse = false - must be true for seamless loop
 3. Easter egg scene (Scene 4) has ZOOM effect S4_E2 - remove it, zoom is forbidden
 
 ERRORS:
@@ -642,8 +642,8 @@ ERRORS:
         {
           "severity": "CRITICAL",
           "check": "reverse_required",
-          "message": "Scene 6 must have reverse = true",
-          "location": "timeline[5].loop_processing.reverse",
+          "message": "Last scene (Scene N) must have reverse = true",
+          "location": "timeline[N-1].loop_processing.reverse",
           "expected": true,
           "actual": false
         }
@@ -685,8 +685,8 @@ ERRORS:
       "severity": "CRITICAL",
       "category": "loop",
       "check": "reverse_required",
-      "message": "Scene 6 loop_processing.reverse must be true for seamless loop",
-      "location": "timeline[5].loop_processing.reverse",
+      "message": "Last scene (Scene N) loop_processing.reverse must be true for seamless loop",
+      "location": "timeline[N-1].loop_processing.reverse",
       "expected": true,
       "actual": false
     },
@@ -700,7 +700,7 @@ ERRORS:
       "actual": "Found effect type SLOW_ZOOM"
     }
   ],
-  "feedback_for_retry": "CRITICAL FIXES REQUIRED:\n\n1. MISSING SCENE: Timeline has only 5 scenes. Add Scene 3 with sequence_index: 3, source_file: '3.mp4'.\n\n2. LOOP BROKEN: Scene 6 loop_processing.reverse = false. Change to true - Scene 6 MUST be reversed for seamless loop.\n\n3. EASTER EGG DANGER: Scene 4 (easter egg scene) has a SLOW_ZOOM effect at timeline[3].visual_effects[1]. Remove this effect - zoom is FORBIDDEN on easter egg scenes as it may crop out the hidden object."
+  "feedback_for_retry": "CRITICAL FIXES REQUIRED:\n\n1. MISSING SCENE: Timeline has only 5 scenes. Add the missing scene with correct sequence_index and source_file.\n\n2. LOOP BROKEN: Last scene (Scene N) loop_processing.reverse = false. Change to true - last scene MUST be reversed for seamless loop.\n\n3. EASTER EGG DANGER: Scene 4 (easter egg scene) has a SLOW_ZOOM effect at timeline[3].visual_effects[1]. Remove this effect - zoom is FORBIDDEN on easter egg scenes as it may crop out the hidden object."
 }
 ```
 
@@ -721,9 +721,9 @@ ERRORS:
 
 1. **Return ONLY JSON** — No markdown, no explanations outside JSON
 2. **Check version 1.3.1** — Fail immediately if wrong version
-3. **6 scenes required** — timeline.length must be exactly 6
-4. **Reverse is mandatory** — Scene 6 loop_processing.reverse = true
-5. **Loop duration must match** — Scene 1 duration = Scene 6 duration (±0.1s)
+3. **6-10 scenes required** — timeline.length must match total scene count (6-10)
+4. **Reverse is mandatory** — Last scene (Scene N) loop_processing.reverse = true
+5. **Loop duration must match** — Scene 1 duration = Scene N (last) duration (±0.1s)
 6. **No zoom on easter egg** — CRITICAL violation if zoom effect found
 7. **Resolution is fixed** — final_resolution must be 1080x1920
 8. **Voiceover required** — audio.layers must include VOICEOVER

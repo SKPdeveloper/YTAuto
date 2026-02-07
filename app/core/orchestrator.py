@@ -273,7 +273,7 @@ class ProjectOrchestrator:
     async def create_project(
         self,
         topic: str,
-        num_scenes: int = 6,  # ALWAYS 6 per GEN1/GEN2 contract
+        num_scenes: int = 8,
         style: str = "educational",
         target_audience: str = "general"
     ) -> ProjectData:
@@ -282,17 +282,20 @@ class ProjectOrchestrator:
 
         Args:
             topic: Тема відео
-            num_scenes: Кількість сцен (1-20)
+            num_scenes: Кількість сцен (6-10, dynamic from GEN1 v6)
             style: Стиль відео
             target_audience: Цільова аудиторія
 
         Returns:
             ProjectData з унікальним ID
         """
-        # ENFORCE 6 SCENES - GEN1/GEN2 contract requires exactly 6 scenes
-        if num_scenes != 6:
-            logger.warning(f"num_scenes={num_scenes} overridden to 6 (GEN1/GEN2 contract)")
+        # Clamp to valid range (6-10)
+        if num_scenes < 6:
+            logger.warning(f"num_scenes={num_scenes} clamped to 6 (minimum)")
             num_scenes = 6
+        elif num_scenes > 10:
+            logger.warning(f"num_scenes={num_scenes} clamped to 10 (maximum)")
+            num_scenes = 10
 
         # Ensure database is initialized (safe to call multiple times)
         await state_manager.initialize()
@@ -903,12 +906,12 @@ class ProjectOrchestrator:
         """
         Обробляє всі сцени у дві фази:
 
-        ФАЗА 1: Генерація ЗОБРАЖЕНЬ для всіх 6 сцен
+        ФАЗА 1: Генерація ЗОБРАЖЕНЬ для всіх сцен (6-10)
         1. PRIMARY (Scene 1) -> 4 кандидати -> Telegram -> User selection
-        2. Решта сцен (2-6) -> генерація зображень з референсом
+        2. Решта сцен (2-N) -> генерація зображень з референсом
 
-        ФАЗА 2: Генерація ВІДЕО для всіх 6 сцен (паралельно)
-        3. Всі 6 відео запускаються в чергу на одній сторінці
+        ФАЗА 2: Генерація ВІДЕО для всіх сцен (паралельно)
+        3. Всі відео запускаються в чергу на одній сторінці
         4. Чекаємо поки всі відео згенеруються
         5. Завантажуємо всі відео
         """
@@ -981,7 +984,7 @@ class ProjectOrchestrator:
             primary_scene.status = SceneStatus.IMAGE_READY
             await self._save_project_state(project)
 
-        # --- STEP 1.3: Generate images for remaining scenes (2-6) in ONE BATCH ---
+        # --- STEP 1.3: Generate images for remaining scenes (2-N) in ONE BATCH ---
         if len(project.scenes) > 1:
             await self._update_stage(project, PipelineStage.REMAINING_SCENES)
 
@@ -1057,7 +1060,7 @@ class ProjectOrchestrator:
         logger.info("PHASE 1.5: VALIDATING GENERATED IMAGES (VAL_IMG)")
         logger.info("=" * 70)
 
-        # Validate all generated images (scenes 2-6)
+        # Validate all generated images (scenes 2-N)
         # Scene 1 is validated by human via Telegram, so we skip it
         max_validation_retries = 5
 
@@ -1767,7 +1770,7 @@ class ProjectOrchestrator:
                 result = await music_generator.generate(
                     prompt=music_prompt,
                     output_path=background_music_path,
-                    duration=45.0,  # 45 seconds for 6 scenes
+                    duration=45.0,  # ~45 seconds for 6-10 scenes
                 )
 
                 if result.success:
@@ -2723,7 +2726,6 @@ class ProjectOrchestrator:
             has_all_videos = all(
                 scene.video_path and Path(scene.video_path).exists()
                 for scene in project.scenes
-                if scene.scene_number <= 6
             )
 
             if not has_all_videos:

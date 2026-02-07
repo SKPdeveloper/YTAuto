@@ -45,7 +45,7 @@ class NotificationService:
         self,
         project_id: str,
         topic: str,
-        num_scenes: int = 6
+        num_scenes: int = 8
     ) -> None:
         """Notify that a new project was created"""
         await self.manager.broadcast(Events.PROJECT_CREATED, ProjectEvent(

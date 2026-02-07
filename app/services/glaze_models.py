@@ -304,27 +304,36 @@ class EasterEggIntegration(BaseModel):
 # ============================================================================
 
 class EasterEgg(BaseModel):
-    """Схований елемент для коментарів - object and scene_number required."""
-    object: str = Field(..., description="Об'єкт - REQUIRED")
-    scene_number: int = Field(default=3, description="Номер сцени (2-5)")
+    """Схований елемент для коментарів - object and scene_number required (unless AUDIO_ONLY)."""
+    object: str = Field(default="", description="Об'єкт - REQUIRED for VISUAL format")
+    scene_number: int = Field(default=0, description="Номер сцени (2 to N-1)")
     placement: str = Field(default="center", description="Розташування з координатами")
     visibility: str = Field(default="FINDABLE", description="FINDABLE або HIDDEN")
     comment_bait: str = Field(default="", description="Фраза для коментарів")
     validation_check: str = Field(default="", description="Опис для верифікації")
     safe_zone_position: str = Field(default="center-left", description="Позиція в Safe Zone (legacy)")
     visibility_score: float = Field(default=0.7, ge=0.0, le=1.0, description="Видимість 0.0-1.0 (legacy)")
+    format: str = Field(default="VISUAL", description="VISUAL or AUDIO_ONLY")
+    audio_hint: str = Field(default="", description="Audio hint for AUDIO_ONLY format")
 
     @model_validator(mode='before')
     @classmethod
     def validate_required_fields(cls, data: Any) -> Any:
-        """Validate easter egg has all required fields per GEN1 OUTPUT CONTRACT."""
+        """Validate easter egg fields based on format (VISUAL or AUDIO_ONLY)."""
         if isinstance(data, dict):
-            if not data.get('object'):
-                raise ValueError("easter_egg.object is REQUIRED per GEN1 OUTPUT CONTRACT")
-            scene_num = data.get('scene_number', 0)
-            if not scene_num or scene_num < 2 or scene_num > 5:
-                raise ValueError("easter_egg.scene_number must be 2-5 per GEN1 OUTPUT CONTRACT")
-            # comment_bait and placement have defaults, not strictly required
+            egg_format = (data.get('format') or 'VISUAL').upper()
+            if egg_format == 'AUDIO_ONLY':
+                # AUDIO_ONLY: object/scene_number/placement not required
+                data.setdefault('object', 'audio_easter_egg')
+                data.setdefault('scene_number', 0)
+                data.setdefault('placement', 'AUDIO_ONLY')
+            else:
+                # VISUAL: object and scene_number are required
+                if not data.get('object'):
+                    raise ValueError("easter_egg.object is REQUIRED for VISUAL format")
+                scene_num = data.get('scene_number', 0)
+                if not scene_num or scene_num < 2:
+                    raise ValueError("easter_egg.scene_number must be >= 2 (not hook or loop scene)")
         return data
 
 
@@ -406,22 +415,38 @@ class ScalesTechniques(BaseModel):
 class LoopVerification(BaseModel):
     """Верифікація циклу з GEN2."""
     scene1_camera_movement: str = Field(default="", description="Рух камери Scene 1")
-    scene6_camera_movement: str = Field(default="", description="Рух камери Scene 6")
+    sceneN_camera_movement: str = Field(default="", description="Рух камери last scene")
     movements_are_different: bool = Field(default=True, description="Рухи різні")
-    scene6_after_reverse: str = Field(default="", description="Scene 6 після реверсу")
+    sceneN_after_reverse: str = Field(default="", description="Last scene після реверсу")
     scene1_foreground: str = Field(default="", description="Передній план Scene 1")
-    scene6_foreground: str = Field(default="", description="Передній план Scene 6")
+    sceneN_foreground: str = Field(default="", description="Передній план last scene")
     foreground_match: bool = Field(default=True, description="Передній план співпадає")
     scene1_lighting: str = Field(default="", description="Освітлення Scene 1")
-    scene6_lighting: str = Field(default="", description="Освітлення Scene 6")
+    sceneN_lighting: str = Field(default="", description="Освітлення last scene")
     lighting_match: bool = Field(default=True, description="Освітлення співпадає")
     same_reference_image: bool = Field(default=True, description="Той самий reference image")
     loop_ready: bool = Field(default=True, description="Готовий до циклу")
 
+    @model_validator(mode='before')
+    @classmethod
+    def migrate_scene6_fields(cls, data: Any) -> Any:
+        """Map old scene6_* field names to sceneN_* for backwards compat."""
+        if isinstance(data, dict):
+            mapping = {
+                'scene6_camera_movement': 'sceneN_camera_movement',
+                'scene6_after_reverse': 'sceneN_after_reverse',
+                'scene6_foreground': 'sceneN_foreground',
+                'scene6_lighting': 'sceneN_lighting',
+            }
+            for old_key, new_key in mapping.items():
+                if old_key in data and new_key not in data:
+                    data[new_key] = data.pop(old_key)
+        return data
+
 
 class VisualSummary(BaseModel):
     """Загальний огляд візуалів з GEN2."""
-    total_scenes: int = Field(default=6, description="Кількість сцен")
+    total_scenes: int = Field(default=0, description="Кількість сцен (6-10), 0=auto from len(scenes)")
     gigantism_protocol: str = Field(default="APPLIED", description="Протокол гігантизму")
     reference_breakdown: Dict[str, int] = Field(default_factory=dict, description="Розбивка референсів")
     scale_techniques_used: List[str] = Field(default_factory=list, description="Використані техніки масштабу")
@@ -746,12 +771,12 @@ class ProjectMetadata(BaseModel):
     title: str = Field(default="", description="Короткий заголовок")
     concept: Optional[ProjectConcept] = Field(default=None, description="Концепція проекту")
     target_duration_seconds: int = Field(default=10, description="Цільова тривалість")
-    scene_count: int = Field(default=6, description="Кількість сцен")
+    scene_count: int = Field(default=8, description="Кількість сцен (6-10)")
 
 
 class ProjectMeta(BaseModel):
     """Метаінформація проекту - most fields have defaults."""
-    total_scenes: int = Field(default=6, description="Кількість сцен")
+    total_scenes: int = Field(default=0, description="Кількість сцен (6-10), 0=auto from len(scenes)")
     total_duration_seconds: float = Field(default=60.0, description="Загальна тривалість")
     content_pillar: str = Field(default="", description="Контент категорія")
     generated_at: str = Field(default="", description="Час генерації")
@@ -774,7 +799,7 @@ class GlazeCityProject(BaseModel):
     - hook (type, opening_line)
     - voiceover (full_script)
     - youtube (title, description) - NEVER NULL
-    - scenes (6 scenes)
+    - scenes (6-10 scenes)
     """
 
     # Property - REQUIRED
@@ -818,8 +843,8 @@ class GlazeCityProject(BaseModel):
     # Visual Summary - from GEN2
     visual_summary: Optional[VisualSummary] = Field(default=None, description="Огляд візуалів з GEN2")
 
-    # Scenes - REQUIRED (6 scenes)
-    scenes: List[GlazeScene] = Field(..., description="Сцени (6 штук) - REQUIRED")
+    # Scenes - REQUIRED (6-10 scenes)
+    scenes: List[GlazeScene] = Field(..., description="Сцени (6-10) - REQUIRED")
 
     # Voiceover & Audio - REQUIRED
     voiceover: VoiceoverConfig = Field(..., description="Озвучка - REQUIRED")
@@ -868,10 +893,10 @@ class GlazeCityProject(BaseModel):
                 if not youtube.get('description'):
                     errors.append("youtube.description is REQUIRED and NEVER NULL")
 
-            # Check scenes count
+            # Check scenes count (6-10)
             scenes = data.get('scenes', [])
-            if len(scenes) < 6:
-                errors.append(f"scenes must have 6 items, got {len(scenes)}")
+            if len(scenes) < 6 or len(scenes) > 10:
+                errors.append(f"scenes must have 6-10 items, got {len(scenes)}")
 
             # Check hook has content
             hook = data.get('hook', {})

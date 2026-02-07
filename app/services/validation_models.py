@@ -245,7 +245,7 @@ class Gen2ValidationMetadata(BaseModel):
 
 class Gen2SceneCheck(BaseModel):
     """Scene check result for GEN2"""
-    scene: int = Field(..., ge=1, le=6, description="Scene number")
+    scene: int = Field(..., ge=1, le=10, description="Scene number")
     image_prompt: Literal["PASS", "FAIL", "WARNING"] = Field(..., description="Image prompt check")
     video_prompt: Literal["PASS", "FAIL", "WARNING"] = Field(..., description="Video prompt check")
     motion_elements: Literal["PASS", "FAIL", "WARNING"] = Field(..., description="Motion elements check")
@@ -342,7 +342,7 @@ class Gen3aValidationMetadata(BaseModel):
 
 class Gen3aSceneValidation(BaseModel):
     """Validation result for a single scene in GEN3a"""
-    scene_number: int = Field(..., ge=1, le=6, description="Scene number")
+    scene_number: int = Field(..., ge=1, le=10, description="Scene number")
     glitches_detected: int = Field(default=0, description="Number of glitches detected")
     glitch_detection: Literal["PASS", "FAIL"] = Field(..., description="Glitch detection quality")
     speed_map: Literal["PASS", "FAIL"] = Field(..., description="Speed map validity")
@@ -462,7 +462,7 @@ class Gen3bHookValidation(BaseModel):
 
 class Gen3bSceneValidation(BaseModel):
     """Scene validation in manifest"""
-    scene_number: int = Field(..., ge=1, le=6, description="Scene number")
+    scene_number: int = Field(..., ge=1, le=10, description="Scene number")
     timeline_valid: bool = Field(..., description="Timeline start/end valid")
     speed_segments_valid: bool = Field(..., description="Speed segments valid")
     effects_valid: bool = Field(..., description="Effects applicable")

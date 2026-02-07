@@ -25,7 +25,7 @@ REQUIRED_GEN1_FIELDS = [
     "metadata.concept.category",
     "metadata.concept.subject",
     "metadata.concept.food_material",
-    "metadata.scene_count",  # має бути 6
+    "metadata.scene_count",  # має бути 6-10 (динамічно)
     "property",
     "hook",
     "hook.type",  # THE_IMPOSSIBLE | THE_ABSURD_LOGIC | THE_SCALE_SHOCK | THE_SENSORY_ATTACK
@@ -45,7 +45,7 @@ REQUIRED_GEN1_FIELDS = [
     "lighting_master.prompt_snippet",
     "foreground_element",
     "foreground_element.prompt_snippet",
-    "scenes",  # array of 6
+    "scenes",  # array of 6-10 (dynamic)
     "voiceover",
     "audio",
     "audio.suno_prompt",
@@ -107,6 +107,13 @@ VALID_NARRATIVE_PURPOSES = [
     "DETAIL",
     "FEATURE",
     "LOOP_CLOSE",
+    "STRUCTURAL_DETAIL",
+    "THEMATIC_INTERIOR",
+    "CONTEXTUAL_ENVIRONMENT",
+    "DYNAMIC_ACTION",
+    "FEATURE_HIGHLIGHT",
+    "AERIAL_WOW",
+    "AERIAL_REVEAL",
 ]
 
 # Valid reference hints
@@ -206,8 +213,14 @@ class LightingPreset(str, Enum):
     """Lighting presets."""
     MORNING_GOLDEN = "MORNING_GOLDEN"
     SUNSET_DRAMATIC = "SUNSET_DRAMATIC"
-    AFTERNOON_WARM = "AFTERNOON_WARM"
+    BLUE_HOUR = "BLUE_HOUR"
+    NIGHT_NEON = "NIGHT_NEON"
+    TWILIGHT_PURPLE = "TWILIGHT_PURPLE"
     OVERCAST_SOFT = "OVERCAST_SOFT"
+    CANDLELIT_WARM = "CANDLELIT_WARM"
+    MOONLIT_SILVER = "MOONLIT_SILVER"
+    # Legacy presets kept for backwards compat
+    AFTERNOON_WARM = "AFTERNOON_WARM"
     MIDDAY_BRIGHT = "MIDDAY_BRIGHT"
 
 
@@ -234,6 +247,13 @@ class NarrativePurpose(str, Enum):
     DETAIL = "DETAIL"
     FEATURE = "FEATURE"
     LOOP_CLOSE = "LOOP_CLOSE"
+    STRUCTURAL_DETAIL = "STRUCTURAL_DETAIL"
+    THEMATIC_INTERIOR = "THEMATIC_INTERIOR"
+    CONTEXTUAL_ENVIRONMENT = "CONTEXTUAL_ENVIRONMENT"
+    DYNAMIC_ACTION = "DYNAMIC_ACTION"
+    FEATURE_HIGHLIGHT = "FEATURE_HIGHLIGHT"
+    AERIAL_WOW = "AERIAL_WOW"
+    AERIAL_REVEAL = "AERIAL_REVEAL"
 
 
 class EnergyLevel(str, Enum):
@@ -278,15 +298,16 @@ class Gen1Metadata(BaseModel):
     title: str = Field(..., description="Short descriptive title")
     concept: Gen1Concept = Field(..., description="Concept details")
     target_duration_seconds: int = Field(default=10, description="Target duration")
-    scene_count: int = Field(default=6, description="Number of scenes (ALWAYS 6)")
+    scene_count: int = Field(..., description="Number of scenes (6-10)")
 
     @field_validator('scene_count')
     @classmethod
     def validate_scene_count(cls, v: int) -> int:
-        """Enforce exactly 6 scenes per GEN1/GEN2 contract."""
-        if v != 6:
-            # Auto-correct to 6
+        """Enforce 6-10 scenes per GEN1/GEN2 contract."""
+        if v < 6:
             return 6
+        if v > 10:
+            return 10
         return v
 
 
@@ -373,12 +394,31 @@ class Gen1ForegroundElement(BaseModel):
 
 class Gen1EasterEgg(BaseModel):
     """Easter egg for engagement."""
-    object: str = Field(..., description="What the easter egg is")
-    scene_number: int = Field(..., description="Which scene contains it (2-5)")
-    placement: str = Field(..., description="[POSITION], [SIZE]% of frame, [SPATIAL RELATION]")
-    comment_bait: str = Field(..., description="Text to bait comments")
+    format: Optional[str] = Field(default=None, description="VISUAL | AUDIO_ONLY")
+    object: Optional[str] = Field(default=None, description="What the easter egg is")
+    scene_number: Optional[int] = Field(default=None, description="Which scene contains it")
+    placement: Optional[str] = Field(default=None, description="[POSITION], [SIZE]% of frame, [SPATIAL RELATION]")
+    comment_bait: str = Field(default="", description="Text to bait comments")
     visibility: str = Field(default="FINDABLE", description="FINDABLE | HIDDEN | OBVIOUS")
     validation_check: str = Field(default="CONFIRMED_VISIBLE", description="Validation status")
+    audio_hint: Optional[str] = Field(default=None, description="Audio hint for AUDIO_ONLY format")
+
+    @model_validator(mode='before')
+    @classmethod
+    def normalize_easter_egg(cls, data: Any) -> Any:
+        """Normalize easter egg - AUDIO_ONLY format doesn't require object/scene_number/placement."""
+        if isinstance(data, dict):
+            fmt = data.get('format', '').upper() if data.get('format') else None
+            if fmt == 'AUDIO_ONLY':
+                data.setdefault('object', 'audio_easter_egg')
+                data.setdefault('scene_number', 1)
+                data.setdefault('placement', 'AUDIO_ONLY')
+            else:
+                # Ensure required fields have defaults for VISUAL format
+                data.setdefault('object', '')
+                data.setdefault('scene_number', 0)
+                data.setdefault('placement', '')
+        return data
 
 
 class Gen1VisualConcept(BaseModel):
@@ -409,6 +449,24 @@ class Gen1CameraIntent(BaseModel):
         return v_upper
 
 
+class Gen2VisualParams(BaseModel):
+    """Visual parameters from GEN1 v6 for GEN2 scene rendering."""
+    subject_scale: Optional[str] = Field(default=None, description="Scale of subject in frame")
+    depth_layers: Optional[Any] = Field(default=None, description="Depth layer description (str or list)")
+    dominant_color: Optional[str] = Field(default=None, description="Dominant color")
+    contrast_color: Optional[str] = Field(default=None, description="Contrast color")
+    texture_focus: Optional[str] = Field(default=None, description="Texture focus area")
+    light_direction: Optional[str] = Field(default=None, description="Light direction")
+    atmosphere_density: Optional[str] = Field(default=None, description="Atmosphere density")
+
+
+class SceneTrick(BaseModel):
+    """Scene trick from GEN1 v6 dynamic scene engine."""
+    trick_id: str = Field(..., description="Trick identifier")
+    trick_name: str = Field(..., description="Trick name")
+    application: str = Field(..., description="How the trick is applied")
+
+
 class Gen1SceneConcept(BaseModel):
     """Scene concept from GEN1 (story & structure, not visual prompts) - ALL FIELDS REQUIRED."""
     scene_number: int = Field(..., description="Scene number (1-based) - REQUIRED")
@@ -419,9 +477,11 @@ class Gen1SceneConcept(BaseModel):
     energy_level: str = Field(..., description="EXPLOSIVE | HIGH | MEDIUM | LOW - REQUIRED")
     visual_concept: Gen1VisualConcept = Field(..., description="Visual concept for GEN2 - REQUIRED")
     camera_intent: Gen1CameraIntent = Field(..., description="Camera movement intent - REQUIRED")
-    voiceover_segment: str = Field(default="", description="VO text with [tags] - can be empty for scenes 5-6")
-    broker_script: str = Field(default="", description="Broker script for scenes 1-4 - can be empty for scenes 5-6")
+    voiceover_segment: str = Field(default="", description="VO text with [tags] - can be empty for later scenes")
+    broker_script: str = Field(default="", description="Broker script - can be empty for later scenes")
     audio_moment: str = Field(default="", description="Key audio event - can be empty")
+    gen2_visual_params: Optional[Gen2VisualParams] = Field(default=None, description="Visual params for GEN2")
+    scene_tricks: Optional[List[SceneTrick]] = Field(default=None, description="Scene tricks from dynamic engine")
 
     @model_validator(mode='before')
     @classmethod
@@ -480,9 +540,9 @@ class Gen1SceneConcept(BaseModel):
         if not self.camera_intent.movement:
             errors.append(f"Scene {self.scene_number}: missing camera_intent.movement")
 
-        # Check voiceover_segment - REQUIRED for scenes 1-4, optional for 5-6
-        if self.scene_number <= 4 and not self.voiceover_segment:
-            errors.append(f"Scene {self.scene_number}: missing voiceover_segment (required for scenes 1-4)")
+        # Check voiceover_segment - REQUIRED for all scenes except last 2 (AERIAL + LOOP_CLOSE)
+        if self.narrative_purpose not in ("AERIAL", "LOOP_CLOSE", "AERIAL_WOW", "AERIAL_REVEAL") and not self.voiceover_segment:
+            errors.append(f"Scene {self.scene_number}: missing voiceover_segment")
 
         # Scene 1 must be PRIMARY
         if self.scene_number == 1 and self.reference_hint != "PRIMARY":
@@ -596,27 +656,45 @@ class Gen1YouTube(BaseModel):
     """YouTube metadata nested object (REQUIRED - NEVER NULL) - ALL FIELDS REQUIRED."""
     title: str = Field(..., description="YouTube title (max 60 chars with emoji) - REQUIRED")
     description: str = Field(..., description="YouTube description (min 100 chars) - REQUIRED")
-    pinned_comment: str = Field(..., description="Pinned comment (easter egg mystery) - REQUIRED")
-    tags: List[str] = Field(..., description="YouTube tags - REQUIRED")
+    pinned_comment: Optional[str] = Field(default=None, description="Pinned comment (easter egg mystery)")
+    tags: List[str] = Field(default_factory=list, description="YouTube tags")
+    title_variants: Optional[List[str]] = Field(default=None, description="Title variants from GEN1 v6")
+    description_variants: Optional[List[str]] = Field(default=None, description="Description variants from GEN1 v6")
 
 
 class Gen1ViralAssessment(BaseModel):
-    """Viral assessment scores (REQUIRED) - ALL FIELDS REQUIRED."""
-    hook_strength: float = Field(..., ge=0.0, le=1.0, description="Hook strength score - REQUIRED")
-    humor_quotient: float = Field(..., ge=0.0, le=1.0, description="Humor quotient - REQUIRED")
-    shareability: float = Field(..., ge=0.0, le=1.0, description="Shareability score - REQUIRED")
-    comment_potential: float = Field(..., ge=0.0, le=1.0, description="Comment potential - REQUIRED")
-    visual_uniqueness: float = Field(..., ge=0.0, le=1.0, description="Visual uniqueness - REQUIRED")
-    overall_score: float = Field(..., ge=0.0, le=1.0, description="Overall viral score - REQUIRED")
-    weak_points: List[str] = Field(..., description="Weak points - REQUIRED")
-    strength_points: List[str] = Field(..., description="Strength points - REQUIRED")
+    """Viral assessment scores - supports both v5 (numeric) and v6 (verdict) formats."""
+    # v5 numeric scores (optional in v6)
+    hook_strength: float = Field(default=0.8, ge=0.0, le=1.0, description="Hook strength score")
+    humor_quotient: float = Field(default=0.7, ge=0.0, le=1.0, description="Humor quotient")
+    shareability: float = Field(default=0.8, ge=0.0, le=1.0, description="Shareability score")
+    comment_potential: float = Field(default=0.8, ge=0.0, le=1.0, description="Comment potential")
+    visual_uniqueness: float = Field(default=0.8, ge=0.0, le=1.0, description="Visual uniqueness")
+    overall_score: float = Field(default=0.8, ge=0.0, le=1.0, description="Overall viral score")
+    weak_points: List[str] = Field(default_factory=list, description="Weak points")
+    strength_points: List[str] = Field(default_factory=list, description="Strength points")
+    # v6 verdict fields
+    hook_verdict: Optional[str] = Field(default=None, description="GEN1 v6 hook verdict")
+    retention_verdict: Optional[str] = Field(default=None, description="GEN1 v6 retention verdict")
+    share_verdict: Optional[str] = Field(default=None, description="GEN1 v6 share verdict")
+    improvement_if_regenerated: Optional[str] = Field(default=None, description="GEN1 v6 improvement note")
 
 
 class Gen1Engagement(BaseModel):
     """Engagement elements - ALL FIELDS REQUIRED."""
     easter_egg: Gen1EasterEgg = Field(..., description="Easter egg - REQUIRED")
     share_trigger: Gen1ShareTrigger = Field(..., description="Share trigger - REQUIRED")
-    hashtags: List[str] = Field(..., description="3 hashtags - REQUIRED")
+    hashtags: List[str] = Field(default_factory=list, description="3 hashtags")
+
+    @model_validator(mode='before')
+    @classmethod
+    def normalize_share_trigger(cls, data: Any) -> Any:
+        """Normalize share_trigger - support both string and object form."""
+        if isinstance(data, dict):
+            st = data.get('share_trigger')
+            if isinstance(st, str):
+                data['share_trigger'] = {'text': st, 'placement': 'end_screen'}
+        return data
 
 
 class Gen1Output(BaseModel):
@@ -626,6 +704,7 @@ class Gen1Output(BaseModel):
 
     Validates all REQUIRED_GEN1_FIELDS per contract.
     """
+    concept_reasoning: Optional[str] = Field(default=None, description="GEN1 v6 concept reasoning")
     metadata: Gen1Metadata = Field(..., description="Project metadata")
     publish_config: Optional[Gen1PublishConfig] = Field(default=None, description="Publish configuration for multi-channel support")
     property: Gen1Property = Field(..., description="Property/subject info")
@@ -643,10 +722,10 @@ class Gen1Output(BaseModel):
     # YouTube nested object (REQUIRED - NEVER NULL)
     youtube: Gen1YouTube = Field(..., description="YouTube metadata nested object - REQUIRED")
 
-    # Flat YouTube fields for backwards compatibility (REQUIRED - NEVER NULL)
-    youtube_title: str = Field(..., description="YouTube title - REQUIRED")
-    youtube_description: str = Field(..., description="YouTube description - REQUIRED")
-    youtube_pinned_comment: str = Field(..., description="YouTube pinned comment - REQUIRED")
+    # Flat YouTube fields for backwards compatibility (OPTIONAL - synced from nested)
+    youtube_title: Optional[str] = Field(default=None, description="YouTube title - synced from youtube.title")
+    youtube_description: Optional[str] = Field(default=None, description="YouTube description - synced from youtube.description")
+    youtube_pinned_comment: Optional[str] = Field(default=None, description="YouTube pinned comment - synced from youtube.pinned_comment")
     youtube_hashtags: List[str] = Field(default_factory=list, description="YouTube hashtags")
     youtube_tags: List[str] = Field(default_factory=list, description="YouTube tags")
 
@@ -661,6 +740,7 @@ class Gen1Output(BaseModel):
         This handles LLM errors where scene_number doesn't match array index.
         """
         if isinstance(data, dict) and 'scenes' in data and isinstance(data['scenes'], list):
+            total_scenes = len(data['scenes'])
             for i, scene in enumerate(data['scenes']):
                 if isinstance(scene, dict):
                     expected_number = i + 1
@@ -670,16 +750,19 @@ class Gen1Output(BaseModel):
                     if actual_number != expected_number:
                         scene['scene_number'] = expected_number
 
-                    # For scenes 1-4, ensure voiceover_segment exists
-                    if expected_number <= 4:
+                    # Ensure voiceover_segment exists for non-aerial/non-loop scenes
+                    purpose = scene.get('narrative_purpose', '').upper()
+                    if purpose not in ('AERIAL', 'LOOP_CLOSE', 'AERIAL_WOW', 'AERIAL_REVEAL'):
                         if not scene.get('voiceover_segment'):
-                            # Try to get from broker_script
                             if scene.get('broker_script'):
                                 scene['voiceover_segment'] = scene['broker_script']
                             else:
-                                # Generate a placeholder from scene_name
                                 scene_name = scene.get('scene_name', f'Scene {expected_number}')
                                 scene['voiceover_segment'] = f"[dramatic] {scene_name}."
+
+            # Handle _concept_reasoning field from GEN1 v6 (rename to concept_reasoning)
+            if '_concept_reasoning' in data and 'concept_reasoning' not in data:
+                data['concept_reasoning'] = data.pop('_concept_reasoning')
         return data
 
     @model_validator(mode='after')
@@ -732,8 +815,8 @@ class Gen1Output(BaseModel):
             errors.append("Missing foreground_element.prompt_snippet")
 
         # ===== SCENES VALIDATION =====
-        if len(self.scenes) != 6:
-            errors.append(f"Expected 6 scenes, got {len(self.scenes)}")
+        if len(self.scenes) < 6 or len(self.scenes) > 10:
+            errors.append(f"Expected 6-10 scenes, got {len(self.scenes)}")
 
         # ===== AUDIO VALIDATION =====
         if not self.audio.suno_prompt:
@@ -754,12 +837,17 @@ class Gen1Output(BaseModel):
         # viral_assessment is now REQUIRED - no defaults needed
 
         # ===== ENGAGEMENT VALIDATION =====
-        if not self.engagement.easter_egg.object:
-            errors.append("Missing engagement.easter_egg.object")
-        if not self.engagement.easter_egg.scene_number:
-            errors.append("Missing engagement.easter_egg.scene_number")
-        if not self.engagement.easter_egg.placement:
-            errors.append("Missing engagement.easter_egg.placement")
+        egg = self.engagement.easter_egg
+        is_audio_only = getattr(egg, 'format', None) == 'AUDIO_ONLY'
+        if not is_audio_only:
+            if not egg.object:
+                errors.append("Missing engagement.easter_egg.object")
+            if egg.scene_number is None or egg.scene_number == 0:
+                errors.append("Missing engagement.easter_egg.scene_number")
+            elif egg.scene_number < 2 or egg.scene_number > len(self.scenes) - 1:
+                errors.append(f"easter_egg.scene_number must be 2-{len(self.scenes)-1}, got {egg.scene_number}")
+            if not egg.placement:
+                errors.append("Missing engagement.easter_egg.placement")
 
         # If critical errors, raise
         if errors:
@@ -794,17 +882,22 @@ class Gen1Output(BaseModel):
             (self.lighting_master.prompt_snippet, "lighting_master.prompt_snippet"),
             (self.foreground_element.prompt_snippet, "foreground_element.prompt_snippet"),
             (self.audio.suno_prompt, "audio.suno_prompt"),
-            (self.engagement.easter_egg.object, "engagement.easter_egg.object"),
-            (self.engagement.easter_egg.placement, "engagement.easter_egg.placement"),
         ]
+
+        # Easter egg checks - only for VISUAL format
+        if getattr(self.engagement.easter_egg, 'format', None) != 'AUDIO_ONLY':
+            checks.extend([
+                (self.engagement.easter_egg.object, "engagement.easter_egg.object"),
+                (self.engagement.easter_egg.placement, "engagement.easter_egg.placement"),
+            ])
 
         for value, field_name in checks:
             if not value:
                 issues.append(f"Missing: {field_name}")
 
         # Check scenes
-        if len(self.scenes) != 6:
-            issues.append(f"Wrong scene count: {len(self.scenes)} (expected 6)")
+        if len(self.scenes) < 6 or len(self.scenes) > 10:
+            issues.append(f"Wrong scene count: {len(self.scenes)} (expected 6-10)")
 
         # Check each scene
         for scene in self.scenes:
@@ -972,17 +1065,33 @@ class Gen2SceneOutput(BaseModel):
 class Gen2LoopVerification(BaseModel):
     """Loop verification data from GEN2 for seamless video looping."""
     scene1_camera_movement: str = Field(default="", description="Camera movement in Scene 1")
-    scene6_camera_movement: str = Field(default="", description="Camera movement in Scene 6")
+    sceneN_camera_movement: str = Field(default="", description="Camera movement in last scene")
     movements_are_different: bool = Field(default=True, description="Whether movements are different")
-    scene6_after_reverse: str = Field(default="", description="Scene 6 description after reverse")
+    sceneN_after_reverse: str = Field(default="", description="Last scene description after reverse")
     scene1_foreground: str = Field(default="", description="Foreground element in Scene 1")
-    scene6_foreground: str = Field(default="", description="Foreground element in Scene 6")
+    sceneN_foreground: str = Field(default="", description="Foreground element in last scene")
     foreground_match: bool = Field(default=True, description="Whether foreground elements match")
     scene1_lighting: str = Field(default="", description="Lighting in Scene 1")
-    scene6_lighting: str = Field(default="", description="Lighting in Scene 6")
+    sceneN_lighting: str = Field(default="", description="Lighting in last scene")
     lighting_match: bool = Field(default=True, description="Whether lighting matches")
     same_reference_image: bool = Field(default=True, description="Whether same reference image is used")
     loop_ready: bool = Field(default=True, description="Whether loop is ready")
+
+    @model_validator(mode='before')
+    @classmethod
+    def migrate_scene6_to_sceneN(cls, data: Any) -> Any:
+        """Map old scene6_* field names to sceneN_* for backwards compat."""
+        if isinstance(data, dict):
+            mapping = {
+                'scene6_camera_movement': 'sceneN_camera_movement',
+                'scene6_after_reverse': 'sceneN_after_reverse',
+                'scene6_foreground': 'sceneN_foreground',
+                'scene6_lighting': 'sceneN_lighting',
+            }
+            for old_key, new_key in mapping.items():
+                if old_key in data and new_key not in data:
+                    data[new_key] = data.pop(old_key)
+        return data
 
 
 class Gen2VisualSummary(BaseModel):
@@ -1022,14 +1131,14 @@ class Gen2VisualSummary(BaseModel):
             if 'loop_verification' not in data or data['loop_verification'] is None:
                 data['loop_verification'] = {
                     'scene1_camera_movement': '',
-                    'scene6_camera_movement': '',
+                    'sceneN_camera_movement': '',
                     'movements_are_different': True,
-                    'scene6_after_reverse': '',
+                    'sceneN_after_reverse': '',
                     'scene1_foreground': '',
-                    'scene6_foreground': '',
+                    'sceneN_foreground': '',
                     'foreground_match': True,
                     'scene1_lighting': '',
-                    'scene6_lighting': '',
+                    'sceneN_lighting': '',
                     'lighting_match': True,
                     'same_reference_image': True,
                     'loop_ready': True
@@ -1070,17 +1179,19 @@ class Gen2BatchOutput(BaseModel):
 
     @model_validator(mode='after')
     def validate_scenes(self) -> 'Gen2BatchOutput':
-        """Validate all 6 scenes with unique scene_numbers 1-6."""
-        if len(self.scenes) != 6:
-            raise ValueError(f"GEN2 must return exactly 6 scenes, got {len(self.scenes)}")
+        """Validate scenes with unique scene_numbers 1-N (6-10 scenes)."""
+        num_scenes = len(self.scenes)
+        if num_scenes < 6 or num_scenes > 10:
+            raise ValueError(f"GEN2 must return 6-10 scenes, got {num_scenes}")
 
         scene_numbers = [s.scene_number for s in self.scenes]
         if len(scene_numbers) != len(set(scene_numbers)):
             duplicates = [n for n in scene_numbers if scene_numbers.count(n) > 1]
             raise ValueError(f"GEN2 has duplicate scene_numbers: {duplicates}")
 
-        if set(scene_numbers) != {1, 2, 3, 4, 5, 6}:
-            raise ValueError(f"GEN2 scene_numbers must be 1-6, got {sorted(scene_numbers)}")
+        expected = set(range(1, num_scenes + 1))
+        if set(scene_numbers) != expected:
+            raise ValueError(f"GEN2 scene_numbers must be 1-{num_scenes}, got {sorted(scene_numbers)}")
 
         return self
 
@@ -1122,8 +1233,8 @@ class DeliveryPayload(BaseModel):
         errors = []
 
         # ===== SCENES VALIDATION =====
-        if len(self.scenes) != 6:
-            errors.append(f"Expected 6 scenes, got {len(self.scenes)}")
+        if len(self.scenes) < 6 or len(self.scenes) > 10:
+            errors.append(f"Expected 6-10 scenes, got {len(self.scenes)}")
 
         # ===== ARCHITECTURAL IDENTITY VALIDATION =====
         if not self.architectural_identity.style_code:
@@ -1152,10 +1263,14 @@ class DeliveryPayload(BaseModel):
             errors.append("Missing foreground_element.prompt_snippet")
 
         # ===== EASTER EGG VALIDATION =====
-        if not self.easter_egg.object:
-            errors.append("Missing easter_egg.object")
-        if not self.easter_egg.scene_number:
-            errors.append("Missing easter_egg.scene_number")
+        is_audio_only = getattr(self.easter_egg, 'format', None) == 'AUDIO_ONLY'
+        if not is_audio_only:
+            if not self.easter_egg.object:
+                errors.append("Missing easter_egg.object")
+            if self.easter_egg.scene_number is None or self.easter_egg.scene_number == 0:
+                errors.append("Missing easter_egg.scene_number")
+            elif self.easter_egg.scene_number < 2 or self.easter_egg.scene_number > len(self.scenes) - 1:
+                errors.append(f"easter_egg.scene_number must be 2-{len(self.scenes)-1}, got {self.easter_egg.scene_number}")
 
         # ===== SCENE CONTENT VALIDATION =====
         for scene in self.scenes:
@@ -1539,7 +1654,7 @@ class HookVarietyAnalysis(BaseModel):
 
 class Gen3aSceneAnalysis(BaseModel):
     """Повний аналіз однієї сцени від GEN3a - ALL FIELDS REQUIRED."""
-    scene_number: int = Field(..., description="Номер сцени 1-6 - REQUIRED")
+    scene_number: int = Field(..., description="Номер сцени 1-N - REQUIRED")
     source_duration: float = Field(..., description="Тривалість source (10s) - REQUIRED")
     output_duration: float = Field(..., description="Тривалість на виході - REQUIRED")
     video_quality: float = Field(..., ge=0.0, le=1.0, description="Якість відео 0.0-1.0 - REQUIRED")
@@ -1578,7 +1693,7 @@ class Gen3bHandoff(BaseModel):
     """Дані для передачі до GEN3b - ALL FIELDS REQUIRED."""
     total_output_duration: float = Field(..., description="Загальна тривалість 18-25s - REQUIRED")
     cumulative_scene_starts: Dict[str, float] = Field(..., description="Початки сцен - REQUIRED")
-    loop_compliant: bool = Field(..., description="Scene1 ≈ Scene6 duration - REQUIRED")
+    loop_compliant: bool = Field(..., description="Scene1 ≈ SceneN (last) duration - REQUIRED")
 
     @model_validator(mode='before')
     @classmethod
@@ -1600,7 +1715,7 @@ class Gen3aOutput(BaseModel):
     project_id: str = Field(..., description="ID проекту - REQUIRED")
     analysis_timestamp: str = Field(..., description="Час аналізу ISO-8601 - REQUIRED")
 
-    scenes: List[Gen3aSceneAnalysis] = Field(..., description="Аналіз 6 сцен - REQUIRED")
+    scenes: List[Gen3aSceneAnalysis] = Field(..., description="Аналіз сцен (6-10) - REQUIRED")
     music_analysis: MusicAnalysis = Field(..., description="Аналіз музики - REQUIRED")
     vo_segments: List[VOSegmentAnalysis] = Field(..., description="VO сегменти - REQUIRED")
     hook_variety_analysis: HookVarietyAnalysis = Field(..., description="Аналіз хуків - REQUIRED")
@@ -1635,21 +1750,21 @@ class Gen3aOutput(BaseModel):
         """Validate GEN3a v1.6.0 output contract."""
         errors = []
 
-        # Must have exactly 6 scenes
-        if len(self.scenes) != 6:
-            errors.append(f"Must have exactly 6 scenes, got {len(self.scenes)}")
+        # Must have 6-10 scenes
+        if len(self.scenes) < 6 or len(self.scenes) > 10:
+            errors.append(f"Must have 6-10 scenes, got {len(self.scenes)}")
 
         # Total duration must be 18-25 seconds
         total = self.gen3b_handoff.total_output_duration
         if total < 18 or total > 25:
             errors.append(f"Total duration {total}s outside 18-25s target range")
 
-        # Scene 1 and Scene 6 duration should be similar for loop
+        # Scene 1 and last scene duration should be similar for loop
         if len(self.scenes) >= 6:
             s1_dur = self.scenes[0].output_duration
-            s6_dur = self.scenes[5].output_duration
-            if abs(s1_dur - s6_dur) > 0.5:
-                errors.append(f"Scene 1 ({s1_dur}s) and Scene 6 ({s6_dur}s) durations differ by more than 0.5s")
+            sN_dur = self.scenes[-1].output_duration
+            if abs(s1_dur - sN_dur) > 0.5:
+                errors.append(f"Scene 1 ({s1_dur}s) and Scene {len(self.scenes)} ({sN_dur}s) durations differ by more than 0.5s")
 
         # Each scene must have speed_map
         for scene in self.scenes:

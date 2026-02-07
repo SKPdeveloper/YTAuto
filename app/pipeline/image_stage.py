@@ -3,7 +3,7 @@ Image Generation Stage
 
 Generates images for all scenes:
 1. PRIMARY scene (Scene 1) - 4 candidates for user selection
-2. Remaining scenes (2-6) - Parallel batch generation with reference
+2. Remaining scenes (2-N) - Parallel batch generation with reference
 """
 
 from pathlib import Path
@@ -23,7 +23,7 @@ class ImageStage(BasePipelineStage):
 
     Two phases:
     1. PRIMARY (Scene 1): Generate 4 candidates, wait for user selection
-    2. REMAINING (Scenes 2-6): Parallel batch generation with reference
+    2. REMAINING (Scenes 2-N): Parallel batch generation with reference
 
     Uses VisualEngine (HiggsFieldWebAdapter) for generation.
     """

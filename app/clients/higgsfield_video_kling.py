@@ -2879,7 +2879,7 @@ class KlingVideoGenerator:
         return downloaded
 
     # =========================================================================
-    # PARALLEL TABS - All 6 scenes in separate tabs
+    # PARALLEL TABS - All scenes in separate tabs
     # =========================================================================
 
     async def queue_all_parallel(
@@ -2890,7 +2890,7 @@ class KlingVideoGenerator:
         Запустити всі сцени ПАРАЛЕЛЬНО в окремих вкладках.
 
         Workflow:
-        1. Відкрити 6 вкладок з video page
+        1. Відкрити N вкладок з video page (по одній на сцену)
         2. В кожній вкладці: завантажити картинку + ввести промпт
         3. Натиснути Generate в КОЖНІЙ вкладці
         4. Чекати генерації

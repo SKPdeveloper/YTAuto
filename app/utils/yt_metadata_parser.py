@@ -31,20 +31,27 @@ def extract_youtube_metadata(gen1_data: Dict[str, Any]) -> Dict[str, str]:
         gen1_data: Parsed GEN1 JSON data
 
     Returns:
-        Dict with keys: title, description, tags, hashtags, pinned_comment
+        Dict with keys: title, description, tags, hashtags, pinned_comment, title_variants
     """
-    # Try flat fields first (youtube_title, etc.), then nested (youtube.title)
-    title = gen1_data.get("youtube_title") or gen1_data.get("youtube", {}).get("title", "")
-    description = gen1_data.get("youtube_description") or gen1_data.get("youtube", {}).get("description", "")
-    pinned_comment = gen1_data.get("youtube_pinned_comment") or gen1_data.get("youtube", {}).get("pinned_comment", "")
+    # Try nested youtube object first (v6), then flat fields (v5 backwards compat)
+    youtube = gen1_data.get("youtube", {})
+    title = youtube.get("title") or gen1_data.get("youtube_title", "")
+    description = youtube.get("description") or gen1_data.get("youtube_description", "")
+    pinned_comment = youtube.get("pinned_comment") or gen1_data.get("youtube_pinned_comment") or ""
 
     # Tags - list to comma-separated string
-    tags_list = gen1_data.get("youtube_tags") or gen1_data.get("youtube", {}).get("tags", [])
+    tags_list = youtube.get("tags") or gen1_data.get("youtube_tags", [])
     tags = ", ".join(tags_list) if isinstance(tags_list, list) else str(tags_list)
 
     # Hashtags - list to space-separated string
     hashtags_list = gen1_data.get("youtube_hashtags") or gen1_data.get("engagement", {}).get("hashtags", [])
     hashtags = " ".join(hashtags_list) if isinstance(hashtags_list, list) else str(hashtags_list)
+
+    # Title variants (GEN1 v6) - list of alternative titles
+    title_variants_list = youtube.get("title_variants", [])
+    title_variants = ""
+    if isinstance(title_variants_list, list) and title_variants_list:
+        title_variants = "\n".join(title_variants_list)
 
     return {
         "title": title,
@@ -52,6 +59,7 @@ def extract_youtube_metadata(gen1_data: Dict[str, Any]) -> Dict[str, str]:
         "tags": tags,
         "hashtags": hashtags,
         "pinned_comment": pinned_comment,
+        "title_variants": title_variants,
     }
 
 
@@ -84,8 +92,17 @@ def format_yt_metadata(metadata: Dict[str, str]) -> str:
     lines.append("")
 
     # Pinned comment section
-    lines.append("PINNED COMMENT")
-    lines.append(metadata.get("pinned_comment", ""))
+    pinned = metadata.get("pinned_comment", "")
+    if pinned:
+        lines.append("PINNED COMMENT")
+        lines.append(pinned)
+        lines.append("")
+
+    # Title variants section (GEN1 v6)
+    title_variants = metadata.get("title_variants", "")
+    if title_variants:
+        lines.append("TITLE VARIANTS")
+        lines.append(title_variants)
 
     return "\n".join(lines)
 

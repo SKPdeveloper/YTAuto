@@ -42,7 +42,7 @@ class ProjectManager:
         manager = ProjectManager()
 
         # Create new project
-        project = await manager.create("Chocolate Castle", num_scenes=6)
+        project = await manager.create("Chocolate Castle", num_scenes=8)
 
         # Load existing project
         project = await manager.load("proj_abc123")
@@ -60,7 +60,7 @@ class ProjectManager:
     async def create(
         self,
         topic: str,
-        num_scenes: int = 6,
+        num_scenes: int = 8,
         style: str = "educational",
         target_audience: str = "general"
     ) -> ProjectData:
@@ -69,17 +69,20 @@ class ProjectManager:
 
         Args:
             topic: Video topic (or "FREE_TOPIC" for AI choice)
-            num_scenes: Number of scenes (always 6 per GEN1/GEN2 contract)
+            num_scenes: Number of scenes (6-10, dynamic from GEN1 v6)
             style: Video style
             target_audience: Target audience
 
         Returns:
             ProjectData object
         """
-        # Enforce 6 scenes (GEN1/GEN2 contract)
-        if num_scenes != 6:
-            logger.warning(f"num_scenes={num_scenes} overridden to 6 (GEN1/GEN2 contract)")
+        # Clamp to valid range
+        if num_scenes < 6:
+            logger.warning(f"num_scenes={num_scenes} clamped to 6 (minimum)")
             num_scenes = 6
+        elif num_scenes > 10:
+            logger.warning(f"num_scenes={num_scenes} clamped to 10 (maximum)")
+            num_scenes = 10
 
         # Ensure database is initialized
         await state_manager.initialize()

@@ -6,7 +6,7 @@ This module handles the data flow between two prompt generation stages:
 - GEN2: Generates visual prompts (image_prompt, video_prompt, reference_type)
 
 Flow:
-1. GEN1 generates project concept (ALWAYS 6 scenes)
+1. GEN1 generates project concept (6-10 scenes, dynamic)
 2. PromptRouter validates and transforms GEN1 output
 3. PromptRouter creates delivery payload for GEN2
 4. GEN2 generates visual prompts
@@ -370,7 +370,7 @@ class PromptRouter:
     async def run_gen1(
         self,
         topic: Optional[str] = None,
-        num_scenes: int = 6,  # ALWAYS 6
+        num_scenes: int = 8,
         style: str = "cinematic food fantasy",
         target_audience: str = "YouTube Shorts viewers",
         duration_seconds: int = 10,
@@ -382,7 +382,7 @@ class PromptRouter:
 
         Args:
             topic: The topic/theme for the video. If None, AI will auto-generate.
-            num_scenes: Number of scenes (ALWAYS 6, enforced)
+            num_scenes: Number of scenes (6-10, GEN1 v6 dynamic scene engine decides)
             style: Visual style
             target_audience: Target audience
             duration_seconds: Total video duration in seconds
@@ -396,9 +396,7 @@ class PromptRouter:
             logger.error("GEN1 prompt not loaded!")
             return None
 
-        # ENFORCE 6 SCENES
-        num_scenes = 6
-        logger.info(f"[GEN1] Enforcing {num_scenes} scenes (per contract)")
+        logger.info(f"[GEN1] Scene count: dynamic (GEN1 v6 decides, hint={num_scenes})")
 
         is_auto_mode = topic is None or topic == "__AUTO_GENERATE__"
 
@@ -526,7 +524,7 @@ class PromptRouter:
 
         Args:
             topic: User-provided topic or hint. None for auto mode.
-            num_scenes: Number of scenes (ALWAYS 6)
+            num_scenes: Number of scenes (6-10, dynamic — GEN1 v6 decides)
             style: Visual style
             target_audience: Target audience
             duration_seconds: Total video duration
@@ -554,7 +552,7 @@ Generate a completely new, UNIQUE and VIRAL video concept.
 MODE: AUTO - Create an original topic yourself!
 
 CONSTRAINTS:
-- NUMBER OF SCENES: {num_scenes} (EXACTLY 6 scenes, no more, no less!)
+- SCENES: Dynamic (the system prompt's DYNAMIC SCENE ENGINE decides the count, 6-10 scenes)
 - TOTAL DURATION: {duration_seconds} seconds
 - VISUAL STYLE: {style}
 - TARGET AUDIENCE: {target_audience}
@@ -562,19 +560,19 @@ CONSTRAINTS:
 CRITICAL REQUIREMENTS:
 1. Follow the OUTPUT CONTRACT FOR GEN2 EXACTLY
 2. Include ALL mandatory fields:
-   - metadata (with concept object)
+   - metadata (with concept object, scene_count matching actual scenes)
    - property
    - hook
    - architectural_identity (with style_code, style_description, distinctive_features, silhouette_description, interior_style)
    - food_identity (with primary_food, food_dna mapping ALL elements, texture_keywords, color_keywords, atmosphere)
    - lighting_master (with preset, mood_reason, prompt_snippet)
    - foreground_element (with type, prompt_snippet)
-   - scenes (EXACTLY 6 scenes with visual_concept and camera_intent)
+   - scenes (6-10 scenes with visual_concept and camera_intent)
    - voiceover (with full_script)
    - audio (with sonic_hook, suno_prompt, foley_palette, sfx_per_scene)
    - engagement (with easter_egg, share_trigger, hashtags)
 3. Each scene MUST have:
-   - scene_number (1-6)
+   - scene_number (1-N sequential)
    - scene_name
    - duration_seconds
    - narrative_purpose
@@ -593,7 +591,7 @@ CRITICAL REQUIREMENTS:
 Develop this idea into a complete video concept for "Glaze City" style channel.
 
 CONSTRAINTS:
-- NUMBER OF SCENES: {num_scenes} (EXACTLY 6 scenes, no more, no less!)
+- SCENES: Dynamic (the system prompt's DYNAMIC SCENE ENGINE decides the count, 6-10 scenes)
 - TOTAL DURATION: {duration_seconds} seconds
 - VISUAL STYLE: {style}
 - TARGET AUDIENCE: {target_audience}
@@ -601,19 +599,19 @@ CONSTRAINTS:
 CRITICAL REQUIREMENTS:
 1. Follow the OUTPUT CONTRACT FOR GEN2 EXACTLY
 2. Include ALL mandatory fields:
-   - metadata (with concept object)
+   - metadata (with concept object, scene_count matching actual scenes)
    - property
    - hook
    - architectural_identity (with style_code, style_description, distinctive_features, silhouette_description, interior_style)
    - food_identity (with primary_food, food_dna mapping ALL elements, texture_keywords, color_keywords, atmosphere)
    - lighting_master (with preset, mood_reason, prompt_snippet)
    - foreground_element (with type, prompt_snippet)
-   - scenes (EXACTLY 6 scenes with visual_concept and camera_intent)
+   - scenes (6-10 scenes with visual_concept and camera_intent)
    - voiceover (with full_script)
    - audio (with sonic_hook, suno_prompt, foley_palette, sfx_per_scene)
    - engagement (with easter_egg, share_trigger, hashtags)
 3. Each scene MUST have:
-   - scene_number (1-6)
+   - scene_number (1-N sequential)
    - scene_name
    - duration_seconds
    - narrative_purpose
@@ -676,20 +674,24 @@ You MUST fix ALL the issues listed above. Pay special attention to:
 
         logger.info("=" * 70)
 
-    def _fix_scene6_reference_type(self, gen2: Gen2BatchOutput) -> Gen2BatchOutput:
+    def _fix_last_scene_reference_type(self, gen2: Gen2BatchOutput) -> Gen2BatchOutput:
         """
-        Auto-fix Scene 6 reference_type to LOOP_CLOSE if incorrect.
+        Auto-fix last scene reference_type to LOOP_CLOSE if incorrect.
 
-        Scene 6 MUST always have reference_type='LOOP_CLOSE' for seamless video loop.
+        Last scene MUST always have reference_type='LOOP_CLOSE' for seamless video loop.
         The LLM sometimes generates 'REQUIRES_REF' instead, so we fix it deterministically.
 
-        Also ensures Scene 6 has proper inheritance pointing to Scene 1.
+        Also ensures last scene has proper inheritance pointing to Scene 1.
         """
+        if not gen2.scenes:
+            logger.error("[GEN2 POST-FIX] GEN2 has no scenes — cannot fix reference types")
+            return gen2
+        last_scene_num = max(s.scene_number for s in gen2.scenes)
         for scene in gen2.scenes:
-            if scene.scene_number == 6:
+            if scene.scene_number == last_scene_num:
                 if scene.reference_type != "LOOP_CLOSE":
                     logger.warning(
-                        f"[GEN2 POST-FIX] Scene 6 reference_type was '{scene.reference_type}', "
+                        f"[GEN2 POST-FIX] Scene {last_scene_num} reference_type was '{scene.reference_type}', "
                         f"auto-correcting to 'LOOP_CLOSE'"
                     )
                     scene.reference_type = "LOOP_CLOSE"
@@ -698,7 +700,7 @@ You MUST fix ALL the issues listed above. Pay special attention to:
                 if not scene.inheritance:
                     from app.services.gen_models import Gen2Inheritance
                     logger.warning(
-                        "[GEN2 POST-FIX] Scene 6 missing inheritance, creating with parent_scene=1"
+                        f"[GEN2 POST-FIX] Scene {last_scene_num} missing inheritance, creating with parent_scene=1"
                     )
                     scene.inheritance = Gen2Inheritance(
                         parent_scene=1,
@@ -707,7 +709,7 @@ You MUST fix ALL the issues listed above. Pay special attention to:
                     )
                 elif scene.inheritance.parent_scene != 1:
                     logger.warning(
-                        f"[GEN2 POST-FIX] Scene 6 inheritance.parent_scene was {scene.inheritance.parent_scene}, "
+                        f"[GEN2 POST-FIX] Scene {last_scene_num} inheritance.parent_scene was {scene.inheritance.parent_scene}, "
                         f"correcting to 1"
                     )
                     scene.inheritance.parent_scene = 1
@@ -762,7 +764,7 @@ You MUST fix ALL the issues listed above. Pay special attention to:
             if gen2.visual_summary.loop_verification:
                 lv = gen2.visual_summary.loop_verification
                 logger.info(f"  loop_verification.movements_are_different: {lv.movements_are_different}")
-                logger.info(f"  loop_verification.scene6_camera_movement: {lv.scene6_camera_movement}")
+                logger.info(f"  loop_verification.sceneN_camera_movement: {lv.sceneN_camera_movement}")
 
         logger.info("=" * 70)
 
@@ -812,8 +814,8 @@ You MUST fix ALL the issues listed above. Pay special attention to:
         logger.info(f"  Easter egg: Scene {summary['easter_egg_scene']}")
 
         # === SCENE COUNT ===
-        if len(payload.scenes) != 6:
-            errors.append(f"Expected 6 scenes, got {len(payload.scenes)}")
+        if len(payload.scenes) < 6 or len(payload.scenes) > 10:
+            errors.append(f"Expected 6-10 scenes, got {len(payload.scenes)}")
 
         # === REQUIRED HANDOFF FIELDS ===
         # These are now validated by DeliveryPayload.model_validator
@@ -964,9 +966,9 @@ You MUST fix ALL the issues listed above. Pay special attention to:
 
             logger.success(f"[GEN2] Generated prompts for {len(gen2_output.scenes)} scenes")
 
-            # Post-process: Auto-fix Scene 6 reference_type to LOOP_CLOSE
-            # This is a deterministic fix since Scene 6 MUST always be LOOP_CLOSE
-            gen2_output = self._fix_scene6_reference_type(gen2_output)
+            # Post-process: Auto-fix last scene reference_type to LOOP_CLOSE
+            # This is a deterministic fix since the last scene MUST always be LOOP_CLOSE
+            gen2_output = self._fix_last_scene_reference_type(gen2_output)
 
             # Log reference type breakdown
             ref_counts = {}
@@ -1020,9 +1022,9 @@ You MUST fix ALL the issues listed above before generating output.
 CRITICAL REQUIREMENTS:
 
 1. SCENE COUNT (MANDATORY - DO NOT SKIP!):
-   - You MUST return EXACTLY 6 scenes
-   - scene_number MUST be: 1, 2, 3, 4, 5, 6 (in order, no duplicates, no gaps)
-   - Process ALL 6 scenes from the input - do not skip any!
+   - You MUST return scenes matching the GEN1 scene count from the input
+   - scene_number MUST be: 1 through N (in order, no duplicates, no gaps)
+   - Process ALL scenes from the input - do not skip any!
 
 2. IMAGE PROMPTS:
    - Use formulas from system prompt
@@ -1042,14 +1044,14 @@ CRITICAL REQUIREMENTS:
 
 4. SCENE 1 MUST HAVE first_frame_composition
 
-5. SCENE 6 LOOP REQUIREMENTS (CRITICAL!):
+5. LAST SCENE LOOP REQUIREMENTS (CRITICAL!):
    - reference_type MUST be "LOOP_CLOSE" (NOT "REQUIRES_REF"!)
    - Must match Scene 1 for seamless loop
    - Must have inheritance object referencing Scene 1
 
 6. OUTPUT STRUCTURE:
-   - scenes: array of EXACTLY 6 Gen2SceneOutput objects with scene_number 1-6
-   - visual_summary: summary object with total_scenes: 6
+   - scenes: array of Gen2SceneOutput objects with scene_number 1 through N
+   - visual_summary: summary object with total_scenes matching scene count
 
 {retry_section}Output ONLY valid JSON matching Gen2BatchOutput schema."""
 
@@ -1388,6 +1390,8 @@ CRITICAL REQUIREMENTS:
         missing_in_gen2 = gen1_scene_numbers - gen2_scene_numbers_set
         if missing_in_gen2:
             logger.error(f"[MERGE] CRITICAL: GEN2 missing scene_numbers that exist in GEN1: {sorted(missing_in_gen2)}")
+            logger.error(f"[MERGE] These scenes will have EMPTY image/video prompts — image generation will fail for them")
+            raise RuntimeError(f"GEN2 output incomplete: missing scenes {sorted(missing_in_gen2)}. Cannot merge.")
 
         # Create scene mapping from GEN2
         gen2_scenes: Dict[int, Gen2SceneOutput] = {
@@ -1585,7 +1589,7 @@ CRITICAL REQUIREMENTS:
 
         # Build final project with all required fields from GEN1
         total_duration = sum(s.duration_seconds for s in glaze_scenes)
-        youtube_title = gen1.youtube_title or gen1.metadata.title or "Glaze City Property"
+        youtube_title = gen1.youtube.title or gen1.youtube_title or gen1.metadata.title or "Glaze City Property"
 
         # Find easter egg scene in GEN2 to get placement_in_prompt for safe_zone_position
         easter_egg_scene_num = gen1.engagement.easter_egg.scene_number
@@ -1662,21 +1666,21 @@ CRITICAL REQUIREMENTS:
             if gen2.visual_summary.loop_verification:
                 loop_verification_data = LoopVerification(
                     scene1_camera_movement=gen2.visual_summary.loop_verification.scene1_camera_movement or "",
-                    scene6_camera_movement=gen2.visual_summary.loop_verification.scene6_camera_movement or "",
+                    sceneN_camera_movement=gen2.visual_summary.loop_verification.sceneN_camera_movement or "",
                     movements_are_different=gen2.visual_summary.loop_verification.movements_are_different if gen2.visual_summary.loop_verification.movements_are_different is not None else True,
-                    scene6_after_reverse=gen2.visual_summary.loop_verification.scene6_after_reverse or "",
+                    sceneN_after_reverse=gen2.visual_summary.loop_verification.sceneN_after_reverse or "",
                     scene1_foreground=gen2.visual_summary.loop_verification.scene1_foreground or "",
-                    scene6_foreground=gen2.visual_summary.loop_verification.scene6_foreground or "",
+                    sceneN_foreground=gen2.visual_summary.loop_verification.sceneN_foreground or "",
                     foreground_match=gen2.visual_summary.loop_verification.foreground_match if gen2.visual_summary.loop_verification.foreground_match is not None else True,
                     scene1_lighting=gen2.visual_summary.loop_verification.scene1_lighting or "",
-                    scene6_lighting=gen2.visual_summary.loop_verification.scene6_lighting or "",
+                    sceneN_lighting=gen2.visual_summary.loop_verification.sceneN_lighting or "",
                     lighting_match=gen2.visual_summary.loop_verification.lighting_match if gen2.visual_summary.loop_verification.lighting_match is not None else True,
                     same_reference_image=gen2.visual_summary.loop_verification.same_reference_image if gen2.visual_summary.loop_verification.same_reference_image is not None else True,
                     loop_ready=gen2.visual_summary.loop_verification.loop_ready if gen2.visual_summary.loop_verification.loop_ready is not None else True,
                 )
 
             visual_summary_data = VisualSummary(
-                total_scenes=gen2.visual_summary.total_scenes,
+                total_scenes=len(gen1.scenes),  # authoritative: actual scene count from GEN1
                 gigantism_protocol=gen2.visual_summary.gigantism_protocol or "APPLIED",
                 reference_breakdown=gen2.visual_summary.reference_breakdown or {},
                 scale_techniques_used=gen2.visual_summary.scale_techniques_used or [],
@@ -1789,7 +1793,7 @@ CRITICAL REQUIREMENTS:
                 visibility_score=self._parse_visibility_score(gen1.engagement.easter_egg.visibility),
             ),
             loop=LoopConfig(
-                connection=f"Scene 6 matches Scene 1 with reversed camera",
+                connection=f"Last scene (LOOP_CLOSE) matches Scene 1 with reversed camera",
             ),
             scenes=glaze_scenes,
             voiceover=VoiceoverConfig(
@@ -1824,11 +1828,11 @@ CRITICAL REQUIREMENTS:
                 target_channel=gen1.publish_config.target_channel if gen1.publish_config else "glaze_city"
             ),
             youtube=ViralMetadata(
-                title=gen1.youtube_title or gen1.metadata.title,
-                description=gen1.youtube_description or "",
-                pinned_comment=gen1.youtube_pinned_comment or gen1.engagement.easter_egg.comment_bait or "",
+                title=(gen1.youtube.title if gen1.youtube else None) or gen1.youtube_title or gen1.metadata.title,
+                description=(gen1.youtube.description if gen1.youtube else None) or gen1.youtube_description or "",
+                pinned_comment=(gen1.youtube.pinned_comment if gen1.youtube else None) or gen1.youtube_pinned_comment or gen1.engagement.easter_egg.comment_bait or "",
                 hashtags=gen1.youtube_hashtags or gen1.engagement.hashtags,
-                tags=gen1.youtube_tags,
+                tags=(gen1.youtube.tags if gen1.youtube else None) or gen1.youtube_tags,
             ),
             # Viral audit with scores from GEN1 viral_assessment
             viral_audit=ViralAudit(
@@ -1872,7 +1876,7 @@ CRITICAL REQUIREMENTS:
             ),
             # Meta with all required fields
             meta=ProjectMeta(
-                total_scenes=len(glaze_scenes),
+                total_scenes=len(gen1.scenes),  # authoritative: GEN1 scene count
                 total_duration_seconds=sum(s.duration_seconds for s in glaze_scenes),
                 generated_at=datetime.now().isoformat(),
             ),
@@ -1909,11 +1913,15 @@ CRITICAL REQUIREMENTS:
         logger.info(f"  Scenes: {len(project.scenes)}")
         logger.info(f"  Duration: {project.meta.total_duration_seconds}s")
 
-        # Log any issues found during merge
+        # Log and check merge issues
         if merge_issues:
             logger.warning(f"[MERGE] Issues found ({len(merge_issues)}):")
             for issue in merge_issues:
                 logger.warning(f"  - {issue}")
+            # Critical: any scene missing prompts means image gen will fail
+            critical_issues = [i for i in merge_issues if "no GEN2 data" in i or "missing image_prompt" in i]
+            if critical_issues:
+                logger.error(f"[MERGE] {len(critical_issues)} critical merge issues — image generation will fail for these scenes")
         else:
             logger.success("[MERGE] All fields merged successfully!")
 
@@ -2014,8 +2022,8 @@ CRITICAL REQUIREMENTS:
             missing_fields.append("voiceover.full_script")
 
         # ===== SCENES VALIDATION =====
-        if len(project.scenes) != 6:
-            missing_fields.append(f"scenes (expected 6, got {len(project.scenes)})")
+        if len(project.scenes) < 6 or len(project.scenes) > 10:
+            missing_fields.append(f"scenes (expected 6-10, got {len(project.scenes)})")
 
         for scene in project.scenes:
             if not scene.image_prompt:
@@ -2047,7 +2055,7 @@ CRITICAL REQUIREMENTS:
     async def generate_full_project(
         self,
         topic: Optional[str] = None,
-        num_scenes: int = 6,  # ALWAYS 6
+        num_scenes: int = 8,
         style: str = "cinematic food fantasy",
         target_audience: str = "YouTube Shorts viewers",
         duration_seconds: int = 10,
@@ -2064,7 +2072,7 @@ CRITICAL REQUIREMENTS:
 
         Args:
             topic: Video topic/theme (None for auto-generate)
-            num_scenes: Number of scenes (ALWAYS 6, enforced)
+            num_scenes: Number of scenes (6-10, GEN1 v6 dynamic engine decides)
             style: Visual style
             target_audience: Target audience
             duration_seconds: Total duration
@@ -2075,15 +2083,12 @@ CRITICAL REQUIREMENTS:
             Complete GlazeCityProject with all prompts
         """
         logger.info("=" * 70)
-        logger.info("STARTING TWO-STAGE GENERATION PIPELINE v2.2 (with validation)")
+        logger.info("STARTING TWO-STAGE GENERATION PIPELINE v3.0 (dynamic scenes)")
         logger.info("=" * 70)
 
         # Generate project_id if not provided
         if not project_id:
             project_id = f"proj_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-
-        # ENFORCE 6 SCENES
-        num_scenes = 6
 
         # =====================================================================
         # STAGE 1: GEN1 with VAL_GEN1 validation (max 3 retries)
@@ -2175,7 +2180,7 @@ CRITICAL REQUIREMENTS:
                     logger.warning("[GEN2] Previous attempt was TRUNCATED - adding to retry guidance")
                     truncation_guidance = [
                         "CRITICAL: Your previous response was TRUNCATED (cut off mid-JSON)",
-                        "You MUST output complete JSON with ALL 6 scenes",
+                        "You MUST output complete JSON with ALL scenes (match the scene count from GEN1)",
                         "Be MORE CONCISE - shorter image_prompt and video_prompt",
                         "Do NOT add extra fields or verbose descriptions"
                     ]

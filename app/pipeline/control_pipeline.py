@@ -28,7 +28,7 @@ class ControlPipeline:
     2. Generate script (GEN1 + GEN2)
     3. Generate 4 PRIMARY candidates for Scene 1
     4. Wait for user selection (or rejection)
-    5. Generate images for scenes 2-6
+    5. Generate images for remaining scenes (2-N)
     6. Auto-validate with VAL_IMG
     7. Allow user to kick individual scenes
     8. Generate videos for all scenes
@@ -233,7 +233,7 @@ class ControlPipeline:
         await self.orchestrator._save_project_state(self.project)
 
     async def _process_remaining_scenes(self):
-        """Generate and validate images for scenes 2-6 with retry logic."""
+        """Generate and validate images for remaining scenes (2-N) with retry logic."""
 
         if not self.project:
             return
@@ -245,29 +245,30 @@ class ControlPipeline:
         reference_image = primary_scene.image_path
 
         # ================================================================
-        # SCENE 6 (LOOP_CLOSE): Copy Scene 1 image instead of generating
-        # Scene 6 should be IDENTICAL to Scene 1 for seamless loop
+        # LOOP_CLOSE scene: Copy Scene 1 image instead of generating
+        # Last scene should be IDENTICAL to Scene 1 for seamless loop
         # ================================================================
-        scene_6 = next((s for s in self.project.scenes if s.scene_number == 6), None)
-        if scene_6 and scene_6.reference_type == "LOOP_CLOSE":
+        loop_close_scene = next((s for s in self.project.scenes if s.reference_type == "LOOP_CLOSE"), None)
+        if loop_close_scene:
+            last_scene_num = loop_close_scene.scene_number
             scene_1_dir = settings.get_scene_dir(self.project.project_id, 1)
-            scene_6_dir = settings.get_scene_dir(self.project.project_id, 6)
+            scene_N_dir = settings.get_scene_dir(self.project.project_id, last_scene_num)
             scene_1_image = scene_1_dir / "image.png"
-            scene_6_image = scene_6_dir / "image.png"
+            scene_N_image = scene_N_dir / "image.png"
 
-            if scene_1_image.exists() and not scene_6_image.exists():
-                scene_6_dir.mkdir(parents=True, exist_ok=True)
-                shutil.copy(scene_1_image, scene_6_image)
-                scene_6.image_path = str(scene_6_image)
-                scene_6.status = SceneStatus.IMAGE_READY
-                scene_6.validation_approved = True  # No validation needed - identical to approved Scene 1
-                logger.success(f"[Scene 6] ✅ Copied from Scene 1 (LOOP_CLOSE)")
+            if scene_1_image.exists() and not scene_N_image.exists():
+                scene_N_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy(scene_1_image, scene_N_image)
+                loop_close_scene.image_path = str(scene_N_image)
+                loop_close_scene.status = SceneStatus.IMAGE_READY
+                loop_close_scene.validation_approved = True  # No validation needed - identical to approved Scene 1
+                logger.success(f"[Scene {last_scene_num}] ✅ Copied from Scene 1 (LOOP_CLOSE)")
 
                 # Notify UI
                 cache_bust = int(time.time())
-                await self._notify_scene_update(6, {
-                    "scene_num": 6,
-                    "image_url": f"/projects/{self.project.project_id}/scene_6/image.png?t={cache_bust}",
+                await self._notify_scene_update(last_scene_num, {
+                    "scene_num": last_scene_num,
+                    "image_url": f"/projects/{self.project.project_id}/scene_{last_scene_num}/image.png?t={cache_bust}",
                     "status": "image_ready"
                 })
 
@@ -348,7 +349,7 @@ class ControlPipeline:
                     raise
 
         # ================================================================
-        # CRITICAL: ALL 6 IMAGES MUST EXIST BEFORE PROCEEDING
+        # CRITICAL: ALL N IMAGES MUST EXIST BEFORE PROCEEDING
         # INFINITE RETRY - keep generating until ALL images are ready
         # ================================================================
         retry_round = 0
@@ -374,7 +375,7 @@ class ControlPipeline:
 
             # Generate missing images individually
             for scene in missing_scenes:
-                # LOOP_CLOSE (Scene 6): Copy from Scene 1 instead of generating
+                # LOOP_CLOSE: Copy from Scene 1 instead of generating
                 if scene.reference_type == "LOOP_CLOSE":
                     scene_1_dir = settings.get_scene_dir(self.project.project_id, 1)
                     scene_dir = settings.get_scene_dir(self.project.project_id, scene.scene_number)
@@ -449,7 +450,7 @@ class ControlPipeline:
             if not scene.image_path or not Path(scene.image_path).exists():
                 continue
 
-            # Skip validation for LOOP_CLOSE scenes (Scene 6) - they mirror Scene 1
+            # Skip validation for LOOP_CLOSE scenes - they mirror Scene 1
             # which was already approved by user. Validating against LOOP_CLOSE prompt
             # is illogical since it should match the user-selected Scene 1.
             if scene.reference_type == "LOOP_CLOSE":
@@ -617,17 +618,19 @@ class ControlPipeline:
             return
 
         # ================================================================
-        # ALL 6 images MUST exist before we start generating videos
+        # ALL N images MUST exist before we start generating videos
         # ================================================================
         await self._notify_stage("GENERATING_VIDEOS", 70)
         logger.info("Generating videos for all scenes (SimpleVideoGenerator)...")
 
         # ================================================================
-        # INFINITE RETRY - keep generating until ALL 6 videos are ready
-        # FALLBACK: If scene 6 fails, use reversed scene 1
+        # RETRY LOOP - keep generating until ALL N videos are ready (max 10 rounds)
+        # FALLBACK: If loop close scene fails, use reversed scene 1
         # ================================================================
+        MAX_VIDEO_RETRIES = 10
         retry_round = 0
-        scene_6_fallback_used = False
+        loop_close_fallback_used = False
+        last_scene_num = max(s.scene_number for s in self.project.scenes)
 
         while True:
             retry_round += 1
@@ -651,38 +654,43 @@ class ControlPipeline:
                 await self._notify_all_scenes()
                 break
 
-            # FALLBACK: After 3 rounds, if only scene 6 is missing - use reversed scene 1
-            scene_6_missing = any(s.scene_number == 6 for s in scenes_needing_video)
-            only_scene_6_missing = len(scenes_needing_video) == 1 and scene_6_missing
+            # Safety: abort after max retries to prevent infinite loop
+            if retry_round > MAX_VIDEO_RETRIES:
+                still_missing = [s.scene_number for s in scenes_needing_video]
+                logger.error(f"[PIPELINE] Video generation failed after {MAX_VIDEO_RETRIES} rounds. Still missing: {still_missing}")
+                raise RuntimeError(f"Video generation failed for scenes {still_missing} after {MAX_VIDEO_RETRIES} retries")
 
-            if retry_round > 3 and scene_6_missing and not scene_6_fallback_used:
-                logger.warning(f"[PIPELINE] Scene 6 failed {retry_round} times - using FALLBACK: reversed Scene 1")
-                await self.notify_log("🔄 Scene 6 fallback: creating from reversed Scene 1", "warning")
+            # FALLBACK: After 3 rounds, if loop close scene is missing - use reversed scene 1
+            loop_close_missing = any(s.scene_number == last_scene_num for s in scenes_needing_video)
+            only_loop_close_missing = len(scenes_needing_video) == 1 and loop_close_missing
 
-                fallback_success = await self._create_scene6_from_reversed_scene1()
+            if retry_round > 3 and loop_close_missing and not loop_close_fallback_used:
+                logger.warning(f"[PIPELINE] Scene {last_scene_num} (LOOP_CLOSE) failed {retry_round} times - using FALLBACK: reversed Scene 1")
+                await self.notify_log(f"🔄 Scene {last_scene_num} fallback: creating from reversed Scene 1", "warning")
+
+                fallback_success = await self._create_loop_close_from_reversed_scene1()
                 if fallback_success:
-                    scene_6_fallback_used = True
-                    # Update scene 6 status
-                    scene_6 = next((s for s in self.project.scenes if s.scene_number == 6), None)
-                    if scene_6:
-                        scene_6_dir = settings.PROJECTS_DIR / self.project.project_id / "scene_6"
-                        scene_6.video_path = str(scene_6_dir / "video.mp4")
-                        scene_6.status = SceneStatus.VIDEO_READY
+                    loop_close_fallback_used = True
+                    loop_close_scene = next((s for s in self.project.scenes if s.scene_number == last_scene_num), None)
+                    if loop_close_scene:
+                        scene_N_dir = settings.PROJECTS_DIR / self.project.project_id / f"scene_{last_scene_num}"
+                        loop_close_scene.video_path = str(scene_N_dir / "video.mp4")
+                        loop_close_scene.status = SceneStatus.VIDEO_READY
                     continue
 
-            # If only scene 6 missing and fallback already used, something went wrong
-            if only_scene_6_missing and scene_6_fallback_used:
-                logger.error("[PIPELINE] Scene 6 fallback was used but video still missing!")
+            # If only loop close scene missing and fallback already used, something went wrong
+            if only_loop_close_missing and loop_close_fallback_used:
+                logger.error(f"[PIPELINE] Scene {last_scene_num} fallback was used but video still missing!")
                 break
 
             logger.warning(f"[PIPELINE] Video round {retry_round}: Missing {len(scenes_needing_video)} videos: {[s.scene_number for s in scenes_needing_video]}")
             await self.notify_log(f"🔄 Video round {retry_round}: Generating {len(scenes_needing_video)} videos...", "warning")
             await self._notify_video_retry(retry_round, scenes_needing_video)
 
-            # Generate missing videos (exclude scene 6 if fallback will be used)
+            # Generate missing videos (exclude loop close scene if fallback will be used)
             scenes_to_generate = scenes_needing_video
-            if retry_round > 3 and scene_6_missing:
-                scenes_to_generate = [s for s in scenes_needing_video if s.scene_number != 6]
+            if retry_round > 3 and loop_close_missing:
+                scenes_to_generate = [s for s in scenes_needing_video if s.scene_number != last_scene_num]
 
             if scenes_to_generate:
                 scenes_data = [{
@@ -721,22 +729,23 @@ class ControlPipeline:
             await self.orchestrator._save_project_state(self.project)
             await asyncio.sleep(5)
 
-    async def _create_scene6_from_reversed_scene1(self) -> bool:
+    async def _create_loop_close_from_reversed_scene1(self) -> bool:
         """
-        FALLBACK: Create scene 6 video by reversing scene 1.
-        Scene 6 is LOOP_CLOSE - it should mirror scene 1 for seamless loop.
+        FALLBACK: Create LOOP_CLOSE scene video by reversing scene 1.
+        Last scene is LOOP_CLOSE - it should mirror scene 1 for seamless loop.
         """
         try:
+            last_scene_num = max(s.scene_number for s in self.project.scenes)
             project_dir = settings.PROJECTS_DIR / self.project.project_id
             scene_1_video = project_dir / "scene_1" / "video.mp4"
-            scene_6_dir = project_dir / "scene_6"
-            scene_6_video = scene_6_dir / "video.mp4"
+            scene_N_dir = project_dir / f"scene_{last_scene_num}"
+            scene_N_video = scene_N_dir / "video.mp4"
 
             if not scene_1_video.exists():
                 logger.error("[FALLBACK] Scene 1 video not found!")
                 return False
 
-            scene_6_dir.mkdir(parents=True, exist_ok=True)
+            scene_N_dir.mkdir(parents=True, exist_ok=True)
 
             # Use ffmpeg to reverse video (with codec auto-detection)
             from app.core.config import settings as app_settings
@@ -769,7 +778,7 @@ class ControlPipeline:
                 "-af", "areverse",
                 *encoder_params,
                 "-c:a", "aac", "-b:a", "192k",
-                str(scene_6_video)
+                str(scene_N_video)
             ]
 
             logger.info(f"[FALLBACK] Reversing scene 1: {' '.join(cmd)}")
@@ -778,8 +787,8 @@ class ControlPipeline:
             )
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=120)
 
-            if process.returncode == 0 and scene_6_video.exists():
-                logger.success(f"[FALLBACK] ✅ Scene 6 created from reversed Scene 1: {scene_6_video}")
+            if process.returncode == 0 and scene_N_video.exists():
+                logger.success(f"[FALLBACK] ✅ Scene {last_scene_num} created from reversed Scene 1: {scene_N_video}")
                 return True
             else:
                 error_msg = stderr.decode() if stderr else "Unknown error"
@@ -787,7 +796,7 @@ class ControlPipeline:
                 return False
 
         except Exception as e:
-            logger.error(f"[FALLBACK] Error creating scene 6: {e}")
+            logger.error(f"[FALLBACK] Error creating LOOP_CLOSE scene: {e}")
             return False
 
     async def _assemble_final(self):

@@ -65,7 +65,7 @@ def get_scene_path(project_id: str, scene_num: int) -> Path:
 
     Args:
         project_id: ID проекта
-        scene_num: Номер сцены (1-6)
+        scene_num: Номер сцены (1-N)
 
     Returns:
         Path к директории сцены
@@ -208,13 +208,13 @@ def ensure_directories() -> None:
         directory.mkdir(parents=True, exist_ok=True)
 
 
-def ensure_project_structure(project_id: str, num_scenes: int = 6) -> None:
+def ensure_project_structure(project_id: str, num_scenes: int = 8) -> None:
     """
     Создать структуру директорий для проекта.
 
     Args:
         project_id: ID проекта
-        num_scenes: Количество сцен (default: 6)
+        num_scenes: Количество сцен (default: 8, range 6-10)
     """
     project_dir = get_project_path(project_id)
     project_dir.mkdir(parents=True, exist_ok=True)

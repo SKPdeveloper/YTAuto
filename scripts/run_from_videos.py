@@ -50,7 +50,7 @@ def build_project(project_id: str) -> ProjectData | None:
 
     scenes = []
     brief_scenes = brief.get("scenes", [])
-    for i in range(1, 7):
+    for i in range(1, len(brief_scenes) + 1):
         scene_dir = project_dir / f"scene_{i}"
         video_path = scene_dir / "video.mp4"
         image_path = scene_dir / "image.png"
@@ -70,7 +70,7 @@ def build_project(project_id: str) -> ProjectData | None:
     return ProjectData(
         project_id=project_id,
         topic=brief.get("property", {}).get("name", "Unknown"),
-        num_scenes=6,
+        num_scenes=len(brief_scenes),
         project_dir=str(project_dir),
         scenes=scenes,
     )
@@ -159,7 +159,7 @@ async def main(project_id: str, skip_audio: bool = False, render_only: bool = Fa
     logger.info("")
 
     missing_videos = []
-    for i in range(1, 7):
+    for i in range(1, project.num_scenes + 1):
         vp = project_dir / f"scene_{i}" / "video.mp4"
         status = "OK" if vp.exists() else "MISSING"
         logger.info(f"  scene_{i}/video.mp4: {status}")

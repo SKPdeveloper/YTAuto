@@ -368,7 +368,7 @@ async def generate_scripts(
             raise HTTPException(status_code=404, detail="Channel not found")
 
         # Calculate scenes based on duration (2 scenes for 10 sec video)
-        num_scenes = max(2, min(10, duration_seconds // 5))
+        num_scenes = max(6, min(10, duration_seconds // 5))
 
         # Handle auto-generation mode
         is_auto_mode = (topic == "__AUTO_GENERATE__" or generation_mode == "auto")
@@ -401,7 +401,8 @@ async def generate_scripts(
         # Format script for display
         script_preview = f"# {gen1_output.metadata.title}\n\n"
         script_preview += f"**Hook:** {gen1_output.metadata.hook_line}\n\n"
-        script_preview += f"**Summary:** {gen1_output.youtube_description[:200]}...\n\n"
+        yt_desc = gen1_output.youtube.description if gen1_output.youtube else (gen1_output.youtube_description or "")
+        script_preview += f"**Summary:** {yt_desc[:200]}...\n\n"
         script_preview += "---\n\n"
 
         for scene in gen1_output.scenes:

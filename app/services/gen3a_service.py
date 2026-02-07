@@ -6,7 +6,7 @@ GEN3a Service - Video Analyst v1.6.0
 
 v1.6.0 Features:
 - Preprocessing integration (beats.json, vo_timing.json, audio_levels.json)
-- Scene 6 pre-reversed for seamless loop
+- Last scene (LOOP_CLOSE) pre-reversed for seamless loop
 - Glitch detection (morphing errors, flicker, freeze)
 - Action peak identification with SFX recommendations
 - Speed map recommendations with techniques
@@ -52,7 +52,7 @@ class Gen3aService:
     """
     GEN3a - Video Analyst v1.6.0
 
-    Analyzes 6 preprocessed Kling videos (10 seconds each) and produces:
+    Analyzes preprocessed Kling videos (6-10 scenes, 10 seconds each) and produces:
     - Glitch detection with timestamps
     - Action peaks with SFX recommendations
     - Dead spots with speed recommendations
@@ -66,7 +66,7 @@ class Gen3aService:
     - Narrative purpose speed modifiers
 
     v1.6.0 Preprocessing:
-    - Scene 6 is ALREADY REVERSED before analysis
+    - Last scene (LOOP_CLOSE) is ALREADY REVERSED before analysis
     - beats.json provided (DO NOT analyze music)
     - vo_timing.json provided (DO NOT analyze voiceover audio)
     - audio_levels.json provided (ducking recommendations)
@@ -126,17 +126,17 @@ Return ONLY valid JSON."""
         project_dir: Optional[Path] = None,
     ) -> Gen3aOutput:
         """
-        Analyze all 6 videos using Gemini Vision with preprocessing.
+        Analyze all videos using Gemini Vision with preprocessing.
 
         v1.6.0 Flow:
-        1. Run preprocessing (beats.json, vo_timing.json, audio_levels.json, reverse scene 6)
-        2. Replace scene 6 with reversed version
+        1. Run preprocessing (beats.json, vo_timing.json, audio_levels.json, reverse last scene)
+        2. Replace last scene with reversed version
         3. Upload videos to Gemini
         4. Send analysis request with precomputed data
         5. Parse and return structured output
 
         Args:
-            video_paths: List of 6 video paths (1.mp4 - 6.mp4)
+            video_paths: List of video paths (1.mp4 - N.mp4)
             gen1_brief: GEN1 output (story, voiceover, easter egg)
             gen2_brief: GEN2 output (visual prompts, energy levels)
             music_path: Path to music.mp3 for beat analysis
@@ -170,7 +170,7 @@ Return ONLY valid JSON."""
 
             if project_dir and len(video_paths) >= 1:
                 if len(video_paths) < 6:
-                    logger.warning(f"[GEN3a] Only {len(video_paths)}/6 videos available for preprocessing")
+                    logger.warning(f"[GEN3a] Only {len(video_paths)} videos available for preprocessing (min 6)")
                 if not music_path:
                     logger.warning("[GEN3a] No music path - beats analysis will use fallback")
                 if not voiceover_path:
@@ -183,7 +183,7 @@ Return ONLY valid JSON."""
                     voiceover_path=voiceover_path,
                 )
 
-                # Use preprocessed video paths (1.mp4-6.mp4 in gen3a_work/)
+                # Use preprocessed video paths (1.mp4-N.mp4 in gen3a_work/)
                 if preprocessing_result.video_paths:
                     video_paths = preprocessing_result.video_paths
                     logger.info(f"Using preprocessed videos: {[p.name for p in video_paths]}")
@@ -340,10 +340,10 @@ Return ONLY valid JSON."""
         channel_context: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Build the analysis request prompt for GEN3a v1.6.0."""
-        request = f"""ANALYZE THE 6 PREPROCESSED VIDEOS PROVIDED.
+        request = f"""ANALYZE THE PREPROCESSED VIDEOS PROVIDED.
 
 IMPORTANT v1.6.0 NOTES:
-- Scene 6 (6.mp4) is ALREADY PHYSICALLY REVERSED by Preprocessing Module
+- Last scene (LOOP_CLOSE) is ALREADY PHYSICALLY REVERSED by Preprocessing Module
 - Use precomputed beats.json for music data (DO NOT analyze music yourself)
 - Use precomputed vo_timing.json for voiceover timing (DO NOT analyze voiceover audio yourself)
 - Use precomputed audio_levels.json for ducking recommendations
@@ -398,7 +398,7 @@ IMPORTANT v1.6.0 NOTES:
 
 ## YOUR TASK
 
-Analyze each video (1.mp4 through 6.mp4) and provide:
+Analyze each video (1.mp4 through N.mp4) and provide:
 1. Glitch detection with precise timestamps and salvage analysis
 2. Action peaks with SFX recommendations
 3. Dead spots with speed recommendations (NEVER CUT for boring content)
@@ -412,7 +412,7 @@ Analyze each video (1.mp4 through 6.mp4) and provide:
 CRITICAL:
 - Final duration MUST be 18-25 seconds
 - CUT only for glitches, SPEED for boring content
-- Scene 6 is already reversed - do NOT flag reverse motion as glitch
+- Last scene (LOOP_CLOSE) is already reversed - do NOT flag reverse motion as glitch
 - Use precomputed beats.json, vo_timing.json, audio_levels.json
 
 Return ONLY valid JSON matching the Gen3aOutput schema.
@@ -634,7 +634,7 @@ NO markdown formatting."""
 
         Args:
             video_path: Path to video file
-            scene_number: Scene number (1-6)
+            scene_number: Scene number (1-N)
             gen2_scene: GEN2 scene data
 
         Returns:

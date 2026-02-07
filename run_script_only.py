@@ -26,7 +26,7 @@ from app.services.glaze_parser import save_merged_project_brief
 from app.utils.logger import logger
 
 
-async def run_script_only(topic: str = "FREE_TOPIC", num_scenes: int = 6):
+async def run_script_only(topic: str = "FREE_TOPIC", num_scenes: int = 8):
     """Generate script only (GEN1 + GEN2 + MERGE) without visual generation."""
 
     print("\n" + "=" * 70)

@@ -54,17 +54,21 @@ class AudioStage(BasePipelineStage):
 
         # Check if videos exist by scanning disk (more reliable than self.project.scenes)
         # VideoStage may not update scene.video_path, so we check actual files
+        total_scenes = getattr(self.project, 'total_scenes', 0) or len(getattr(self.project, 'scenes', []))
+        if total_scenes < 6:
+            total_scenes = 10  # scan up to max if unknown
         video_count = 0
-        for scene_num in range(1, 7):  # Scenes 1-6
+        for scene_num in range(1, total_scenes + 1):
             scene_dir = project_dir / f"scene_{scene_num}"
             video_path = scene_dir / "video.mp4"
             if video_path.exists():
                 video_count += 1
 
-        # Need at least 4 videos to proceed (allow some flexibility)
-        has_videos = video_count >= 4
+        # Need at least half the videos to proceed (allow some flexibility)
+        min_videos = max(3, total_scenes // 2)
+        has_videos = video_count >= min_videos
         if not has_videos:
-            logger.debug(f"[{self.project_id}] AudioStage: Only {video_count}/6 videos found, skipping")
+            logger.debug(f"[{self.project_id}] AudioStage: Only {video_count}/{total_scenes} videos found, skipping")
 
         # Check if audio files already exist (check multiple possible locations)
         # IMPORTANT: voiceover requires BOTH mp3 AND alignment for word-by-word subtitles
@@ -117,8 +121,9 @@ class AudioStage(BasePipelineStage):
             with open(brief_path, "r", encoding="utf-8") as f:
                 project_brief = json.load(f)
 
-            # Calculate estimated video duration (6 scenes * 10s = 60s)
-            estimated_duration = 60.0
+            # Calculate estimated video duration based on scene count
+            total = getattr(self.project, 'total_scenes', 0) or len(getattr(self.project, 'scenes', []))
+            estimated_duration = max(total, 6) * 10.0  # ~10s per scene
 
             # PUSH: Start notification
             await self.notifier.push_info(

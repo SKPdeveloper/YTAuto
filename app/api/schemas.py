@@ -201,7 +201,7 @@ class ProjectData(BaseModel):
 
     # Вхідні параметри
     topic: str = Field(..., description="Тема відео")
-    num_scenes: int = Field(..., ge=1, le=20, description="Кількість сцен")
+    num_scenes: int = Field(..., ge=6, le=10, description="Кількість сцен (6-10)")
     style: str = Field(default="educational", description="Стиль відео")
     target_audience: str = Field(default="general", description="Цільова аудиторія")
 

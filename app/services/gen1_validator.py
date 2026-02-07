@@ -198,21 +198,22 @@ class PsychologicalTrigger(str, Enum):
 
 
 class LightingPreset(str, Enum):
-    """Пресети освітлення з GEN1.txt LIGHTING SYSTEM."""
+    """Пресети освітлення з GEN1 v6 LIGHTING SYSTEM."""
     MORNING_GOLDEN = "MORNING_GOLDEN"
     SUNSET_DRAMATIC = "SUNSET_DRAMATIC"
-    AFTERNOON_WARM = "AFTERNOON_WARM"
-    OVERCAST_SOFT = "OVERCAST_SOFT"
-    MIDDAY_BRIGHT = "MIDDAY_BRIGHT"
     BLUE_HOUR = "BLUE_HOUR"
     NIGHT_NEON = "NIGHT_NEON"
+    TWILIGHT_PURPLE = "TWILIGHT_PURPLE"
+    OVERCAST_SOFT = "OVERCAST_SOFT"
+    CANDLELIT_WARM = "CANDLELIT_WARM"
+    MOONLIT_SILVER = "MOONLIT_SILVER"
+    # Legacy presets kept for backwards compat
+    AFTERNOON_WARM = "AFTERNOON_WARM"
+    MIDDAY_BRIGHT = "MIDDAY_BRIGHT"
     HARSH_INDUSTRIAL = "HARSH_INDUSTRIAL"
     FOGGY_DIFFUSED = "FOGGY_DIFFUSED"
     STORMY_DRAMATIC = "STORMY_DRAMATIC"
-    TWILIGHT_PURPLE = "TWILIGHT_PURPLE"
     FLUORESCENT_COLD = "FLUORESCENT_COLD"
-    CANDLELIT_WARM = "CANDLELIT_WARM"
-    MOONLIT_SILVER = "MOONLIT_SILVER"
 
 
 class AtmosphereMode(str, Enum):
@@ -220,6 +221,8 @@ class AtmosphereMode(str, Enum):
     CINEMATIC = "CINEMATIC"
     VIBRANT = "VIBRANT"
     PLAYFUL = "PLAYFUL"
+    GOLDEN_WARM = "GOLDEN_WARM"
+    TROPICAL = "TROPICAL"
 
 
 class SonicHookType(str, Enum):
@@ -247,7 +250,7 @@ class EasterEggVisibility(str, Enum):
 
 
 class NarrativePurpose(str, Enum):
-    """Narrative purpose сцени з GEN1.txt SCENE STRUCTURE."""
+    """Narrative purpose сцени з GEN1 v6 SCENE STRUCTURE."""
     ESTABLISHING = "ESTABLISHING"
     EXTERIOR_ANGLE = "EXTERIOR_ANGLE"
     AERIAL = "AERIAL"
@@ -255,6 +258,13 @@ class NarrativePurpose(str, Enum):
     DETAIL = "DETAIL"
     FEATURE = "FEATURE"
     LOOP_CLOSE = "LOOP_CLOSE"
+    STRUCTURAL_DETAIL = "STRUCTURAL_DETAIL"
+    THEMATIC_INTERIOR = "THEMATIC_INTERIOR"
+    CONTEXTUAL_ENVIRONMENT = "CONTEXTUAL_ENVIRONMENT"
+    DYNAMIC_ACTION = "DYNAMIC_ACTION"
+    FEATURE_HIGHLIGHT = "FEATURE_HIGHLIGHT"
+    AERIAL_WOW = "AERIAL_WOW"
+    AERIAL_REVEAL = "AERIAL_REVEAL"
 
 
 class ReferenceHint(str, Enum):
@@ -326,8 +336,9 @@ ALL_ELEVENLABS_TAGS: Set[str] = (
     ELEVENLABS_EMOTION_TAGS | ELEVENLABS_DELIVERY_TAGS | ELEVENLABS_STYLE_TAGS
 )
 
-# Мінімальні вимоги
+# Scene count range
 MIN_SCENES: int = 6
+MAX_SCENES: int = 10
 MIN_YOUTUBE_DESCRIPTION_LENGTH: int = 100
 MAX_YOUTUBE_TITLE_LENGTH: int = 60
 MIN_VIRAL_SCORE: float = 0.7
@@ -620,11 +631,12 @@ class Gen1Validator:
 
         # version
         version = self._get_nested(metadata, "version")
-        if version and version not in ("3.0", "3.1"):
+        valid_versions = ("3.0", "3.1", "6.0.0", "6.0.1")
+        if version and version not in valid_versions:
             self._add_warning(
                 "metadata.version",
-                f"Expected '3.0' or '3.1', got '{version}'",
-                suggestion="Update to version 3.0 or 3.1"
+                f"Expected one of {valid_versions}, got '{version}'",
+                suggestion="Update to a supported version"
             )
 
         # status
@@ -652,10 +664,10 @@ class Gen1Validator:
 
         # scene_count
         scene_count = self._get_nested(metadata, "scene_count")
-        if scene_count is not None and scene_count != MIN_SCENES:
+        if scene_count is not None and (scene_count < MIN_SCENES or scene_count > MAX_SCENES):
             self._add_error(
                 "metadata.scene_count",
-                f"Must be {MIN_SCENES}, got {scene_count}",
+                f"Must be {MIN_SCENES}-{MAX_SCENES}, got {scene_count}",
                 code="INVALID_SCENE_COUNT"
             )
 
@@ -747,14 +759,20 @@ class Gen1Validator:
                     break
 
         # Перевіряємо наявність emotion tag
+        # GEN1 v6: emotion tag may be in complete_hook_vo instead of first_words
         has_emotion_tag = any(tag in first_words for tag in ELEVENLABS_EMOTION_TAGS)
         if not has_emotion_tag:
-            self._add_error(
-                "hook.first_words",
-                "Must contain an emotion tag",
-                code="MISSING_EMOTION_TAG",
-                suggestion=f"Add one of: {', '.join(sorted(ELEVENLABS_EMOTION_TAGS))}"
-            )
+            # Also check complete_hook_vo (v6 format puts emotion tags there)
+            hook = self._get_field("hook")
+            complete_vo = self._get_nested(hook, "complete_hook_vo", "") if hook else ""
+            has_emotion_in_vo = any(tag in complete_vo for tag in ELEVENLABS_EMOTION_TAGS)
+            if not has_emotion_in_vo:
+                self._add_error(
+                    "hook.first_words",
+                    "Must contain an emotion tag",
+                    code="MISSING_EMOTION_TAG",
+                    suggestion=f"Add one of: {', '.join(sorted(ELEVENLABS_EMOTION_TAGS))}"
+                )
 
     def _validate_architectural_identity(self) -> None:
         """Валідація architectural_identity об'єкту."""
@@ -988,44 +1006,54 @@ class Gen1Validator:
                 code="MISSING_EASTER_EGG"
             )
         else:
-            # object
-            self._require_non_empty(egg, "object", "engagement.easter_egg.object")
+            # GEN1 v6: AUDIO_ONLY easter eggs don't require visual fields
+            egg_format = self._get_nested(egg, "format", "VISUAL")
+            is_audio_only = (egg_format == "AUDIO_ONLY")
 
-            # scene_number (must be 2-5)
-            scene_num = self._get_nested(egg, "scene_number")
-            if scene_num is None:
-                self._add_error(
-                    "engagement.easter_egg.scene_number",
-                    "Required field is missing",
-                    code="MISSING_SCENE_NUMBER"
-                )
-            elif not (2 <= scene_num <= 5):
-                self._add_error(
-                    "engagement.easter_egg.scene_number",
-                    f"Must be 2-5 (not in hook or loop scene), got {scene_num}",
-                    code="INVALID_EGG_SCENE"
-                )
+            if is_audio_only:
+                # AUDIO_ONLY: requires audio_hint and comment_bait
+                self._require_non_empty(egg, "audio_hint", "engagement.easter_egg.audio_hint")
+                self._require_non_empty(egg, "comment_bait", "engagement.easter_egg.comment_bait")
+            else:
+                # VISUAL: requires object, scene_number, placement, visibility, validation_check
+                self._require_non_empty(egg, "object", "engagement.easter_egg.object")
 
-            # placement
-            self._require_non_empty(egg, "placement", "engagement.easter_egg.placement")
+                # scene_number (must be 2 to N-1)
+                scene_num = self._get_nested(egg, "scene_number")
+                total_scenes = len(self._data.get("scenes", [])) or self._data.get("metadata", {}).get("scene_count", 8)
+                if scene_num is None:
+                    self._add_error(
+                        "engagement.easter_egg.scene_number",
+                        "Required field is missing",
+                        code="MISSING_SCENE_NUMBER"
+                    )
+                elif not (2 <= scene_num <= total_scenes - 1):
+                    self._add_error(
+                        "engagement.easter_egg.scene_number",
+                        f"Must be 2-{total_scenes - 1} (not in hook or loop scene), got {scene_num}",
+                        code="INVALID_EGG_SCENE"
+                    )
 
-            # visibility (ENUM)
-            visibility = self._get_nested(egg, "visibility")
-            self._validate_enum_field(visibility, EasterEggVisibility, "engagement.easter_egg.visibility")
+                # placement
+                self._require_non_empty(egg, "placement", "engagement.easter_egg.placement")
 
-            # validation_check
-            self._require_non_empty(egg, "validation_check", "engagement.easter_egg.validation_check")
+                # visibility (ENUM)
+                visibility = self._get_nested(egg, "visibility")
+                self._validate_enum_field(visibility, EasterEggVisibility, "engagement.easter_egg.visibility")
 
-            # comment_bait
-            self._require_non_empty(egg, "comment_bait", "engagement.easter_egg.comment_bait")
+                # validation_check
+                self._require_non_empty(egg, "validation_check", "engagement.easter_egg.validation_check")
 
-        # hashtags (exactly 3)
+                # comment_bait
+                self._require_non_empty(egg, "comment_bait", "engagement.easter_egg.comment_bait")
+
+        # hashtags — optional in v6 (may be embedded in youtube.description instead)
         hashtags = self._get_nested(engagement, "hashtags", [])
-        if not isinstance(hashtags, list) or len(hashtags) != 3:
-            self._add_error(
+        if isinstance(hashtags, list) and len(hashtags) > 0 and len(hashtags) != 3:
+            self._add_warning(
                 "engagement.hashtags",
-                f"Must have exactly 3 items, got {len(hashtags) if isinstance(hashtags, list) else 0}",
-                code="INVALID_HASHTAGS_COUNT"
+                f"Expected 3 items, got {len(hashtags)}",
+                suggestion="Provide exactly 3 hashtags or omit"
             )
 
     def _validate_youtube(self) -> None:
@@ -1072,7 +1100,14 @@ class Gen1Validator:
                 )
 
             # pinned_comment
-            self._require_non_empty(youtube, "pinned_comment", "youtube.pinned_comment")
+            # pinned_comment — optional in v6 (can be null)
+            pinned = self._get_nested(youtube, "pinned_comment")
+            if pinned is not None and not isinstance(pinned, str):
+                self._add_warning(
+                    "youtube.pinned_comment",
+                    "Should be a string or null",
+                    suggestion="Provide a string value or null"
+                )
 
             # tags (at least 3)
             tags = self._get_nested(youtube, "tags", [])
@@ -1083,51 +1118,53 @@ class Gen1Validator:
                     code="INSUFFICIENT_TAGS"
                 )
 
-        # ===== FLAT YOUTUBE FIELDS (backwards compatibility) =====
+        # ===== FLAT YOUTUBE FIELDS (backwards compatibility — now OPTIONAL) =====
+        # GEN1 v6 only requires nested youtube object; flat fields are optional fallbacks
 
-        # youtube_title
         yt_title = self._data.get("youtube_title")
-        if not yt_title:
-            self._add_error(
-                "youtube_title",
-                "Flat field REQUIRED for backwards compatibility",
-                code="MISSING_FLAT_TITLE"
-            )
-
-        # youtube_description
         yt_desc = self._data.get("youtube_description")
-        if not yt_desc:
-            self._add_error(
-                "youtube_description",
-                "Flat field REQUIRED for backwards compatibility",
-                code="MISSING_FLAT_DESC"
-            )
 
-        # youtube_pinned_comment
-        if not self._data.get("youtube_pinned_comment"):
-            self._add_error(
-                "youtube_pinned_comment",
-                "Flat field REQUIRED for backwards compatibility",
-                code="MISSING_FLAT_COMMENT"
-            )
+        # If no nested youtube AND no flat fields, that's an error
+        if not youtube:
+            if not yt_title:
+                self._add_error(
+                    "youtube_title",
+                    "Either youtube.title or youtube_title must exist",
+                    code="MISSING_FLAT_TITLE"
+                )
+            if not yt_desc:
+                self._add_error(
+                    "youtube_description",
+                    "Either youtube.description or youtube_description must exist",
+                    code="MISSING_FLAT_DESC"
+                )
 
-        # youtube_hashtags (exactly 3)
+        # Validate flat fields only if they are present
         yt_hashtags = self._data.get("youtube_hashtags", [])
-        if not isinstance(yt_hashtags, list) or len(yt_hashtags) != 3:
-            self._add_error(
+        if yt_hashtags and isinstance(yt_hashtags, list) and len(yt_hashtags) != 3:
+            self._add_warning(
                 "youtube_hashtags",
-                "Must have exactly 3 items",
-                code="INVALID_FLAT_HASHTAGS"
+                f"Expected 3 items, got {len(yt_hashtags)}",
+                suggestion="Provide exactly 3 hashtags"
             )
 
-        # youtube_tags (at least 3)
         yt_tags = self._data.get("youtube_tags", [])
-        if not isinstance(yt_tags, list) or len(yt_tags) < 3:
-            self._add_error(
+        if yt_tags and isinstance(yt_tags, list) and len(yt_tags) < 3:
+            self._add_warning(
                 "youtube_tags",
-                "Must have at least 3 items",
-                code="INVALID_FLAT_TAGS"
+                f"Expected at least 3 items, got {len(yt_tags)}",
+                suggestion="Provide at least 3 tags"
             )
+
+        # Validate title_variants if present
+        if youtube:
+            title_variants = youtube.get("title_variants")
+            if title_variants is not None and not isinstance(title_variants, list):
+                self._add_warning(
+                    "youtube.title_variants",
+                    "Must be an array of strings",
+                    suggestion="Provide a list of title variants"
+                )
 
         # Перевірка консистентності nested vs flat
         if youtube and yt_title and youtube.get("title") != yt_title:
@@ -1141,49 +1178,70 @@ class Gen1Validator:
         """
         Валідація viral_assessment.
 
-        QUALITY GATE: overall_score >= 0.7 — обов'язкова умова.
+        GEN1 v5: Uses numeric scores (overall_score, hook_strength, etc.)
+        GEN1 v6: Uses verdict strings (hook_verdict, retention_verdict, share_verdict)
+        Both formats are accepted.
         """
         viral = self._get_field("viral_assessment")
         if viral is None:
             return
 
-        # overall_score (QUALITY GATE)
-        overall = self._get_nested(viral, "overall_score")
-        if overall is None:
-            self._add_error(
-                "viral_assessment.overall_score",
-                "Required field is missing",
-                code="MISSING_VIRAL_SCORE"
-            )
-        elif overall < MIN_VIRAL_SCORE:
-            self._add_error(
-                "viral_assessment.overall_score",
-                f"Must be >= {MIN_VIRAL_SCORE}, got {overall}. AUTOMATIC FAIL.",
-                code="LOW_VIRAL_SCORE",
-                suggestion="Regenerate content with stronger hook/concept"
-            )
+        # Detect format: v6 uses verdict strings, v5 uses numeric scores
+        has_verdicts = any(
+            self._get_nested(viral, f) is not None
+            for f in ("hook_verdict", "retention_verdict", "share_verdict")
+        )
+        has_scores = self._get_nested(viral, "overall_score") is not None
 
-        # Інші score поля
-        score_fields = [
-            "hook_strength", "humor_quotient", "shareability",
-            "comment_potential", "visual_uniqueness"
-        ]
-        for field_name in score_fields:
-            score = self._get_nested(viral, field_name)
-            if score is None:
+        if has_verdicts:
+            # GEN1 v6 format: validate verdict strings
+            verdict_fields = ["hook_verdict", "retention_verdict", "share_verdict"]
+            for field_name in verdict_fields:
+                verdict = self._get_nested(viral, field_name)
+                if verdict is not None and not isinstance(verdict, str):
+                    self._add_warning(
+                        f"viral_assessment.{field_name}",
+                        "Should be a string",
+                        suggestion="Provide a verdict string"
+                    )
+        elif has_scores:
+            # GEN1 v5 format: validate numeric scores
+            overall = self._get_nested(viral, "overall_score")
+            if overall < MIN_VIRAL_SCORE:
                 self._add_error(
-                    f"viral_assessment.{field_name}",
-                    "Required score is missing",
-                    code="MISSING_SCORE"
-                )
-            elif not (0.0 <= score <= 1.0):
-                self._add_error(
-                    f"viral_assessment.{field_name}",
-                    f"Must be 0.0-1.0, got {score}",
-                    code="INVALID_SCORE_RANGE"
+                    "viral_assessment.overall_score",
+                    f"Must be >= {MIN_VIRAL_SCORE}, got {overall}. AUTOMATIC FAIL.",
+                    code="LOW_VIRAL_SCORE",
+                    suggestion="Regenerate content with stronger hook/concept"
                 )
 
-        # strength_points (at least 1)
+            score_fields = [
+                "hook_strength", "humor_quotient", "shareability",
+                "comment_potential", "visual_uniqueness"
+            ]
+            for field_name in score_fields:
+                score = self._get_nested(viral, field_name)
+                if score is None:
+                    self._add_error(
+                        f"viral_assessment.{field_name}",
+                        "Required score is missing",
+                        code="MISSING_SCORE"
+                    )
+                elif not (0.0 <= score <= 1.0):
+                    self._add_error(
+                        f"viral_assessment.{field_name}",
+                        f"Must be 0.0-1.0, got {score}",
+                        code="INVALID_SCORE_RANGE"
+                    )
+        else:
+            # Neither format present
+            self._add_error(
+                "viral_assessment",
+                "Must contain either verdict strings (v6) or numeric scores (v5)",
+                code="MISSING_VIRAL_DATA"
+            )
+
+        # strength_points (at least 1) — common to both formats
         strengths = self._get_nested(viral, "strength_points", [])
         if not isinstance(strengths, list) or len(strengths) < 1:
             self._add_error(
@@ -1197,7 +1255,7 @@ class Gen1Validator:
         Валідація scenes масиву.
 
         Найбільша і найважливіша перевірка.
-        Перевіряє 6 сцен + спеціальні правила для Scene 1 і Scene 6.
+        Перевіряє 6-10 сцен + спеціальні правила для Scene 1 і last scene.
         """
         scenes = self._data.get("scenes")
 
@@ -1209,13 +1267,15 @@ class Gen1Validator:
             )
             return
 
-        if len(scenes) != MIN_SCENES:
+        if len(scenes) < MIN_SCENES or len(scenes) > MAX_SCENES:
             self._add_error(
                 "scenes",
-                f"Must have exactly {MIN_SCENES} items, got {len(scenes)}",
+                f"Must have {MIN_SCENES}-{MAX_SCENES} items, got {len(scenes)}",
                 code="INVALID_SCENE_COUNT"
             )
             return
+
+        total_scenes = len(scenes)
 
         # Зберігаємо Scene 1 movement для перевірки loop
         scene1_movement: str = ""
@@ -1351,24 +1411,33 @@ class Gen1Validator:
                         code="INVALID_SCENE1_PURPOSE"
                     )
 
-            # ===== SCENE 6 SPECIFIC RULES =====
-            if scene_num == 6:
+            # ===== LAST SCENE SPECIFIC RULES (LOOP_CLOSE) =====
+            if scene_num == total_scenes:
                 if purpose != "LOOP_CLOSE":
                     self._add_error(
                         f"{prefix}.narrative_purpose",
-                        f"Scene 6 must be 'LOOP_CLOSE', got '{purpose}'",
-                        code="INVALID_SCENE6_PURPOSE"
+                        f"Last scene (Scene {total_scenes}) must be 'LOOP_CLOSE', got '{purpose}'",
+                        code="INVALID_LAST_SCENE_PURPOSE"
                     )
 
                 # Перевірка complementary movement
                 if camera and scene1_movement:
-                    scene6_movement = self._get_nested(camera, "movement", "")
-                    if scene6_movement and scene1_movement.upper() == scene6_movement.upper():
+                    last_scene_movement = self._get_nested(camera, "movement", "")
+                    if last_scene_movement and scene1_movement.upper() == last_scene_movement.upper():
                         self._add_warning(
                             f"{prefix}.camera_intent.movement",
-                            f"Same as Scene 1 ('{scene6_movement}')",
+                            f"Same as Scene 1 ('{last_scene_movement}')",
                             suggestion="Use COMPLEMENTARY movement (e.g., RISE, ORBIT) for better loop"
                         )
+
+            # ===== PENULTIMATE SCENE RULES (AERIAL) =====
+            if scene_num == total_scenes - 1:
+                if purpose not in ("AERIAL", "AERIAL_WOW", "AERIAL_REVEAL"):
+                    self._add_warning(
+                        f"{prefix}.narrative_purpose",
+                        f"Scene {total_scenes - 1} is typically AERIAL, got '{purpose}'",
+                        suggestion="Consider using AERIAL/AERIAL_WOW/AERIAL_REVEAL for penultimate scene"
+                    )
 
         # Energy pattern check
         if low_energy_count > 1:
@@ -1502,19 +1571,22 @@ class Gen1Validator:
 
         # Отримуємо movements для loop strategy
         scene1_movement = ""
-        scene6_movement = ""
+        last_scene_movement = ""
+        last_scene_num = len(scenes)
         for scene in scenes:
-            if scene.get("scene_number") == 1:
+            sn = scene.get("scene_number", 0)
+            if sn == 1:
                 scene1_movement = scene.get("camera_intent", {}).get("movement", "")
-            if scene.get("scene_number") == 6:
-                scene6_movement = scene.get("camera_intent", {}).get("movement", "")
+            if sn == last_scene_num:
+                last_scene_movement = scene.get("camera_intent", {}).get("movement", "")
 
         return {
             "atmosphere_mode": self._data.get("atmosphere_mode", "CINEMATIC"),
             "lighting_preset": lighting.get("preset", ""),
             "category": concept.get("category", ""),
             "food_material": concept.get("food_material", ""),
-            "loop_strategy": f"COMPLEMENTARY (Scene 1: {scene1_movement}, Scene 6: {scene6_movement})"
+            "scene_count": last_scene_num,
+            "loop_strategy": f"COMPLEMENTARY (Scene 1: {scene1_movement}, Scene {last_scene_num}: {last_scene_movement})"
         }
 
 

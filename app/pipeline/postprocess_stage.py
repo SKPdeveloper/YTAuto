@@ -66,7 +66,6 @@ class PostProcessStage(BasePipelineStage):
         has_videos = all(
             scene.video_path and Path(scene.video_path).exists()
             for scene in self.project.scenes
-            if scene.scene_number <= 6
         )
 
         # Check if final video already exists

@@ -5,7 +5,7 @@ Prepares data for GEN3a Video Analyst:
 1. beats.json - Music beat analysis using librosa
 2. vo_timing.json - Voiceover timing (SPEECH/PAUSE segments)
 3. audio_levels.json - Audio levels and ducking recommendations
-4. Scene 6 reversal - Physically reverse scene 6 for seamless loop
+4. Last scene (LOOP_CLOSE) reversal - Physically reverse for seamless loop
 
 This preprocessing runs BEFORE GEN3a receives the videos.
 GEN3a uses this precomputed data instead of analyzing audio itself.
@@ -42,7 +42,7 @@ class VOSegment:
 class PreprocessingResult:
     """Result of preprocessing."""
     work_dir: Path  # gen3a_work/ directory
-    video_paths: List[Path]  # [1.mp4, 2.mp4, ..., 6.mp4] in work_dir
+    video_paths: List[Path]  # [1.mp4, 2.mp4, ..., N.mp4] in work_dir
     beats_json_path: Path
     vo_timing_json_path: Path
     audio_levels_json_path: Path
@@ -58,7 +58,7 @@ class Gen3aPreprocessor:
     - beats.json from music.mp3 using librosa
     - vo_timing.json from voiceover.mp3
     - audio_levels.json with ducking recommendations
-    - Reversed scene 6 video
+    - Reversed last scene (LOOP_CLOSE) video
     """
 
     def __init__(self):
@@ -76,14 +76,14 @@ class Gen3aPreprocessor:
         Run full preprocessing pipeline.
 
         Creates gen3a_work/ directory with:
-        - 1.mp4 through 6.mp4 (copies of scene videos, scene 6 reversed)
+        - 1.mp4 through N.mp4 (copies of scene videos, last scene reversed)
         - beats.json (music beat analysis)
         - vo_timing.json (voiceover timing)
         - audio_levels.json (audio levels for ducking)
 
         Args:
             project_dir: Project directory
-            video_paths: List of 6 video paths [scene_1/video.mp4, ..., scene_6/video.mp4]
+            video_paths: List of N video paths [scene_1/video.mp4, ..., scene_N/video.mp4]
             music_path: Path to background music
             voiceover_path: Path to voiceover.mp3
 
@@ -109,7 +109,7 @@ class Gen3aPreprocessor:
         audio_levels_path = work_dir / "audio_levels.json"
 
         # ====================================================================
-        # STEP 1: Prepare video files (copy 1-5, reverse 6)
+        # STEP 1: Prepare video files (copy 1 to N-1, reverse last scene)
         # ====================================================================
         logger.info(f"Step 1/4: Preparing {len(video_paths)} videos...")
         prepared_video_paths = []
@@ -124,12 +124,12 @@ class Gen3aPreprocessor:
                     logger.error(f"  Video {scene_num} not found: {src_path}")
                     continue
 
-                if scene_num == 6:
-                    # Reverse scene 6 for seamless loop
-                    logger.info(f"  Reversing scene 6 -> {dst_path.name}")
+                if scene_num == len(video_paths):
+                    # Reverse last scene (LOOP_CLOSE) for seamless loop
+                    logger.info(f"  Reversing scene {scene_num} (LOOP_CLOSE) -> {dst_path.name}")
                     await self._reverse_video(src_path, dst_path)
                 else:
-                    # Copy scenes 1-5
+                    # Copy other scenes
                     logger.info(f"  Copying scene {scene_num} -> {dst_path.name}")
                     shutil.copy2(src_path, dst_path)
 
@@ -558,7 +558,7 @@ class Gen3aPreprocessor:
         """
         Reverse video using FFmpeg (async, non-blocking).
 
-        Scene 6 is reversed for seamless loop back to Scene 1.
+        Last scene (LOOP_CLOSE) is reversed for seamless loop back to Scene 1.
         """
         import asyncio
 

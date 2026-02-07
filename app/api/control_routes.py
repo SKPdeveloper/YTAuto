@@ -45,7 +45,7 @@ class ControlState:
         self.scene_images: list = []
         self.approved_scenes: set = set()  # Manually approved scene numbers
 
-        # All 6 scenes with image/video pairs
+        # All scenes with image/video pairs
         self.all_scenes: list = []
         self.image_retry_count: int = 0
         self.video_retry_count: int = 0
@@ -983,13 +983,13 @@ async def on_approval_required(approval_type: str, data: dict):
     Called when approval is required.
 
     Args:
-        approval_type: 'primary' for Scene 1, 'scenes' for scenes 2-6, 'video_approval' for pre-upscale
+        approval_type: 'primary' for Scene 1, 'scenes' for remaining scenes, 'video_approval' for pre-upscale
         data: images or scenes or video data
     """
     # SIMPLIFIED UI: Only primary selection requires user interaction
-    # Scenes 2-6 are auto-confirmed
+    # Remaining scenes (2-N) are auto-confirmed
     if approval_type == 'scenes':
-        logger.info("Auto-confirming scenes 2-6 (simplified UI mode)")
+        logger.info("Auto-confirming remaining scenes (simplified UI mode)")
         # Update scene_images for display purposes
         state.scene_images = data.get('scenes', [])
         await broadcast_event("scene_updated", {"scenes": state.scene_images})

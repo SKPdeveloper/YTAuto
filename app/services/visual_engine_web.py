@@ -854,7 +854,7 @@ class HiggsFieldWebAdapter:
 
             if len(generated_images) < len(scenes):
                 logger.error(f"[VISUAL_ENGINE] MISSING IMAGES! Expected {len(scenes)}, got {len(generated_images)}")
-                logger.error(f"[VISUAL_ENGINE] Scene 6 may be missing! This will cause incomplete final video.")
+                logger.error(f"[VISUAL_ENGINE] {len(scenes) - len(generated_images)} scene(s) may be missing! This will cause incomplete final video.")
 
             # NOTE: Order is already correct after reverse in higgsfield_image.py
             # Scenes are queued: 2,3,4,5,6 -> History shows: 6,5,4,3,2 -> Reversed: 2,3,4,5,6

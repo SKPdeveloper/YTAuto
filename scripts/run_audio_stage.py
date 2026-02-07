@@ -43,7 +43,7 @@ async def run_audio_stage(project_id: str):
     # Build ProjectData from brief
     scenes = []
     brief_scenes = brief.get("scenes", [])
-    for i in range(1, 7):
+    for i in range(1, len(brief_scenes) + 1):
         scene_dir = project_dir / f"scene_{i}"
         video_path = scene_dir / "video.mp4"
 
@@ -62,7 +62,7 @@ async def run_audio_stage(project_id: str):
     project = ProjectData(
         project_id=project_id,
         topic=brief.get("property", {}).get("name", "Unknown"),
-        num_scenes=6,
+        num_scenes=len(brief_scenes),
         project_dir=str(project_dir),
         scenes=scenes,
     )

@@ -60,7 +60,6 @@ class Gen3aStage(BasePipelineStage):
         has_videos = all(
             scene.video_path and Path(scene.video_path).exists()
             for scene in self.project.scenes
-            if scene.scene_number <= 6
         )
 
         gen3a_path = Path(self.project.project_dir) / "gen3a_analysis.json"

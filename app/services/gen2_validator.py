@@ -106,9 +106,21 @@ ALLOWED_DRIFTING_CONTEXTS: Set[str] = {
     "particles drifting",
     "leaves drifting",
     "petals drifting",
+    "plankton drifting",
+    "dust drifting",
+    "snow drifting",
+    "fog drifting",
     "clouds floating",
     "particles floating",
-    "debris floating"
+    "debris floating",
+    "dust floating",
+    "motes floating",
+    "plankton floating",
+    "bubbles floating",
+    "jellyfish floating",
+    "pollen floating",
+    "embers floating",
+    "snowflakes floating",
 }
 
 # Allowed camera movements (gerunds) (VAL_GEN2 рядки 324-326)
@@ -117,8 +129,8 @@ ALLOWED_CAMERA_MOVEMENTS: Set[str] = {
     "tracking", "emerging", "crane", "craning", "ascending"
 }
 
-# Meta-instructions заборонені в Scene 6 (VAL_GEN2 рядки 342-347)
-BANNED_SCENE6_META: Set[str] = {
+# Meta-instructions заборонені в last scene / LOOP_CLOSE (VAL_GEN2 рядки 342-347)
+BANNED_LAST_SCENE_META: Set[str] = {
     "matching scene 1",
     "matching opening shot",
     "(reverse in post)",
@@ -137,7 +149,9 @@ SAFE_EGG_ZONES: Set[str] = {
 }
 
 # Exterior scenes що потребують scale_techniques
-EXTERIOR_SCENES: Set[int] = {1, 5, 6}
+# Dynamically computed in validator based on narrative_purpose
+# Scene 1 + scenes with AERIAL/ESTABLISHING/LOOP_CLOSE purpose
+EXTERIOR_SCENES_BASE: Set[int] = {1}  # Scene 1 always exterior
 
 
 # ============================================================================
@@ -319,7 +333,7 @@ class Gen2Validator:
 
         # Для loop verification
         self._scene1_movement: str = ""
-        self._scene6_movement: str = ""
+        self._last_scene_movement: str = ""
 
     def validate(
         self,
@@ -345,7 +359,10 @@ class Gen2Validator:
         self._data = data
         self._gen1_data = gen1_data
         self._scene1_movement = ""
-        self._scene6_movement = ""
+        self._last_scene_movement = ""
+        # Pre-compute _total_scenes so it's always available (even if _validate_scenes returns early)
+        scenes = data.get("scenes", [])
+        self._total_scenes = len(scenes) if isinstance(scenes, list) else 0
 
         # Run validations
         self._run_all_validations()
@@ -461,11 +478,12 @@ class Gen2Validator:
             )
             return
 
-        # total_scenes
-        if vs.get("total_scenes") != 6:
+        # total_scenes (6-10)
+        total = vs.get("total_scenes")
+        if total is not None and (total < 6 or total > 10):
             self._add_error(
                 "visual_summary.total_scenes",
-                f"Must be 6, got {vs.get('total_scenes')}",
+                f"Must be 6-10, got {total}",
                 code="INVALID_TOTAL_SCENES"
             )
 
@@ -523,9 +541,9 @@ class Gen2Validator:
         if lv.get("movements_are_different") is not True:
             self._add_error(
                 "visual_summary.loop_verification.movements_are_different",
-                "Must be true — Scene 6 movement must differ from Scene 1",
+                "Must be true — last scene movement must differ from Scene 1",
                 code="SAME_LOOP_MOVEMENT",
-                suggestion="Use COMPLEMENTARY movement for Scene 6"
+                suggestion="Use COMPLEMENTARY movement for last scene (LOOP_CLOSE)"
             )
 
         # loop_ready
@@ -540,13 +558,13 @@ class Gen2Validator:
         if lv.get("foreground_match") is not True:
             self._add_warning(
                 "visual_summary.loop_verification.foreground_match",
-                "Should be true — Scene 1 and 6 foreground should match"
+                f"Should be true — Scene 1 and {getattr(self, '_total_scenes', len(self._data.get('scenes', [])))} foreground should match"
             )
 
         if lv.get("lighting_match") is not True:
             self._add_warning(
                 "visual_summary.loop_verification.lighting_match",
-                "Should be true — Scene 1 and 6 lighting should match"
+                f"Should be true — Scene 1 and {getattr(self, '_total_scenes', len(self._data.get('scenes', [])))} lighting should match"
             )
 
         if lv.get("same_reference_image") is not True:
@@ -571,13 +589,23 @@ class Gen2Validator:
             )
             return
 
-        if len(scenes) != 6:
+        if len(scenes) < 6 or len(scenes) > 10:
             self._add_error(
                 "scenes",
-                f"Must have exactly 6 items, got {len(scenes)}",
+                f"Must have 6-10 items, got {len(scenes)}",
                 code="INVALID_SCENE_COUNT"
             )
             return
+
+        self._total_scenes = len(scenes)
+
+        # Compute exterior scenes dynamically
+        self._exterior_scenes = set(EXTERIOR_SCENES_BASE)
+        for i, s in enumerate(scenes):
+            sn = s.get("scene_number", i + 1)
+            ref = s.get("reference_type", "")
+            if ref in ("PRIMARY", "LOOP_CLOSE") or sn == len(scenes):
+                self._exterior_scenes.add(sn)
 
         # Get easter egg scene from GEN1 or from scenes
         easter_egg_scene = self._get_easter_egg_scene()
@@ -659,8 +687,8 @@ class Gen2Validator:
             # Store movements for loop check
             if scene_num == 1:
                 self._scene1_movement = video_prompt
-            elif scene_num == 6:
-                self._scene6_movement = video_prompt
+            elif scene_num == self._total_scenes:
+                self._last_scene_movement = video_prompt
 
         # motion_elements
         motion = scene.get("motion_elements", [])
@@ -672,8 +700,9 @@ class Gen2Validator:
             )
             check.motion_elements = "FAIL"
 
-        # scale_techniques (required for exterior scenes 1, 5, 6)
-        if scene_num in EXTERIOR_SCENES:
+        # scale_techniques (required for exterior scenes)
+        exterior_scenes = getattr(self, '_exterior_scenes', EXTERIOR_SCENES_BASE)
+        if scene_num in exterior_scenes:
             check.scale_techniques = "PASS"
             scale = scene.get("scale_techniques")
             if not scale:
@@ -724,9 +753,10 @@ class Gen2Validator:
         if scene_num == 1:
             self._validate_scene1_specific(scene, prefix, check)
 
-        # Scene 6 specific
-        if scene_num == 6:
-            self._validate_scene6_specific(scene, prefix, check)
+        # Last scene specific (LOOP_CLOSE)
+        total = self._total_scenes
+        if scene_num == total:
+            self._validate_last_scene_specific(scene, prefix, check, total)
 
         # Easter egg integration
         if easter_egg_scene and scene_num == easter_egg_scene:
@@ -789,30 +819,33 @@ class Gen2Validator:
                 suggestion=f"Add: {', '.join(SCALE_KEYWORDS)}"
             )
 
-    def _validate_scene6_specific(
+    def _validate_last_scene_specific(
         self,
         scene: Dict[str, Any],
         prefix: str,
-        check: SceneCheckResult
+        check: SceneCheckResult,
+        total_scenes: int = None
     ) -> None:
-        """Валідація специфічних правил для Scene 6."""
+        """Валідація специфічних правил для last scene (LOOP_CLOSE)."""
+        if total_scenes is None:
+            total_scenes = getattr(self, '_total_scenes', len(self._data.get("scenes", [])))
         check.loop_complementary = "PASS"
 
         # reference_type must be LOOP_CLOSE
         if scene.get("reference_type") != ReferenceType.LOOP_CLOSE.value:
             self._add_error(
                 f"{prefix}.reference_type",
-                f"Scene 6 must be 'LOOP_CLOSE', got '{scene.get('reference_type')}'",
-                code="INVALID_SCENE6_REF_TYPE"
+                f"Last scene (Scene {total_scenes}) must be 'LOOP_CLOSE', got '{scene.get('reference_type')}'",
+                code="INVALID_LAST_SCENE_REF_TYPE"
             )
 
         # video_prompt must not have meta-instructions
         video_prompt = scene.get("video_prompt", "").lower()
-        for meta in BANNED_SCENE6_META:
+        for meta in BANNED_LAST_SCENE_META:
             if meta in video_prompt:
                 self._add_error(
                     f"{prefix}.video_prompt",
-                    f"Scene 6 contains banned meta-instruction: '{meta}'",
+                    f"Last scene contains banned meta-instruction: '{meta}'",
                     code="BANNED_META_INSTRUCTION",
                     suggestion="Remove meta-instructions — Kling doesn't understand them"
                 )
@@ -1044,24 +1077,26 @@ class Gen2Validator:
     # ========================================================================
 
     def _validate_loop(self) -> None:
-        """Валідація loop (Scene 1 vs Scene 6 movements)."""
-        if not self._scene1_movement or not self._scene6_movement:
+        """Валідація loop (Scene 1 vs last scene movements)."""
+        if not self._scene1_movement or not self._last_scene_movement:
             return  # Already reported as missing
+
+        total_scenes = self._total_scenes
 
         # Extract key movement words
         scene1_movements = self._extract_movement_words(self._scene1_movement)
-        scene6_movements = self._extract_movement_words(self._scene6_movement)
+        last_scene_movements = self._extract_movement_words(self._last_scene_movement)
 
         # Check if movements are too similar
-        if scene1_movements and scene6_movements:
-            common = scene1_movements & scene6_movements
+        if scene1_movements and last_scene_movements:
+            common = scene1_movements & last_scene_movements
             # If more than half are common, movements are too similar
-            total = len(scene1_movements | scene6_movements)
+            total = len(scene1_movements | last_scene_movements)
             if len(common) > total / 2:
                 self._add_warning(
-                    "scenes[5].video_prompt",
-                    f"Scene 6 movement similar to Scene 1. Common: {', '.join(common)}",
-                    suggestion="Use COMPLEMENTARY movement (e.g., if Scene 1 is PUSH, Scene 6 should be RISE)"
+                    f"scenes[{total_scenes - 1}].video_prompt",
+                    f"Last scene movement similar to Scene 1. Common: {', '.join(common)}",
+                    suggestion="Use COMPLEMENTARY movement (e.g., if Scene 1 is PUSH, last scene should be RISE)"
                 )
 
     def _extract_movement_words(self, prompt: str) -> Set[str]:
@@ -1155,21 +1190,21 @@ class Gen2Validator:
 
         return {
             "movements_different": "PASS" if lv.get("movements_are_different") else "FAIL",
-            "no_meta_instructions": self._check_scene6_meta(),
+            "no_meta_instructions": self._check_last_scene_meta(),
             "foreground_match": "PASS" if lv.get("foreground_match") else "WARNING",
             "lighting_match": "PASS" if lv.get("lighting_match") else "WARNING"
         }
 
-    def _check_scene6_meta(self) -> str:
-        """Перевірити Scene 6 на meta-instructions."""
+    def _check_last_scene_meta(self) -> str:
+        """Перевірити last scene на meta-instructions."""
         scenes = self._data.get("scenes", [])
-        if len(scenes) < 6:
+        if not scenes:
             return "N/A"
 
-        scene6 = scenes[5]
-        video_prompt = scene6.get("video_prompt", "").lower()
+        last_scene = scenes[-1]
+        video_prompt = last_scene.get("video_prompt", "").lower()
 
-        for meta in BANNED_SCENE6_META:
+        for meta in BANNED_LAST_SCENE_META:
             if meta in video_prompt:
                 return "FAIL"
 
