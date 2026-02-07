@@ -341,10 +341,27 @@ class AudioEngine:
                 )
 
                 audio_bytes = base64.b64decode(response.audio_base_64)
+
+                if not response.alignment or not response.alignment.characters:
+                    raise ValueError(
+                        "ElevenLabs returned empty alignment data. "
+                        "Cannot generate word-by-word subtitles without character timestamps."
+                    )
+
+                chars = response.alignment.characters
+                starts = response.alignment.character_start_times_seconds
+                ends = response.alignment.character_end_times_seconds
+
+                if len(chars) != len(starts) or len(chars) != len(ends):
+                    raise ValueError(
+                        f"ElevenLabs alignment array length mismatch: "
+                        f"chars={len(chars)}, starts={len(starts)}, ends={len(ends)}"
+                    )
+
                 alignment_data = {
-                    'characters': response.alignment.characters,
-                    'character_start_times_seconds': response.alignment.character_start_times_seconds,
-                    'character_end_times_seconds': response.alignment.character_end_times_seconds,
+                    'characters': chars,
+                    'character_start_times_seconds': starts,
+                    'character_end_times_seconds': ends,
                 }
 
                 logger.success(f"Voiceover with timestamps: {len(audio_bytes)} bytes, {len(alignment_data['characters'])} chars aligned")
@@ -483,15 +500,16 @@ class AudioEngine:
             json.dump(alignment, f, indent=2, ensure_ascii=False)
         logger.success(f"Alignment saved: {alignment_path}")
 
-        # Generate subtitles from alignment (Netflix-style, word-by-word)
-        subtitles_path = project_dir / "subtitles.ass"
-        self._generate_subtitles_from_alignment(alignment, output_path=subtitles_path, project_dir=project_dir, hook_offset=hook_offset)
-        logger.success(f"Subtitles saved: {subtitles_path}")
-
-        # Generate voiceover_timing.json for GEN3b (scene-level segments)
+        # Generate voiceover_timing.json FIRST (needed by subtitles for Easter Egg positioning)
         timing_path = project_dir / "voiceover_timing.json"
         self._generate_voiceover_timing(alignment, project_dir, timing_path, hook_offset)
         logger.success(f"Timing saved: {timing_path}")
+
+        # Generate subtitles from alignment (Netflix-style, word-by-word)
+        # Must come AFTER timing so voiceover_timing.json exists for Easter Egg scene detection
+        subtitles_path = project_dir / "subtitles.ass"
+        self._generate_subtitles_from_alignment(alignment, output_path=subtitles_path, project_dir=project_dir, hook_offset=hook_offset)
+        logger.success(f"Subtitles saved: {subtitles_path}")
 
         return voiceover_path, alignment_path, subtitles_path, timing_path
 
@@ -712,8 +730,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         """
         Generate voiceover_timing.json for GEN3b from ElevenLabs alignment data.
 
-        This file maps sentences to scene numbers based on project_brief.json.
-        GEN3b uses this for accurate subtitle timing in the manifest.
+        Maps voiceover audio to scene numbers using TEXT MATCHING against
+        project_brief.json scene voiceover_segments.
+
+        Key: Sentences are matched to scenes by text containment, NOT sequential index.
+        This handles scenes with multiple sentences correctly (they merge into one entry).
 
         Format:
         {
@@ -730,7 +751,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         starts = alignment['character_start_times_seconds']
         ends = alignment['character_end_times_seconds']
 
-        # Parse sentences from alignment (same logic as subtitles)
+        # Parse sentences from alignment
         sentences = []
         current_text = ''
         sent_start = 0.0
@@ -744,13 +765,25 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 sent_end = ends[i]
                 # Clean text - remove style tags like [whispers], [pause], [excited]
                 clean_text = re.sub(r'\[[^\]]+\]', '', current_text).strip()
+                clean_text = re.sub(r'<[^>]+>', '', clean_text).strip()
                 if len(clean_text) > 2:
                     sentences.append({
                         'text': clean_text,
-                        'start': sent_start,  # No hook offset here - GEN3b adds it
+                        'start': sent_start,  # No hook offset - GEN3b/renderer adds it
                         'end': sent_end,
                     })
                 current_text = ''
+
+        # Capture remaining text without trailing punctuation (e.g. "Imagine living here")
+        if current_text.strip():
+            clean_text = re.sub(r'\[[^\]]+\]', '', current_text).strip()
+            clean_text = re.sub(r'<[^>]+>', '', clean_text).strip()
+            if len(clean_text) > 2:
+                sentences.append({
+                    'text': clean_text,
+                    'start': sent_start,
+                    'end': ends[-1] if ends else 0.0,
+                })
 
         # Load project_brief to get scene voiceover segments
         project_brief_path = project_dir / "project_brief.json"
@@ -760,46 +793,70 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             with open(project_brief_path, 'r', encoding='utf-8') as f:
                 project_brief = json.load(f)
 
-            for scene in project_brief.get('scenes', []):
+            for scene in sorted(
+                project_brief.get('scenes', []),
+                key=lambda s: s.get('scene_number', 0)
+            ):
                 scene_num = scene.get('scene_number', 0)
                 vo_segment = scene.get('voiceover_segment', '') or scene.get('voiceover', '')
                 if vo_segment:
                     # Clean the segment for matching
                     clean_vo = re.sub(r'\[[^\]]+\]', '', vo_segment).strip()
-                    clean_vo = re.sub(r'<[^>]+>', '', clean_vo).strip()  # Remove XML tags too
-                    scene_vo_segments.append({
-                        'scene_number': scene_num,
-                        'text': clean_vo,
-                    })
+                    clean_vo = re.sub(r'<[^>]+>', '', clean_vo).strip()
+                    clean_vo = ' '.join(clean_vo.split())  # normalize whitespace
+                    if clean_vo and len(clean_vo) >= 3:
+                        scene_vo_segments.append({
+                            'scene_number': scene_num,
+                            'text_lower': clean_vo.lower(),
+                        })
 
-        # Match sentences to scenes SEQUENTIALLY
-        # The voiceover script is generated in scene order, so sentences map 1:1 to scenes
-        segments = []
+        # Match sentences to scenes by TEXT CONTAINMENT (not sequential index!)
+        # This correctly handles scenes with multiple sentences
+        segments_by_scene = {}  # scene_number -> {start_time, end_time, text}
+        last_matched_idx = 0
 
-        for sent_idx, sent in enumerate(sentences):
-            # Sequential matching: sentence N maps to scene N (if available)
-            if sent_idx < len(scene_vo_segments):
-                scene_number = scene_vo_segments[sent_idx]['scene_number']
+        for sent in sentences:
+            clean_sent = ' '.join(sent['text'].split()).lower()
+
+            # Find which scene's voiceover contains this sentence
+            matched_idx = last_matched_idx
+            match_key = clean_sent[:30] if len(clean_sent) > 30 else clean_sent
+
+            # Search forward from last match (scenes are in order)
+            for idx in range(last_matched_idx, len(scene_vo_segments)):
+                if match_key in scene_vo_segments[idx]['text_lower']:
+                    matched_idx = idx
+                    break
+
+            if matched_idx < len(scene_vo_segments):
+                scene_number = scene_vo_segments[matched_idx]['scene_number']
+                last_matched_idx = matched_idx  # never go backwards
             elif scene_vo_segments:
-                # More sentences than scenes - assign to last scene
                 scene_number = scene_vo_segments[-1]['scene_number']
             else:
-                # No scene info - default to scene 1
                 scene_number = 1
 
-            segments.append({
-                'scene_number': scene_number,
-                'start_time': sent['start'],
-                'end_time': sent['end'],
-                'text': sent['text'],
-            })
+            # Merge sentences from the same scene into one timing entry
+            if scene_number in segments_by_scene:
+                existing = segments_by_scene[scene_number]
+                existing['end_time'] = max(existing['end_time'], sent['end'])
+                existing['text'] += ' ' + sent['text']
+            else:
+                segments_by_scene[scene_number] = {
+                    'scene_number': scene_number,
+                    'start_time': sent['start'],
+                    'end_time': sent['end'],
+                    'text': sent['text'],
+                }
 
-        # Save timing file
-        timing_data = {'segments': segments}
+        # Sort by start time and save
+        final_segments = sorted(segments_by_scene.values(), key=lambda s: s['start_time'])
+
+        timing_data = {'segments': final_segments}
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(timing_data, f, indent=2, ensure_ascii=False)
 
-        logger.info(f"  Generated voiceover_timing.json with {len(segments)} segments for GEN3b")
+        logger.info(f"  Generated voiceover_timing.json with {len(final_segments)} scene segments (text-matched)")
 
     async def list_voices(self) -> List[Dict[str, Any]]:
         """
@@ -813,14 +870,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             >>> for v in voices:
             ...     print(f"{v['name']}: {v['voice_id']}")
         """
-        from elevenlabs import ElevenLabs
+        from elevenlabs import AsyncElevenLabs
 
         logger.info("Fetching available voices...")
 
         try:
-            # Use sync client for listing voices (simpler)
-            client = ElevenLabs(api_key=self.api_key)
-            response = client.voices.get_all()
+            client = AsyncElevenLabs(api_key=self.api_key)
+            response = await client.voices.get_all()
 
             voices = []
             for voice in response.voices:

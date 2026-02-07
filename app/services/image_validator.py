@@ -322,9 +322,9 @@ class ImageValidator:
         # Add the validation request text
         content_parts.append(validation_request)
 
-        # Call Gemini with new SDK
+        # Call Gemini with new SDK (async)
         logger.debug(f"Calling Gemini Vision API with {len(content_parts)-1} images...")
-        response = self.client.models.generate_content(
+        response = await self.client.aio.models.generate_content(
             model=self.model_name,
             contents=content_parts,
             config=self.validation_config

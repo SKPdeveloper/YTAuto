@@ -61,16 +61,20 @@ class PublishStage(BasePipelineStage):
         brief_path = project_dir / "project_brief.json"
         if not brief_path.exists():
             return StageResult(
+                success=False,
+                stage_name=self.name,
                 status=StageStatus.FAILED,
-                error="project_brief.json не знайдено"
+                message="project_brief.json не знайдено"
             )
 
         # Перевіряємо наявність фінального відео
         video_path = self._find_video_file(project_dir)
         if not video_path:
             return StageResult(
+                success=False,
+                stage_name=self.name,
                 status=StageStatus.FAILED,
-                error="Фінальне відео не знайдено (final_video.mp4 або final_4k.mp4)"
+                message="Фінальне відео не знайдено (final_video.mp4 або final_4k.mp4)"
             )
 
         logger.info(f"[{project_id}] Знайдено відео: {video_path.name}")
@@ -86,12 +90,16 @@ class PublishStage(BasePipelineStage):
 
             if not brief:
                 return StageResult(
+                    success=False,
+                    stage_name=self.name,
                     status=StageStatus.FAILED,
-                    error="Не вдалося завантажити project_brief.json"
+                    message="Не вдалося завантажити project_brief.json"
                 )
 
             if not brief.publish_config:
                 return StageResult(
+                    success=True,
+                    stage_name=self.name,
                     status=StageStatus.SKIPPED,
                     message="publish_config не вказано - публікація пропущена"
                 )
@@ -99,6 +107,8 @@ class PublishStage(BasePipelineStage):
             target_channel = brief.publish_config.target_channel
             if not target_channel:
                 return StageResult(
+                    success=True,
+                    stage_name=self.name,
                     status=StageStatus.SKIPPED,
                     message="target_channel не вказано - публікація пропущена"
                 )
@@ -106,8 +116,10 @@ class PublishStage(BasePipelineStage):
             # Перевіряємо чи канал авторизований
             if not config_manager.channel_is_authorized(target_channel):
                 return StageResult(
+                    success=False,
+                    stage_name=self.name,
                     status=StageStatus.FAILED,
-                    error=f"Канал {target_channel} не авторизований. Запустіть: python -m src.publisher.main channel auth {target_channel}"
+                    message=f"Канал {target_channel} не авторизований. Запустіть: python -m src.publisher.main channel auth {target_channel}"
                 )
 
             logger.info(f"[{project_id}] Публікація на канал: {target_channel}")
@@ -128,15 +140,13 @@ class PublishStage(BasePipelineStage):
                     await self.notifier.send_stage_completed(
                         project_id=project_id,
                         stage="publish",
-                        details={
-                            "video_id": status.video_id,
-                            "video_url": video_url,
-                            "channel": target_channel,
-                        }
                     )
 
                 return StageResult(
+                    success=True,
+                    stage_name=self.name,
                     status=StageStatus.COMPLETED,
+                    message=f"Опубліковано: {video_url}",
                     data={
                         "video_id": status.video_id,
                         "video_url": video_url,
@@ -147,22 +157,28 @@ class PublishStage(BasePipelineStage):
             else:
                 logger.error(f"[{project_id}] Помилка публікації: {status.error}")
                 return StageResult(
+                    success=False,
+                    stage_name=self.name,
                     status=StageStatus.FAILED,
-                    error=status.error or "Невідома помилка публікації"
+                    message=status.error or "Невідома помилка публікації"
                 )
 
         except ImportError as e:
             logger.error(f"[{project_id}] Модуль publisher не знайдено: {e}")
             return StageResult(
+                success=False,
+                stage_name=self.name,
                 status=StageStatus.FAILED,
-                error=f"Помилка імпорту: {e}. Встановіть залежності: pip install typer rich google-api-python-client"
+                message=f"Помилка імпорту: {e}. Встановіть залежності: pip install typer rich google-api-python-client"
             )
 
         except Exception as e:
             logger.error(f"[{project_id}] Виняток при публікації: {e}")
             return StageResult(
+                success=False,
+                stage_name=self.name,
                 status=StageStatus.FAILED,
-                error=str(e)
+                message=str(e)
             )
 
     def _find_video_file(self, project_dir: Path) -> Optional[Path]:

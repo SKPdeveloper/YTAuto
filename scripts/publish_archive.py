@@ -35,6 +35,7 @@ from loguru import logger
 KEEP_FILES = {
     "project_brief.json",
     "manifest.json",
+    "gen3b_manifest.json",
     "final_video.mp4",
     "thumbnail.png",
     "subtitles.ass",
@@ -63,7 +64,6 @@ DELETE_FILE_PATTERNS = [
     "final_fixed.mp4",
     "final_with_music.mp4",
     "vo_alignment.json",
-    "gen3b_manifest.json",
     "test_*.mp4",
     "test_*.mp3",
     "YT.txt",
@@ -249,32 +249,15 @@ def _sync_import_sfx(project_dir: Path, project_id: str) -> int:
 
     library = get_sfx_library()
 
-    # Run async import in event loop
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-
-    if loop and loop.is_running():
-        # Already in async context — create a task
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            result = pool.submit(
-                asyncio.run,
-                library.import_from_project(
-                    project_dir=project_dir,
-                    project_id=project_id,
-                    project_brief=project_brief,
-                )
-            ).result()
-    else:
-        result = asyncio.run(
-            library.import_from_project(
-                project_dir=project_dir,
-                project_id=project_id,
-                project_brief=project_brief,
-            )
+    # Run async import in a fresh event loop
+    # This function is always called from a sync context (either CLI or asyncio.to_thread)
+    result = asyncio.run(
+        library.import_from_project(
+            project_dir=project_dir,
+            project_id=project_id,
+            project_brief=project_brief,
         )
+    )
 
     return len(result)
 

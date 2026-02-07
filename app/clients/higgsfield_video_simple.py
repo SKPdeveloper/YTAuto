@@ -70,6 +70,12 @@ class SimpleVideoGenerator:
         self._http_client: Optional[httpx.AsyncClient] = None
         self._progress_callback = progress_callback
 
+    async def close(self) -> None:
+        """Close HTTP client to release resources."""
+        if self._http_client:
+            await self._http_client.aclose()
+            self._http_client = None
+
     @property
     def driver(self):
         return self.browser.driver

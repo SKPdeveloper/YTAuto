@@ -201,19 +201,27 @@ class SFXLibrary:
 
         return "misc"
 
-    def _get_audio_duration_ms(self, file_path: Path) -> int:
+    async def _get_audio_duration_ms(self, file_path: Path) -> int:
         """Get audio duration in milliseconds using ffprobe"""
         try:
-            import subprocess
-            result = subprocess.run([
+            import asyncio
+            process = await asyncio.create_subprocess_exec(
                 "ffprobe", "-v", "error",
                 "-show_entries", "format=duration",
                 "-of", "default=noprint_wrappers=1:nokey=1",
-                str(file_path)
-            ], capture_output=True, text=True)
+                str(file_path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout, _ = await asyncio.wait_for(process.communicate(), timeout=10)
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
+                return 0
 
-            if result.returncode == 0:
-                duration_sec = float(result.stdout.strip())
+            if process.returncode == 0:
+                duration_sec = float(stdout.decode().strip())
                 return int(duration_sec * 1000)
         except Exception:
             pass
@@ -274,7 +282,7 @@ class SFXLibrary:
             return None
 
         # Get duration
-        duration_ms = self._get_audio_duration_ms(dest_path)
+        duration_ms = await self._get_audio_duration_ms(dest_path)
 
         # Create entry
         entry = SFXEntry(

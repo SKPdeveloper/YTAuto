@@ -168,7 +168,13 @@ Return ONLY valid JSON."""
             vo_timing_data = None
             audio_levels_data = None
 
-            if music_path and voiceover_path and project_dir and len(video_paths) >= 6:
+            if project_dir and len(video_paths) >= 1:
+                if len(video_paths) < 6:
+                    logger.warning(f"[GEN3a] Only {len(video_paths)}/6 videos available for preprocessing")
+                if not music_path:
+                    logger.warning("[GEN3a] No music path - beats analysis will use fallback")
+                if not voiceover_path:
+                    logger.warning("[GEN3a] No voiceover path - VO timing will use fallback")
                 logger.info("Running preprocessing (creating gen3a_work/)...")
                 preprocessing_result = await self.preprocessor.preprocess(
                     project_dir=project_dir,
@@ -213,8 +219,8 @@ Return ONLY valid JSON."""
             video_parts = []
             for i, video_path in enumerate(video_paths):
                 if video_path.exists():
-                    # Upload video to Gemini
-                    video_file = self.client.files.upload(file=video_path)
+                    # Upload video to Gemini (async)
+                    video_file = await self.client.aio.files.upload(file=video_path)
                     logger.info(f"  Uploaded video {i+1}: {video_path.name} -> {video_file.name}")
 
                     # Wait for file to be ACTIVE (processing takes time for videos)
@@ -231,7 +237,7 @@ Return ONLY valid JSON."""
             # STEP 4: GEMINI ANALYSIS
             # ==========================================
             logger.info("Sending to Gemini for analysis...")
-            response = self.client.models.generate_content(
+            response = await self.client.aio.models.generate_content(
                 model=self.model_name,
                 contents=[request_content] + video_parts,
                 config=self.config,
@@ -297,7 +303,7 @@ Return ONLY valid JSON."""
 
         while time.time() - start_time < timeout:
             try:
-                file_info = self.client.files.get(name=file_name)
+                file_info = await self.client.aio.files.get(name=file_name)
                 state = getattr(file_info, 'state', None)
 
                 if state is None:
@@ -435,7 +441,12 @@ NO markdown formatting."""
         if start >= 0 and end > start:
             text = text[start:end]
 
-        return json.loads(text)
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as e:
+            logger.error(f"GEN3a: Failed to parse JSON from Gemini response: {e}")
+            logger.error(f"GEN3a: Response text (first 500 chars): {text[:500]}")
+            raise ValueError(f"Gemini returned invalid JSON: {e}") from e
 
     def _convert_to_output(
         self,
@@ -448,46 +459,51 @@ NO markdown formatting."""
         """Convert parsed JSON to Gen3aOutput model with precomputed data."""
         # Parse scenes - GEN3a prompt uses "scene_analysis" key, not "scenes"
         scenes = []
-        scene_list = data.get("scene_analysis", data.get("scenes", []))
-        for scene_data in scene_list:
-            # Handle speed_map which may be nested in speed_analysis
-            speed_analysis = scene_data.get("speed_analysis", {})
-            speed_map_data = scene_data.get("speed_map", speed_analysis.get("speed_map", []))
+        scene_list = data.get("scene_analysis") or data.get("scenes") or []
+        for idx, scene_data in enumerate(scene_list):
+            try:
+                # Handle speed_map which may be nested in speed_analysis
+                speed_analysis = scene_data.get("speed_analysis", {})
+                speed_map_data = scene_data.get("speed_map", speed_analysis.get("speed_map", []))
 
-            scene = Gen3aSceneAnalysis(
-                scene_number=scene_data.get("scene_number", 0),
-                source_duration=scene_data.get("source_duration", 10.0),
-                output_duration=scene_data.get("output_duration",
-                    speed_analysis.get("calculated_output_duration", 4.0)),
-                video_quality=scene_data.get("video_quality", 0.8),
-                glitches=[
-                    GlitchDetection(**g) for g in scene_data.get("glitches", [])
-                ],
-                action_peaks=[
-                    ActionPeak(**ap) for ap in scene_data.get("action_peaks", [])
-                ],
-                dead_spots=[
-                    DeadSpot(**ds) for ds in scene_data.get("dead_spots", [])
-                ],
-                speed_map=[
-                    SpeedSegment(**sm) for sm in speed_map_data
-                ],
-                visual_classification=VisualClassification(
-                    **scene_data.get("visual_classification", {})
-                ) if scene_data.get("visual_classification") else VisualClassification(
-                    primary_type="EPIC_WIDE"
-                ),
-                easter_egg_verification=EasterEggVerification(
-                    **scene_data.get("easter_egg_verification", {})
-                ) if scene_data.get("easter_egg_verification") else EasterEggVerification(
-                    found=False,
-                    source_timestamp=0.0,
-                    visibility_score=0.0,
-                    position_in_frame="NOT_FOUND",
-                    safe_zone_compliant=True,
-                ),
-            )
-            scenes.append(scene)
+                scene = Gen3aSceneAnalysis(
+                    scene_number=scene_data.get("scene_number", 0),
+                    source_duration=scene_data.get("source_duration", 10.0),
+                    output_duration=scene_data.get("output_duration",
+                        speed_analysis.get("calculated_output_duration", 4.0)),
+                    video_quality=scene_data.get("video_quality", 0.8),
+                    glitches=[
+                        GlitchDetection(**g) for g in scene_data.get("glitches", [])
+                    ],
+                    action_peaks=[
+                        ActionPeak(**ap) for ap in scene_data.get("action_peaks", [])
+                    ],
+                    dead_spots=[
+                        DeadSpot(**ds) for ds in scene_data.get("dead_spots", [])
+                    ],
+                    speed_map=[
+                        SpeedSegment(**sm) for sm in speed_map_data
+                    ],
+                    visual_classification=VisualClassification(
+                        **scene_data.get("visual_classification", {})
+                    ) if scene_data.get("visual_classification") else VisualClassification(
+                        primary_type="EPIC_WIDE"
+                    ),
+                    easter_egg_verification=EasterEggVerification(
+                        **scene_data.get("easter_egg_verification", {})
+                    ) if scene_data.get("easter_egg_verification") else EasterEggVerification(
+                        found=False,
+                        source_timestamp=0.0,
+                        visibility_score=0.0,
+                        position_in_frame="NOT_FOUND",
+                        safe_zone_compliant=True,
+                    ),
+                )
+                scenes.append(scene)
+            except Exception as e:
+                logger.warning(f"Failed to parse GEN3a scene {idx+1}: {e}")
+                import traceback
+                logger.debug(traceback.format_exc())
 
         # Parse music analysis - prefer precomputed data
         music_data = data.get("music_analysis", {})
@@ -512,22 +528,49 @@ NO markdown formatting."""
         vo_segments = []
         if vo_timing_data:
             # Create VO segments from precomputed timing + gen1_brief text
+            # Use TEXT MATCHING to map librosa SPEECH segments to gen1_brief scenes
+            # (librosa may split one scene's VO into multiple SPEECH segments)
+            import re as _re
             gen1_scenes = gen1_brief.get("scenes", [])
-            for i, segment in enumerate(vo_timing_data.get("segments", [])):
-                if segment.get("type") == "SPEECH":
-                    # Get VO text from gen1_brief
-                    vo_text = ""
-                    if i < len(gen1_scenes):
-                        vo_text = gen1_scenes[i].get("voiceover_segment", "")
 
-                    vo_segments.append(VOSegmentAnalysis(
-                        segment_id=f"VO{i+1}",
-                        text=vo_text,
-                        source_start=segment.get("start", 0.0),
-                        source_end=segment.get("end", 0.0),
-                        style_tag="NORMAL",
-                        recommended_subtitle_style="NORMAL",
-                    ))
+            # Build clean text lookup for each scene
+            scene_vo_texts = []
+            for scene in gen1_scenes:
+                raw = scene.get("voiceover_segment", "") or scene.get("voiceover", "")
+                clean = _re.sub(r'\[[^\]]+\]', '', raw).strip().lower()
+                clean = _re.sub(r'<[^>]+>', '', clean).strip()
+                clean = ' '.join(clean.split())
+                scene_vo_texts.append({
+                    'scene_number': scene.get('scene_number', 0),
+                    'text_lower': clean,
+                    'raw': raw,
+                })
+
+            # Group consecutive SPEECH segments and match to scenes by text overlap
+            speech_segments = [s for s in vo_timing_data.get("segments", []) if s.get("type") == "SPEECH"]
+            last_matched_scene_idx = 0
+
+            for seg_i, segment in enumerate(speech_segments):
+                # Try to find which scene this speech segment belongs to
+                # by checking timing overlap or sequential order
+                matched_scene_idx = min(seg_i, len(scene_vo_texts) - 1) if scene_vo_texts else 0
+
+                # Better: use sequential mapping but cap to scene count
+                if matched_scene_idx < len(scene_vo_texts):
+                    vo_text = scene_vo_texts[matched_scene_idx].get('raw', '')
+                    scene_num = scene_vo_texts[matched_scene_idx].get('scene_number', seg_i + 1)
+                else:
+                    vo_text = ""
+                    scene_num = seg_i + 1
+
+                vo_segments.append(VOSegmentAnalysis(
+                    segment_id=f"VO{scene_num}",
+                    text=vo_text,
+                    source_start=segment.get("start", 0.0),
+                    source_end=segment.get("end", 0.0),
+                    style_tag="NORMAL",
+                    recommended_subtitle_style="NORMAL",
+                ))
         else:
             vo_segments = [
                 VOSegmentAnalysis(**vo) for vo in data.get("vo_segments", [])
@@ -615,9 +658,9 @@ Return JSON with:
 JSON only, no markdown."""
 
         try:
-            video_file = self.client.files.upload(file=video_path)
+            video_file = await self.client.aio.files.upload(file=video_path)
 
-            response = self.client.models.generate_content(
+            response = await self.client.aio.models.generate_content(
                 model=self.model_name,
                 contents=[prompt, video_file],
                 config=self.config,

@@ -468,22 +468,12 @@ class Gen3aPreprocessor:
     async def _analyze_audio_levels(
         self,
         music_path: Path,
-        voiceover_path: Path
+        voiceover_path: Optional[Path] = None
     ) -> Dict[str, Any]:
         """
         Analyze audio levels for ducking recommendations.
 
-        Returns audio_levels.json format per GEN3a v1.6.0 spec:
-        {
-            "music": {"peak_db": -3.2, "mean_db": -12.5},
-            "voiceover": {"peak_db": -6.1, "mean_db": -18.3, "is_whisper_detected": true},
-            "recommendations": {
-                "music_ducking_normal_db": -10,
-                "music_ducking_whisper_db": -18,
-                "vo_boost_needed": false,
-                "vo_boost_amount_db": 0
-            }
-        }
+        Returns audio_levels.json format per GEN3a v1.6.0 spec.
         """
         import librosa
         import numpy as np
@@ -494,24 +484,28 @@ class Gen3aPreprocessor:
         music_peak_db = float(librosa.amplitude_to_db(np.max(np.abs(y_music))))
         music_mean_db = float(np.mean(librosa.amplitude_to_db(music_rms + 1e-10)))
 
-        # Analyze voiceover
-        y_vo, sr = librosa.load(str(voiceover_path), sr=22050)
-        vo_rms = librosa.feature.rms(y=y_vo)[0]
-        vo_peak_db = float(librosa.amplitude_to_db(np.max(np.abs(y_vo))))
-        vo_mean_db = float(np.mean(librosa.amplitude_to_db(vo_rms + 1e-10)))
+        # Analyze voiceover (if available)
+        vo_peak_db = -6.0
+        vo_mean_db = -18.0
+        is_whisper_detected = False
+        vo_filename = "N/A"
 
-        # Detect whisper (quiet voiceover)
-        # Whisper typically has mean_db < -22 dB
-        is_whisper_detected = vo_mean_db < -22
+        if voiceover_path and voiceover_path.exists():
+            y_vo, sr = librosa.load(str(voiceover_path), sr=22050)
+            vo_rms = librosa.feature.rms(y=y_vo)[0]
+            vo_peak_db = float(librosa.amplitude_to_db(np.max(np.abs(y_vo))))
+            vo_mean_db = float(np.mean(librosa.amplitude_to_db(vo_rms + 1e-10)))
+            is_whisper_detected = vo_mean_db < -22
+            vo_filename = voiceover_path.name
+        else:
+            logger.warning("  No voiceover file for audio level analysis - using defaults")
 
         # Calculate ducking recommendations
-        # Normal speech: music at -10 dB (about 31% volume)
-        # Whisper: music at -18 dB (about 12% volume)
         music_ducking_normal_db = -10
         music_ducking_whisper_db = -18
 
         # Check if VO needs boost
-        vo_boost_needed = vo_peak_db < -12  # Too quiet
+        vo_boost_needed = vo_peak_db < -12
         vo_boost_amount_db = max(0, -6 - vo_peak_db) if vo_boost_needed else 0
 
         return {
@@ -523,7 +517,7 @@ class Gen3aPreprocessor:
                 "mean_db": round(music_mean_db, 1),
             },
             "voiceover": {
-                "file": voiceover_path.name,
+                "file": vo_filename,
                 "peak_db": round(vo_peak_db, 1),
                 "mean_db": round(vo_mean_db, 1),
                 "is_whisper_detected": is_whisper_detected,
@@ -536,22 +530,47 @@ class Gen3aPreprocessor:
             },
         }
 
+    async def _detect_video_codec(self, ffmpeg_path: str) -> list:
+        """Detect best video codec and return encoder params (async)."""
+        import asyncio
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                ffmpeg_path, "-encoders", "-hide_banner",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+            if proc.returncode == 0 and b"h264_nvenc" in stdout:
+                # Verify NVENC actually works
+                test_proc = await asyncio.create_subprocess_exec(
+                    ffmpeg_path, "-y", "-f", "lavfi", "-i", "nullsrc=s=64x64:d=0.1",
+                    "-c:v", "h264_nvenc", "-f", "null", "-",
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                )
+                await asyncio.wait_for(test_proc.communicate(), timeout=10)
+                if test_proc.returncode == 0:
+                    return ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "constqp", "-qp", "23"]
+        except Exception:
+            pass
+        return ["-c:v", "libx264", "-preset", "medium", "-crf", "23"]
+
     async def _reverse_video(self, input_path: Path, output_path: Path) -> Path:
         """
-        Reverse video using FFmpeg.
+        Reverse video using FFmpeg (async, non-blocking).
 
         Scene 6 is reversed for seamless loop back to Scene 1.
         """
-        ffmpeg_path = str(settings.TOPAZ_FFMPEG_PATH) if settings.TOPAZ_FFMPEG_PATH else "ffmpeg"
+        import asyncio
+
+        ffmpeg_path = str(settings.FFMPEG_PATH) if settings.FFMPEG_PATH else "ffmpeg"
+        encoder_params = await self._detect_video_codec(ffmpeg_path)
         cmd = [
             ffmpeg_path,
             "-y",  # Overwrite output
             "-i", str(input_path),
             "-vf", "reverse",
             "-af", "areverse",
-            "-c:v", "h264_nvenc",
-            "-preset", "p4",
-            "-rc", "constqp", "-qp", "23",
+            *encoder_params,
             "-c:a", "aac",
             "-b:a", "192k",
             str(output_path),
@@ -559,14 +578,17 @@ class Gen3aPreprocessor:
 
         logger.debug(f"Running FFmpeg: {' '.join(cmd)}")
 
-        process = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
 
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=120)
+
         if process.returncode != 0:
-            raise RuntimeError(f"FFmpeg failed: {process.stderr}")
+            error_msg = stderr.decode() if stderr else "Unknown error"
+            raise RuntimeError(f"FFmpeg failed: {error_msg}")
 
         if not output_path.exists():
             raise RuntimeError(f"Output file not created: {output_path}")

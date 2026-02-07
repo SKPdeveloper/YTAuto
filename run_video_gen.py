@@ -44,6 +44,7 @@ async def main(project_id: str):
     # Генерировать видео
     generator = SimpleVideoGenerator(browser)
     results = await generator.generate_project(project_id)
+    await generator.close()
 
     # Итоговый отчет
     logger.info("")

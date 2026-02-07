@@ -103,11 +103,12 @@ class TelegramNotifier:
         error: str
     ) -> bool:
         """Send error notification."""
+        from html import escape
         message = f"""
 ❌ <b>ПОМИЛКА</b>
 
-Проєкт: <code>{project_id}</code>
-Помилка: {error[:200]}
+Проєкт: <code>{escape(project_id)}</code>
+Помилка: {escape(error[:200])}
 """
         return await self.send(message)
 

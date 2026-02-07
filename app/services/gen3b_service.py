@@ -149,9 +149,9 @@ Return ONLY valid JSON."""
                 gen2_brief=gen2_brief,
             )
 
-            # Generate manifest
+            # Generate manifest (async API)
             logger.info("Sending to Gemini for manifest generation...")
-            response = self.client.models.generate_content(
+            response = await self.client.aio.models.generate_content(
                 model=self.model_name,
                 contents=request_content,
                 config=self.config,
@@ -263,7 +263,120 @@ NO markdown formatting."""
         if start >= 0 and end > start:
             text = text[start:end]
 
-        return json.loads(text)
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as e:
+            logger.error(f"GEN3b: Failed to parse JSON from Gemini response: {e}")
+            logger.error(f"GEN3b: Response text (first 500 chars): {text[:500]}")
+            raise ValueError(f"Gemini returned invalid JSON: {e}") from e
+
+    def _regenerate_voiceover_timing(
+        self, project_dir: Path, alignment_path: Path, output_path: Path
+    ) -> None:
+        """
+        Regenerate voiceover_timing.json from vo_alignment.json.
+
+        Fallback recovery when AudioStage generated voiceover.mp3 + vo_alignment.json
+        but voiceover_timing.json was not created (e.g. partial failure).
+        Uses the same text-matching logic as AudioEngine._generate_voiceover_timing.
+        """
+        import json
+        import re
+
+        try:
+            with open(alignment_path, "r", encoding="utf-8") as f:
+                alignment = json.load(f)
+
+            chars = alignment.get("characters", [])
+            starts = alignment.get("character_start_times_seconds", [])
+            ends = alignment.get("character_end_times_seconds", [])
+
+            if not chars or not starts or not ends:
+                logger.warning("vo_alignment.json has empty data, cannot regenerate timing")
+                return
+
+            # Parse sentences from alignment
+            sentences = []
+            current_text = ""
+            sent_start = 0.0
+
+            for i, char in enumerate(chars):
+                if current_text == "":
+                    sent_start = starts[i]
+                current_text += char
+
+                if char in ".!?":
+                    sent_end = ends[i]
+                    clean_text = re.sub(r"\[[^\]]+\]", "", current_text).strip()
+                    clean_text = re.sub(r"<[^>]+>", "", clean_text).strip()
+                    if len(clean_text) > 2:
+                        sentences.append({"text": clean_text, "start": sent_start, "end": sent_end})
+                    current_text = ""
+
+            # Capture remaining text
+            if current_text.strip():
+                clean_text = re.sub(r"\[[^\]]+\]", "", current_text).strip()
+                clean_text = re.sub(r"<[^>]+>", "", clean_text).strip()
+                if len(clean_text) > 2:
+                    sentences.append({"text": clean_text, "start": sent_start, "end": ends[-1] if ends else 0.0})
+
+            # Load project_brief for scene matching
+            brief_path = project_dir / "project_brief.json"
+            scene_vo_segments = []
+            if brief_path.exists():
+                with open(brief_path, "r", encoding="utf-8") as f:
+                    brief = json.load(f)
+                for scene in sorted(brief.get("scenes", []), key=lambda s: s.get("scene_number", 0)):
+                    vo_segment = scene.get("voiceover_segment", "") or scene.get("voiceover", "")
+                    if vo_segment:
+                        clean_vo = re.sub(r"\[[^\]]+\]", "", vo_segment).strip()
+                        clean_vo = re.sub(r"<[^>]+>", "", clean_vo).strip()
+                        clean_vo = " ".join(clean_vo.split())
+                        if clean_vo and len(clean_vo) >= 3:
+                            scene_vo_segments.append({"scene_number": scene.get("scene_number", 0), "text_lower": clean_vo.lower()})
+
+            # Match sentences to scenes by text containment
+            segments_by_scene = {}
+            last_matched_idx = 0
+
+            for sent in sentences:
+                clean_sent = " ".join(sent["text"].split()).lower()
+                matched_idx = last_matched_idx
+                match_key = clean_sent[:30] if len(clean_sent) > 30 else clean_sent
+
+                for idx in range(last_matched_idx, len(scene_vo_segments)):
+                    if match_key in scene_vo_segments[idx]["text_lower"]:
+                        matched_idx = idx
+                        break
+
+                if matched_idx < len(scene_vo_segments):
+                    scene_number = scene_vo_segments[matched_idx]["scene_number"]
+                    last_matched_idx = matched_idx
+                elif scene_vo_segments:
+                    scene_number = scene_vo_segments[-1]["scene_number"]
+                else:
+                    scene_number = 1
+
+                if scene_number in segments_by_scene:
+                    existing = segments_by_scene[scene_number]
+                    existing["end_time"] = max(existing["end_time"], sent["end"])
+                    existing["text"] += " " + sent["text"]
+                else:
+                    segments_by_scene[scene_number] = {
+                        "scene_number": scene_number,
+                        "start_time": sent["start"],
+                        "end_time": sent["end"],
+                        "text": sent["text"],
+                    }
+
+            final_segments = sorted(segments_by_scene.values(), key=lambda s: s["start_time"])
+            with open(output_path, "w", encoding="utf-8") as f:
+                json.dump({"segments": final_segments}, f, indent=2, ensure_ascii=False)
+
+            logger.success(f"Regenerated voiceover_timing.json with {len(final_segments)} segments from vo_alignment.json")
+
+        except Exception as e:
+            logger.error(f"Failed to regenerate voiceover_timing.json: {e}")
 
     def _safe_parse_list(self, items: list, model_class, defaults: dict = None) -> list:
         """Safely parse list of items, silently skipping invalid entries."""
@@ -280,7 +393,7 @@ NO markdown formatting."""
                     elif model_class == ManifestSubtitle:
                         result.append(model_class(id=f"s{i+1}", text=item, output_start=0.0, output_end=3.0))
                     elif model_class == ManifestSFXEvent:
-                        result.append(model_class(id=f"sfx{i+1}", file=item, timestamp=0.0))
+                        result.append(model_class(id=f"sfx{i+1}", file=item, output_timestamp=0.0, effect=item))
                     # Silently skip string values for other types (SpeedSegment, ManifestCut)
                     # These require complex dict structures that can't be inferred from a string
                 # Skip None or other invalid types silently
@@ -421,30 +534,43 @@ NO markdown formatting."""
         # Hook duration offset - subtitles start after hook
         HOOK_OFFSET = 0.3
 
-        # REQUIRE voiceover_timing.json for accurate timing (no fallback!)
+        # Load voiceover timing (with fallback recovery)
         vo_timing = {}
         if not project_dir:
             raise ValueError("project_dir is required for subtitle timing - cannot load voiceover_timing.json")
 
-        timing_path = project_dir / "voiceover_timing.json"
-        if not timing_path.exists():
-            raise FileNotFoundError(
-                f"voiceover_timing.json not found at {timing_path}. "
-                f"Ensure AudioStage completed successfully with ElevenLabs timestamps. "
-                f"Required files: voiceover.mp3, vo_alignment.json, voiceover_timing.json"
-            )
-
         import json
-        with open(timing_path, "r", encoding="utf-8") as f:
-            timing_data = json.load(f)
-        for seg in timing_data.get("segments", []):
-            # Add hook offset to timing - voiceover plays after hook
-            vo_timing[seg["scene_number"]] = {
-                "start_time": seg["start_time"] + HOOK_OFFSET,
-                "end_time": seg["end_time"] + HOOK_OFFSET,
-                "text": seg["text"],
-            }
-        logger.info(f"Loaded voiceover timing for {len(vo_timing)} segments (with {HOOK_OFFSET}s hook offset)")
+        import re as _re
+
+        timing_path = project_dir / "voiceover_timing.json"
+
+        # If voiceover_timing.json missing, try to regenerate from vo_alignment.json
+        if not timing_path.exists():
+            alignment_path = project_dir / "vo_alignment.json"
+            if alignment_path.exists():
+                logger.warning(
+                    f"voiceover_timing.json not found - regenerating from vo_alignment.json"
+                )
+                self._regenerate_voiceover_timing(project_dir, alignment_path, timing_path)
+            else:
+                logger.warning(
+                    f"Neither voiceover_timing.json nor vo_alignment.json found at {project_dir}. "
+                    f"Subtitles will use scene timeline estimates for all scenes."
+                )
+
+        if timing_path.exists():
+            with open(timing_path, "r", encoding="utf-8") as f:
+                timing_data = json.load(f)
+            for seg in timing_data.get("segments", []):
+                # Add hook offset to timing - voiceover plays after hook
+                vo_timing[seg["scene_number"]] = {
+                    "start_time": seg["start_time"] + HOOK_OFFSET,
+                    "end_time": seg["end_time"] + HOOK_OFFSET,
+                    "text": seg["text"],
+                }
+            logger.info(f"Loaded voiceover timing for {len(vo_timing)} segments (with {HOOK_OFFSET}s hook offset)")
+        else:
+            logger.warning("No voiceover timing available - all subtitles will use scene timeline estimates")
 
         # Build lookup of existing GEN3b subtitles by scene
         existing_by_scene = {}
@@ -473,18 +599,29 @@ NO markdown formatting."""
             if is_placeholder:
                 continue
 
-            # Determine timing - REQUIRE voiceover_timing.json (no fallback!)
+            # Determine timing from voiceover_timing.json
             if scene_num in vo_timing:
                 start_time = vo_timing[scene_num]["start_time"]
                 end_time = vo_timing[scene_num]["end_time"]
                 logger.debug(f"Scene {scene_num}: Using VO timing {start_time}-{end_time}s")
             else:
-                # NO FALLBACK - voiceover_timing.json is required for accurate subtitles
-                raise ValueError(
-                    f"Scene {scene_num} missing from voiceover_timing.json. "
-                    f"Ensure AudioStage generated voiceover with timestamps (vo_alignment.json + voiceover_timing.json). "
-                    f"Scene boundaries fallback has been removed - accurate subtitle timing requires voiceover timestamps."
+                # Fallback: estimate from scene timeline (text matching may miss edge cases)
+                logger.warning(
+                    f"Scene {scene_num} missing from voiceover_timing.json "
+                    f"(text matching may have assigned it to another scene). "
+                    f"Using scene timeline estimate."
                 )
+                # Find matching manifest scene for timeline bounds
+                matching_scene = next(
+                    (s for s in manifest_scenes if s.scene_number == scene_num), None
+                )
+                if matching_scene:
+                    start_time = matching_scene.timeline_start + HOOK_OFFSET
+                    end_time = matching_scene.timeline_end + HOOK_OFFSET
+                else:
+                    # Last resort: skip this subtitle
+                    logger.warning(f"Scene {scene_num}: no timeline data, skipping subtitle")
+                    continue
 
             # Determine style based on voice direction tags
             style = "NORMAL"
@@ -698,7 +835,7 @@ NO markdown formatting."""
                     scene_data.get("source_file") or
                     scene_data.get("source") or
                     scene_data.get("file") or
-                    ""
+                    f"gen3a_work/{scene_number}.mp4"
                 )
 
                 # Gemini nests timing in output_timing
@@ -720,6 +857,11 @@ NO markdown formatting."""
                     0.0
                 )
 
+                # -----------------------------------------------------------------
+                # GET GEN3a DATA FOR THIS SCENE (must be before speed_data fallback)
+                # -----------------------------------------------------------------
+                gen3a_scene = gen3a_scenes_map.get(scene_number)
+
                 # Gemini nests speed in speed_processing.speed_map
                 speed_processing = scene_data.get("speed_processing", {})
                 speed_data = (
@@ -728,6 +870,11 @@ NO markdown formatting."""
                     scene_data.get("speed") or
                     []
                 )
+
+                # Fallback: use GEN3a speed_map if Gemini didn't return speed segments
+                if not speed_data and gen3a_scene and gen3a_scene.speed_map:
+                    speed_data = [seg.model_dump() for seg in gen3a_scene.speed_map]
+                    logger.debug(f"  Scene {scene_number}: Using GEN3a speed_map ({len(speed_data)} segments)")
 
                 # Gemini uses visual_effects
                 effects_data = (
@@ -742,11 +889,6 @@ NO markdown formatting."""
                     cuts_data = cuts_data.get("cut_list", cuts_data.get("cuts", []))
                     if not isinstance(cuts_data, list):
                         cuts_data = []
-
-                # -----------------------------------------------------------------
-                # GET GEN3a DATA FOR THIS SCENE
-                # -----------------------------------------------------------------
-                gen3a_scene = gen3a_scenes_map.get(scene_number)
 
                 # Parse GEN3a fields
                 glitches = []

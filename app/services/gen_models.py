@@ -1354,12 +1354,15 @@ class SpeedSegment(BaseModel):
                 data['source_start'] = data.pop('start')
             if 'end' in data and 'source_end' not in data:
                 data['source_end'] = data.pop('end')
+            # Ensure speed is never 0 (would cause ZeroDivisionError in renderer)
+            if 'speed' in data and (not data['speed'] or data['speed'] <= 0):
+                data['speed'] = 1.0
             # Calculate output_duration if not provided
             if 'source_start' in data and 'source_end' in data:
                 source_dur = data['source_end'] - data['source_start']
                 speed = data.get('speed', 1.0) or 1.0
                 if 'output_duration' not in data:
-                    data['output_duration'] = source_dur / speed if speed else 0.0
+                    data['output_duration'] = source_dur / speed
             # Set defaults for required fields if missing
             if 'speed' not in data:
                 data['speed'] = 2.5
@@ -1670,35 +1673,15 @@ class Gen3aOutput(BaseModel):
 # Music Analysis (from GEN3a)
 # ---------------------------------------------------------------------------
 
-class MusicBeat(BaseModel):
-    """Beat в музичному аналізі."""
-    timestamp: float = Field(..., description="Timestamp біту")
-    strength: str = Field(default="MEDIUM", description="STRONG/MEDIUM/WEAK")
-    beat_number: int = Field(default=1, description="Номер біту в такті")
-
-
-class MusicAnalysis(BaseModel):
-    """Музичний аналіз з GEN3a."""
-    bpm: float = Field(..., description="BPM треку")
-    time_signature: str = Field(default="4/4", description="Розмір")
-    beats: List[MusicBeat] = Field(default_factory=list, description="Всі біти")
-    strong_beats_for_cuts: List[float] = Field(default_factory=list, description="Біти для cuts")
+# MusicBeat defined above (line ~1473) with set_defaults() validator
+# MusicAnalysis defined above (line ~1491) with set_defaults() validator
 
 
 # ---------------------------------------------------------------------------
 # Visual Classification (from GEN3a)
 # ---------------------------------------------------------------------------
 
-class VisualClassification(BaseModel):
-    """Візуальна класифікація сцени."""
-    primary_type: str = Field(default="EPIC_WIDE", description="Основний тип")
-    secondary_type: Optional[str] = Field(default=None, description="Другорядний тип")
-    confidence: float = Field(default=0.9, description="Впевненість")
-    reasoning: str = Field(default="", description="Причина")
-    dominant_elements: List[str] = Field(default_factory=list, description="Домінуючі елементи")
-    scale: str = Field(default="MEDIUM", description="Масштаб")
-    camera_motion: str = Field(default="STATIC", description="Рух камери")
-    effect_palette_recommendation: str = Field(default="DRAMATIC", description="Рекомендована палітра")
+# VisualClassification defined above (line ~1375) with set_defaults() validator
 
 
 # ---------------------------------------------------------------------------
@@ -1720,27 +1703,14 @@ class GlitchInfo(BaseModel):
 # Action Peak (from GEN3a)
 # ---------------------------------------------------------------------------
 
-class ActionPeak(BaseModel):
-    """Action peak в сцені."""
-    id: str = Field(..., description="ID peak")
-    source_timestamp: float = Field(..., description="Timestamp в source")
-    type: str = Field(default="MOTION_BURST", description="Тип")
-    intensity: float = Field(default=0.5, description="Інтенсивність 0-1")
-    beat_aligned: bool = Field(default=False, description="Чи на біті")
-    nearest_beat: float = Field(default=0.0, description="Найближчий біт")
+# ActionPeak defined above (line ~1261) with normalize_gemini_fields() validator
 
 
 # ---------------------------------------------------------------------------
 # Easter Egg Verification (from GEN3a)
 # ---------------------------------------------------------------------------
 
-class EasterEggVerification(BaseModel):
-    """Верифікація easter egg."""
-    found: bool = Field(default=False, description="Чи знайдено")
-    source_timestamp: float = Field(default=0.0, description="Timestamp")
-    visibility_score: float = Field(default=0.0, description="Видимість 0-1")
-    position_in_frame: str = Field(default="NOT_FOUND", description="Позиція")
-    safe_zone_compliant: bool = Field(default=True, description="В safe zone")
+# EasterEggVerification defined above (line ~1410) with set_defaults() validator
 
 
 # ---------------------------------------------------------------------------
@@ -1974,7 +1944,7 @@ class ManifestScene(BaseModel):
     video_quality: float = Field(default=0.8, description="Якість відео 0-1")
     glitches: List[GlitchInfo] = Field(default_factory=list, description="Знайдені glitches")
     action_peaks: List[ActionPeak] = Field(default_factory=list, description="Action peaks")
-    dead_spots: List[Dict[str, Any]] = Field(default_factory=list, description="Dead spots")
+    dead_spots: List[DeadSpot] = Field(default_factory=list, description="Dead spots")
     visual_classification: Optional[VisualClassification] = Field(default=None, description="Візуальна класифікація")
     easter_egg_verification: Optional[EasterEggVerification] = Field(default=None, description="Верифікація easter egg")
 

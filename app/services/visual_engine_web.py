@@ -216,8 +216,8 @@ class HiggsFieldWebAdapter:
         self._client.image_settings.unlimited = True
 
         try:
-            # Генеруємо зображення
-            image_path = await self._client.generate_scene_image(
+            # Генеруємо зображення (повертає GeneratedImage з .path та .url)
+            gen_img = await self._client.generate_scene_image(
                 prompt=prompt,
                 reference_image=None,
             )
@@ -227,7 +227,7 @@ class HiggsFieldWebAdapter:
             scene_dir.mkdir(parents=True, exist_ok=True)
 
             final_path = scene_dir / "image.png"
-            shutil.copy(image_path, final_path)
+            shutil.copy(gen_img.path, final_path)
 
             # Зберігаємо metadata
             metadata = {
@@ -292,7 +292,7 @@ class HiggsFieldWebAdapter:
                     reference_path = None
 
         try:
-            image_path = await self._client.generate_scene_image(
+            gen_img = await self._client.generate_scene_image(
                 prompt=prompt,
                 reference_image=reference_path,
             )
@@ -302,7 +302,7 @@ class HiggsFieldWebAdapter:
             scene_dir.mkdir(parents=True, exist_ok=True)
 
             final_path = scene_dir / "image.png"
-            shutil.copy(image_path, final_path)
+            shutil.copy(gen_img.path, final_path)
 
             # Metadata
             metadata = {
@@ -699,6 +699,11 @@ class HiggsFieldWebAdapter:
                     if "no such window" in error_msg or "target window already closed" in error_msg:
                         logger.warning(f"[Scene {scene_num}] Browser window closed: {e}")
                         if attempt <= max_retries_per_scene:
+                            # Close old generator HTTP client before replacing
+                            try:
+                                await generator.close()
+                            except Exception:
+                                pass
                             # Force browser restart
                             self._browser_started = False
                             if self._client:
@@ -720,6 +725,9 @@ class HiggsFieldWebAdapter:
 
             if not scene_success:
                 final_paths.append(None)
+
+        # Close generator HTTP client
+        await generator.close()
 
         success_count = sum(1 for p in final_paths if p is not None)
         logger.info("")

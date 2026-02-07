@@ -552,9 +552,8 @@ class TopazQueue:
         # Topaz потребує запуску з директорії встановлення
         topaz_dir = self.ffmpeg_path.parent
 
-        # Встановлюємо шлях до моделей Topaz (ProgramData/models)
-        # GUI використовує саме цей шлях з підпапкою models
-        model_dir = Path(r"C:\ProgramData\Topaz Labs LLC\Topaz Video AI\models")
+        # Використовуємо auto-detected шлях до моделей (або fallback)
+        model_dir = self.models_dir
 
         # Копіюємо поточне оточення і додаємо змінні Topaz
         env = os.environ.copy()
