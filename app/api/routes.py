@@ -15,7 +15,7 @@ from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
-from app.server.websocket import ConnectionManager
+from app.server.websocket import ConnectionManager, get_connection_manager
 from app.utils.logger import logger
 from app.web.channel_service import get_channel_service
 from app.services.prompt_router import PromptRouter
@@ -58,8 +58,8 @@ projects_path = Path.cwd() / "projects"
 if projects_path.exists():
     app.mount("/projects", StaticFiles(directory=str(projects_path)), name="projects")
 
-# WebSocket connection manager
-ws_manager = ConnectionManager()
+# WebSocket connection manager (use singleton so control_pipeline.py shares the same instance)
+ws_manager = get_connection_manager()
 
 # Import and register control routes
 from app.api.control_routes import router as control_router, set_ws_manager
@@ -106,10 +106,10 @@ async def websocket_endpoint(websocket: WebSocket):
                     ws_manager.unsubscribe(websocket, project_id)
 
     except WebSocketDisconnect:
-        ws_manager.disconnect(websocket)
+        await ws_manager.disconnect(websocket)
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
-        ws_manager.disconnect(websocket)
+        await ws_manager.disconnect(websocket)
 
 
 def get_ws_manager() -> ConnectionManager:
@@ -702,7 +702,7 @@ async def save_settings(
         return HTMLResponse(
             content=f'''
             <script>
-                showToast('Помилка збереження: {str(e)}', 'error');
+                showToast('Помилка збереження налаштувань', 'error');
             </script>
             ''',
             status_code=500

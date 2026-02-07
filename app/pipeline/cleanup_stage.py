@@ -5,6 +5,7 @@ Post-pipeline stage that imports project SFX files into the global library.
 File deletion is now handled by scripts/publish_archive.py (run after YouTube upload).
 """
 
+import asyncio
 import json
 import shutil
 from pathlib import Path
@@ -104,7 +105,7 @@ class CleanupStage(BasePipelineStage):
         # Remove sfx/ after successful import
         if imported:
             try:
-                shutil.rmtree(sfx_dir)
+                await asyncio.to_thread(shutil.rmtree, sfx_dir)
                 logger.info(f"[{self.project_id}] Removed sfx/ after import")
             except Exception as e:
                 logger.warning(f"[{self.project_id}] Failed to remove sfx/: {e}")

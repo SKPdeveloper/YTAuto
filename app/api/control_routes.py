@@ -56,19 +56,14 @@ class ControlState:
         self.rejected_all: bool = False
         self.abort_pipeline: bool = False  # Signal to abort current pipeline
 
-        # Video approval (pre-Topaz)
-        self.awaiting_video_approval: bool = False
-        self.video_approval_data: dict = {}
-        self.video_approval_result: Optional[str] = None
-        self.video_approval_project_id: Optional[str] = None
-        self.kicked_scenes: list = []  # Queue of scenes to regenerate
-        self.scenes_confirmed: bool = False
-
         # Video Approval state (pre-upscale)
         self.awaiting_video_approval: bool = False
-        self.video_approval_project_id: Optional[str] = None
+        self.video_approval_data: dict = {}
         self.video_approval_result: Optional[str] = None  # 'approved', 'rejected', 'skip_upscale'
+        self.video_approval_project_id: Optional[str] = None
         self.video_approval_event: Optional[asyncio.Event] = None
+        self.kicked_scenes: list = []  # Queue of scenes to regenerate
+        self.scenes_confirmed: bool = False
 
         # WebSocket manager reference
         self.ws_manager: Optional[ConnectionManager] = None
@@ -380,7 +375,7 @@ async def start_new_topic(request: NewTopicRequest = None):
     if old_project_id:
         try:
             from scripts.publish_archive import archive_project
-            archive_result = archive_project(old_project_id, category="test")
+            archive_result = await asyncio.to_thread(archive_project, old_project_id, category="test")
             logger.info(f"Archived {old_project_id} as test: {archive_result.get('status')}")
         except Exception as e:
             logger.warning(f"Failed to archive {old_project_id}: {e}")
@@ -498,12 +493,12 @@ async def start_topaz_processing(request: TopazRequest):
 
 async def run_topaz_processing(project_id: str, input_path: Path, output_path: Path):
     """Run Topaz processing in background."""
-    from app.modules.topaz_queue import TopazQueue
+    from app.modules.topaz_queue import get_topaz_queue
 
     try:
         await broadcast_event("topaz_progress", {"message": "Initializing Topaz..."})
 
-        queue = TopazQueue()
+        queue = get_topaz_queue()
 
         # Start the worker
         await queue.start()
@@ -908,7 +903,8 @@ async def archive_project_endpoint(request: ArchiveRequest):
     if request.category not in ("published", "failed", "test"):
         raise HTTPException(status_code=400, detail=f"Invalid category: {request.category}")
 
-    result = archive_project(
+    result = await asyncio.to_thread(
+        archive_project,
         project_id=request.project_id,
         category=request.category,
     )
@@ -1106,15 +1102,10 @@ async def on_scene_updated(scene_num: int, data: dict):
 
 
 # ============================================================================
-# BROADCAST HELPER
+# BROADCAST HELPER (use websocket.broadcast_event as canonical implementation)
 # ============================================================================
 
-async def broadcast_event(event: str, data: dict):
-    """Broadcast event to all connected clients."""
-    if state.ws_manager:
-        await state.ws_manager.broadcast(event, data)
-    else:
-        logger.warning(f"No WebSocket manager set, cannot broadcast: {event}")
+from app.server.websocket import broadcast_event  # noqa: F401, E402
 
 
 # ============================================================================

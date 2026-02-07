@@ -59,7 +59,7 @@ class PostProcessStage(BasePipelineStage):
         project_dir = Path(self.project.project_dir) if hasattr(self.project, 'project_dir') else get_project_path(self.project_id)
 
         # v7.4: Check for manifest.json from GEN3b
-        manifest_path = project_dir / "manifest.json"
+        manifest_path = project_dir / "gen3b_manifest.json"
         has_manifest = manifest_path.exists()
 
         # Fallback: check if all scenes have videos
@@ -88,7 +88,7 @@ class PostProcessStage(BasePipelineStage):
 
         try:
             # Check for manifest.json
-            manifest_path = project_dir / "manifest.json"
+            manifest_path = project_dir / "gen3b_manifest.json"
 
             if manifest_path.exists():
                 # v7.4: Manifest-based rendering
@@ -187,9 +187,10 @@ class PostProcessStage(BasePipelineStage):
         )
 
         # PUSH: Success notification
+        duration = await self._get_video_duration(final_path)
         await self.notifier.push_success(
             title="Video Complete!",
-            message=f"Final video rendered: {self._get_video_duration(final_path):.1f}s",
+            message=f"Final video rendered: {duration:.1f}s" if duration else "Final video rendered",
             project_id=self.project_id
         )
 
@@ -208,7 +209,7 @@ class PostProcessStage(BasePipelineStage):
             data={
                 "final_video": str(final_path),
                 "thumbnail": str(thumbnail_path) if thumbnail_path else None,
-                "duration_seconds": self._get_video_duration(final_path),
+                "duration_seconds": duration,
                 "hook_style": manifest.hook.style,
                 "scenes_count": len(manifest.scenes),
             }
@@ -238,29 +239,51 @@ class PostProcessStage(BasePipelineStage):
 
         # Create concat file
         concat_file = project_dir / "concat_list.txt"
-        with open(concat_file, "w") as f:
+        with open(concat_file, "w", encoding="utf-8") as f:
             for path in video_paths:
-                f.write(f"file '{path}'\n")
+                safe_path = str(path).replace("\\", "/")
+                f.write(f"file '{safe_path}'\n")
 
-        import subprocess
-        ffmpeg_path = str(settings.TOPAZ_FFMPEG_PATH) if settings.TOPAZ_FFMPEG_PATH else "ffmpeg"
+        import asyncio
+        if hasattr(settings, 'FFMPEG_PATH') and settings.FFMPEG_PATH and settings.FFMPEG_PATH.exists():
+            ffmpeg_path = str(settings.FFMPEG_PATH)
+        elif settings.TOPAZ_FFMPEG_PATH and settings.TOPAZ_FFMPEG_PATH.exists():
+            ffmpeg_path = str(settings.TOPAZ_FFMPEG_PATH)
+        else:
+            ffmpeg_path = "ffmpeg"
         cmd = [
             ffmpeg_path, "-y",
             "-f", "concat", "-safe", "0",
             "-i", str(concat_file),
-            "-c:v", "h264_nvenc",
-            "-preset", "p4",
-            "-rc", "constqp", "-qp", "23",
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", "23",
             str(output_path)
         ]
 
-        process = subprocess.run(cmd, capture_output=True, text=True)
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=300)
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
+            return StageResult(
+                success=False,
+                stage_name=self.name,
+                status=StageStatus.FAILED,
+                message="FFmpeg legacy render timed out after 300s"
+            )
+
         if process.returncode != 0:
             return StageResult(
                 success=False,
                 stage_name=self.name,
                 status=StageStatus.FAILED,
-                message=f"FFmpeg failed: {process.stderr[:200]}"
+                message=f"FFmpeg failed: {stderr.decode('utf-8', errors='ignore')[:200]}"
             )
 
         final_path = output_path
@@ -304,7 +327,7 @@ class PostProcessStage(BasePipelineStage):
             data={
                 "final_video": str(final_path),
                 "thumbnail": str(thumbnail_path) if thumbnail_path else None,
-                "duration_seconds": self._get_video_duration(final_path)
+                "duration_seconds": await self._get_video_duration(final_path)
             }
         )
 
@@ -338,7 +361,7 @@ class PostProcessStage(BasePipelineStage):
         thumbnail_path = video_path.parent / "thumbnail.png"
 
         try:
-            import subprocess
+            import asyncio
 
             # Extract frame at 1 second using FFmpeg
             cmd = [
@@ -350,33 +373,43 @@ class PostProcessStage(BasePipelineStage):
                 str(thumbnail_path)
             ]
 
-            process = subprocess.run(cmd, capture_output=True, text=True)
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
+                logger.warning(f"[{self.project_id}] Thumbnail extraction timed out")
+                return None
 
             if process.returncode == 0 and thumbnail_path.exists():
                 logger.success(f"[{self.project_id}] Thumbnail generated")
                 return thumbnail_path
             else:
-                logger.warning(f"[{self.project_id}] Thumbnail extraction failed: {process.stderr[:200]}")
+                logger.warning(f"[{self.project_id}] Thumbnail extraction failed: {stderr.decode('utf-8', errors='ignore')[:200]}")
 
         except Exception as e:
             logger.error(f"[{self.project_id}] Thumbnail generation failed: {e}")
 
         return None
 
-    def _get_video_duration(self, video_path: Path) -> Optional[float]:
+    async def _get_video_duration(self, video_path: Path) -> Optional[float]:
         """Get video duration in seconds"""
         try:
-            import subprocess
-            result = subprocess.run(
-                [
-                    "ffprobe", "-v", "error",
-                    "-show_entries", "format=duration",
-                    "-of", "default=noprint_wrappers=1:nokey=1",
-                    str(video_path)
-                ],
-                capture_output=True,
-                text=True
+            import asyncio
+            process = await asyncio.create_subprocess_exec(
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(video_path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
-            return float(result.stdout.strip())
+            stdout, _ = await asyncio.wait_for(process.communicate(), timeout=10)
+            return float(stdout.decode().strip())
         except Exception:
             return None

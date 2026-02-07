@@ -35,7 +35,7 @@ class ConnectionManager:
                     data = await websocket.receive_text()
                     # Handle incoming messages
             except WebSocketDisconnect:
-                manager.disconnect(websocket)
+                await manager.disconnect(websocket)
 
         # From anywhere in the app:
         await manager.broadcast("scene_updated", {"scene": 1, "status": "ready"})
@@ -78,20 +78,21 @@ class ConnectionManager:
             self._running = True
             self._ping_task = asyncio.create_task(self._ping_loop())
 
-    def disconnect(self, websocket: WebSocket) -> None:
+    async def disconnect(self, websocket: WebSocket) -> None:
         """
         Remove a WebSocket connection.
 
         Args:
             websocket: The WebSocket connection to remove
         """
-        self.active_connections.discard(websocket)
+        async with self._lock:
+            self.active_connections.discard(websocket)
 
-        # Remove from all subscriptions
-        for project_id, subscribers in list(self.subscriptions.items()):
-            subscribers.discard(websocket)
-            if not subscribers:
-                del self.subscriptions[project_id]
+            # Remove from all subscriptions
+            for project_id, subscribers in list(self.subscriptions.items()):
+                subscribers.discard(websocket)
+                if not subscribers:
+                    del self.subscriptions[project_id]
 
         logger.info(f"WebSocket disconnected. Total connections: {self.connection_count}")
 
@@ -162,7 +163,7 @@ class ConnectionManager:
                 disconnected.append(connection)
 
         for conn in disconnected:
-            self.disconnect(conn)
+            await self.disconnect(conn)
 
         logger.debug(f"Broadcast '{event}' to {len(subscribers)} project subscribers")
 
@@ -191,7 +192,7 @@ class ConnectionManager:
 
         # Remove disconnected clients
         for conn in disconnected:
-            self.disconnect(conn)
+            await self.disconnect(conn)
 
         logger.debug(f"Broadcast '{event}' to {self.connection_count} clients")
 
@@ -257,7 +258,7 @@ class ConnectionManager:
                         disconnected.append(connection)
 
                 for conn in disconnected:
-                    self.disconnect(conn)
+                    await self.disconnect(conn)
 
             except asyncio.CancelledError:
                 break

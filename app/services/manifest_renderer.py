@@ -24,7 +24,6 @@ Output: final_video.mp4 (9:16, 25s, 60fps)
 """
 
 import json
-import subprocess
 import asyncio
 from pathlib import Path
 from typing import List, Optional, Dict, Any
@@ -76,9 +75,14 @@ class ManifestRenderer:
     """
 
     def __init__(self, config: Optional[RenderConfig] = None):
-        """Initialize ManifestRenderer with optional config."""
+        """Initialize ManifestRenderer with optional config.
+
+        Note: video codec auto-detection is deferred to _ensure_codec_detected()
+        to avoid blocking the event loop with subprocess.run in __init__.
+        """
         self.config = config or RenderConfig()
         self.audio_mixer = AudioMixer()
+        self._codec_detected = False
 
         # Використовуємо повний FFmpeg (має ass/subtitles фільтри та libx264)
         # Topaz FFmpeg не має цих фільтрів!
@@ -89,23 +93,29 @@ class ManifestRenderer:
         else:
             self.ffmpeg_path = "ffmpeg"
 
-        # Auto-detect video codec if set to "auto"
+        logger.info("ManifestRenderer initialized (codec detection deferred):")
+        logger.info(f"  FFmpeg: {self.ffmpeg_path}")
+        logger.info(f"  Output: {self.config.output_width}x{self.config.output_height}")
+        logger.info(f"  FPS: {self.config.fps}")
+
+    async def _ensure_codec_detected(self):
+        """Auto-detect video codec asynchronously (called once before first render)."""
+        if self._codec_detected:
+            return
+
         if self.config.video_codec == "auto":
-            self.config.video_codec = self._detect_video_codec()
+            self.config.video_codec = await self._detect_video_codec_async()
 
         # Adjust preset for codec type
         if "nvenc" in self.config.video_codec and self.config.preset == "medium":
             self.config.preset = "p4"  # NVENC equivalent of "medium"
 
-        logger.info("ManifestRenderer initialized:")
-        logger.info(f"  FFmpeg: {self.ffmpeg_path}")
-        logger.info(f"  Output: {self.config.output_width}x{self.config.output_height}")
-        logger.info(f"  FPS: {self.config.fps}")
+        self._codec_detected = True
         logger.info(f"  Codec: {self.config.video_codec}")
 
-    def _detect_video_codec(self) -> str:
+    async def _detect_video_codec_async(self) -> str:
         """
-        Auto-detect best available video encoder.
+        Auto-detect best available video encoder (async, non-blocking).
 
         Priority:
         1. h264_nvenc (NVIDIA GPU) - fastest
@@ -115,35 +125,29 @@ class ManifestRenderer:
             Codec name string
         """
         try:
-            # Check if NVENC is available by querying FFmpeg encoders
-            result = subprocess.run(
-                [self.ffmpeg_path, "-encoders", "-hide_banner"],
-                capture_output=True,
-                text=True,
-                timeout=10
+            proc = await asyncio.create_subprocess_exec(
+                self.ffmpeg_path, "-encoders", "-hide_banner",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
 
-            if result.returncode == 0 and "h264_nvenc" in result.stdout:
+            if proc.returncode == 0 and b"h264_nvenc" in stdout:
                 # NVENC listed, but need to verify CUDA is actually working
-                # Try a quick encode test
-                test_result = subprocess.run(
-                    [
-                        self.ffmpeg_path, "-y",
-                        "-f", "lavfi", "-i", "nullsrc=s=64x64:d=0.1",
-                        "-c:v", "h264_nvenc", "-f", "null", "-"
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=10
+                test_proc = await asyncio.create_subprocess_exec(
+                    self.ffmpeg_path, "-y",
+                    "-f", "lavfi", "-i", "nullsrc=s=64x64:d=0.1",
+                    "-c:v", "h264_nvenc", "-f", "null", "-",
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
                 )
+                await asyncio.wait_for(test_proc.communicate(), timeout=10)
 
-                if test_result.returncode == 0:
+                if test_proc.returncode == 0:
                     logger.info("  Codec auto-detect: h264_nvenc (NVIDIA GPU)")
                     return "h264_nvenc"
                 else:
                     logger.warning("  NVENC listed but CUDA unavailable, using libx264")
 
-        except subprocess.TimeoutExpired:
+        except asyncio.TimeoutError:
             logger.warning("  Codec detection timeout, using libx264")
         except Exception as e:
             logger.warning(f"  Codec detection failed: {e}, using libx264")
@@ -196,6 +200,9 @@ class ManifestRenderer:
         Raises:
             Exception: If rendering fails
         """
+        # Ensure codec is detected before rendering (async, non-blocking)
+        await self._ensure_codec_detected()
+
         logger.info("=" * 60)
         logger.info("ManifestRenderer: Starting Render")
         logger.info("=" * 60)
@@ -205,6 +212,13 @@ class ManifestRenderer:
         logger.info(f"  Hook style: {manifest.hook.style}")
 
         output_path = project_dir / output_filename
+
+        # Initialize variables for cleanup (even if render fails partway through)
+        processed_scenes = []
+        hook_path = None
+        concat_path = None
+        effects_path = None
+        subtitled_path = None
 
         try:
             # Step 1: Process scenes with speed changes
@@ -233,6 +247,12 @@ class ManifestRenderer:
                 subtitled_path, manifest, project_dir, output_path
             )
 
+            # Step 7: Cleanup intermediate files
+            self._cleanup_intermediate_files(
+                project_dir, processed_scenes, hook_path,
+                concat_path, effects_path, subtitled_path
+            )
+
             logger.success("=" * 60)
             logger.success("ManifestRenderer: Render Complete")
             logger.success(f"  Output: {final_path}")
@@ -242,7 +262,53 @@ class ManifestRenderer:
 
         except Exception as e:
             logger.error(f"Render failed: {e}")
+            # Cleanup intermediate files even on failure to prevent disk bloat
+            try:
+                self._cleanup_intermediate_files(
+                    project_dir, processed_scenes, hook_path,
+                    concat_path, effects_path, subtitled_path,
+                )
+            except Exception as cleanup_err:
+                logger.warning(f"Cleanup after render failure also failed: {cleanup_err}")
             raise
+
+    def _cleanup_intermediate_files(
+        self,
+        project_dir: Path,
+        processed_scenes: List[Path],
+        hook_path: Optional[Path],
+        concat_path: Optional[Path],
+        effects_path: Optional[Path],
+        subtitled_path: Optional[Path],
+    ) -> None:
+        """Remove intermediate render files to save disk space."""
+        cleaned = 0
+        for path in processed_scenes:
+            # Only delete files that were created by renderer (not original scene videos)
+            if path and path.exists() and path.name.startswith(("processed_scene_", "effects_scene_")):
+                path.unlink(missing_ok=True)
+                cleaned += 1
+
+        for path in [hook_path, concat_path, effects_path, subtitled_path]:
+            if path and path.exists() and path.name in (
+                "hook.mp4", "concatenated.mp4", "global_effects.mp4", "subtitled.mp4"
+            ):
+                path.unlink(missing_ok=True)
+                cleaned += 1
+
+        # Also clean effects_scene_N.mp4 files that may exist
+        for f in project_dir.glob("effects_scene_*.mp4"):
+            f.unlink(missing_ok=True)
+            cleaned += 1
+
+        # Clean concat_list.txt
+        concat_list = project_dir / "concat_list.txt"
+        if concat_list.exists():
+            concat_list.unlink(missing_ok=True)
+            cleaned += 1
+
+        if cleaned:
+            logger.info(f"  Cleaned up {cleaned} intermediate files")
 
     def _resolve_source_path(self, project_dir: Path, source_file: str) -> Path:
         """
@@ -355,7 +421,7 @@ class ManifestRenderer:
         # Якщо один сегмент - простіша обробка
         if len(speed_segments) == 1:
             seg = speed_segments[0]
-            pts_factor = 1 / seg.speed
+            pts_factor = 1 / max(seg.speed, 0.1)
             # Use filter_complex with trim for correct speed processing
             filter_str = f"[0:v]trim={seg.source_start}:{seg.source_end},setpts={pts_factor}*(PTS-STARTPTS)[v]"
             cmd = [
@@ -379,7 +445,7 @@ class ManifestRenderer:
         segment_files = []
         for i, seg in enumerate(speed_segments):
             seg_output = temp_dir / f"seg_{i}.mp4"
-            pts_factor = 1 / seg.speed
+            pts_factor = 1 / max(seg.speed, 0.1)
 
             # Use filter_complex with trim for correct speed processing
             filter_str = f"[0:v]trim={seg.source_start}:{seg.source_end},setpts={pts_factor}*(PTS-STARTPTS)[v]"
@@ -401,7 +467,7 @@ class ManifestRenderer:
         # Concat всі сегменти
         if segment_files:
             concat_file = temp_dir / "concat.txt"
-            with open(concat_file, 'w') as f:
+            with open(concat_file, 'w', encoding='utf-8') as f:
                 for seg_file in segment_files:
                     # Use absolute path to avoid path duplication issues
                     abs_path = str(seg_file.resolve()).replace(chr(92), '/')
@@ -425,6 +491,11 @@ class ManifestRenderer:
                 temp_dir.rmdir()
             except:
                 pass
+        else:
+            # All segments failed — fallback: copy source as-is
+            import shutil
+            logger.warning(f"  All {len(speed_segments)} speed segments failed, copying source as fallback")
+            shutil.copy(input_path, output_path)
 
         logger.info(f"  Applied {len(speed_segments)} speed segments")
 
@@ -599,7 +670,7 @@ class ManifestRenderer:
 
         # Зберігаємо список для інформації
         concat_file = project_dir / "concat_list.txt"
-        with open(concat_file, "w") as f:
+        with open(concat_file, "w", encoding="utf-8") as f:
             for path in input_files:
                 f.write(f"file '{path}'\n")
 
@@ -675,40 +746,26 @@ class ManifestRenderer:
         output_path = project_dir / "subtitled.mp4"
         ass_path = project_dir / "subtitles.ass"
 
-        # REQUIRE word-by-word subtitles from ElevenLabs timestamps (NO FALLBACK!)
-        vo_alignment_path = project_dir / "vo_alignment.json"
-
-        if not vo_alignment_path.exists():
-            raise FileNotFoundError(
-                f"vo_alignment.json not found at {vo_alignment_path}. "
-                f"Word-by-word subtitles require ElevenLabs character-level timestamps. "
-                f"Ensure AudioStage completed successfully."
-            )
-
         if not ass_path.exists():
-            raise FileNotFoundError(
-                f"subtitles.ass not found at {ass_path}. "
-                f"Word-by-word subtitles should be generated by AudioStage from vo_alignment.json. "
-                f"Ensure AudioStage completed successfully."
-            )
+            logger.warning(f"  subtitles.ass not found at {ass_path}, skipping subtitle overlay")
+            return input_path
 
-        logger.info(f"  Using word-by-word subtitles (from vo_alignment.json)")
+        logger.info(f"  Using word-by-word subtitles from {ass_path.name}")
 
-        # FFmpeg filter requires escaped path on Windows
-        # Replace backslashes with forward slashes and escape colons
-        ass_path_escaped = str(ass_path).replace("\\", "/").replace(":", "\\:")
-
+        # Use relative path for ASS filter to avoid Windows 'C:' colon issue.
+        # FFmpeg's filter parser treats ':' as option separator and no escaping works reliably.
+        # Running FFmpeg with cwd=project_dir lets us use just the filename.
         cmd = [
             self.ffmpeg_path, "-y",
             "-i", str(input_path),
-            "-vf", f"ass='{ass_path_escaped}'",
+            "-vf", f"ass={ass_path.name}",
             "-c:v", self.config.video_codec,
             *self._get_encoder_params(),
             "-c:a", "copy",
             str(output_path)
         ]
 
-        await self._run_ffmpeg(cmd)
+        await self._run_ffmpeg(cmd, cwd=project_dir)
         logger.info(f"  Added {len(subtitles)} subtitles")
 
         return output_path
@@ -786,18 +843,27 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     ) -> Path:
         """Mix 5-layer audio and combine with video."""
         # Get actual video duration (may differ from manifest due to speed processing)
-        import subprocess
+        import asyncio as _asyncio
         # Використовуємо ffprobe з тієї ж директорії що і ffmpeg
         ffprobe_path = Path(self.ffmpeg_path).parent / "ffprobe.exe"
         if not ffprobe_path.exists():
-            ffprobe_path = "ffprobe"  # Fallback до системного
-        result = subprocess.run([
-            str(ffprobe_path), "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
-            str(video_path)
-        ], capture_output=True, text=True)
-        actual_duration = float(result.stdout.strip()) if result.returncode == 0 else manifest.total_duration
+            ffprobe_path = Path(self.ffmpeg_path).parent / "ffprobe"
+        if not ffprobe_path.exists():
+            ffprobe_path = Path("ffprobe")  # Fallback до системного
+        try:
+            probe_proc = await _asyncio.create_subprocess_exec(
+                str(ffprobe_path), "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(video_path),
+                stdout=_asyncio.subprocess.PIPE, stderr=_asyncio.subprocess.PIPE
+            )
+            probe_stdout, _ = await _asyncio.wait_for(probe_proc.communicate(), timeout=15)
+            stdout_text = probe_stdout.decode().strip() if probe_stdout else ""
+            actual_duration = float(stdout_text) if probe_proc.returncode == 0 and stdout_text else manifest.total_duration
+        except (ValueError, AttributeError, _asyncio.TimeoutError):
+            logger.warning(f"  ffprobe returned invalid duration output, using manifest value: {manifest.total_duration}s")
+            actual_duration = manifest.total_duration
         logger.info(f"  Video duration: {actual_duration:.2f}s (manifest: {manifest.total_duration}s)")
 
         # Find music file - check multiple possible locations
@@ -837,10 +903,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             if sfx_path.exists():
                 self.audio_mixer.add_sfx_event(
                     audio_config,
-                    sfx.timestamp,
+                    sfx.output_timestamp,
                     sfx_path,
                     sfx.volume,
-                    sfx.reason,
+                    sfx.effect,
                 )
 
         # AUTO-SFX: If no SFX from manifest, auto-discover SFX files
@@ -853,19 +919,27 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             if foley_path.exists():
                 self.audio_mixer.add_foley_event(
                     audio_config,
-                    foley.timestamp,
+                    foley.output_timestamp,
                     foley_path,
                     foley.volume,
-                    foley.reason,
+                    foley.effect,
                 )
 
-        # Add VO segments for ducking
-        for vo_seg in manifest.vo_segments if hasattr(manifest, 'vo_segments') else []:
-            self.audio_mixer.add_vo_segment(
-                audio_config,
-                vo_seg.get("start", 0),
-                vo_seg.get("end", 0),
-            )
+        # Add VO segments for ducking (from voiceover_timing.json)
+        vo_timing_path = project_dir / "voiceover_timing.json"
+        if vo_timing_path.exists():
+            import json as _json
+            with open(vo_timing_path, "r", encoding="utf-8") as f:
+                vo_timing_data = _json.load(f)
+            for seg in vo_timing_data.get("segments", []):
+                self.audio_mixer.add_vo_segment(
+                    audio_config,
+                    seg.get("start_time", 0) + hook_duration,
+                    seg.get("end_time", 0) + hook_duration,
+                )
+            logger.info(f"  VO ducking: {len(vo_timing_data.get('segments', []))} segments loaded")
+        else:
+            logger.warning("  No voiceover_timing.json - VO ducking disabled")
 
         # Log configuration
         self.audio_mixer.log_config(audio_config)
@@ -924,17 +998,30 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 return path
         return None
 
-    async def _run_ffmpeg(self, cmd: List[str]) -> None:
-        """Run FFmpeg command asynchronously."""
+    async def _run_ffmpeg(self, cmd: List[str], timeout: int = 300, cwd: Path = None) -> None:
+        """Run FFmpeg command asynchronously with timeout.
+
+        Args:
+            cmd: FFmpeg command arguments
+            timeout: Maximum time in seconds (default 300s = 5 min)
+            cwd: Working directory for FFmpeg process (useful for relative paths)
+        """
         logger.debug(f"FFmpeg command: {' '.join(str(x) for x in cmd)}")
 
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            cwd=str(cwd) if cwd else None,
         )
 
-        stdout, stderr = await process.communicate()
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
+            logger.error(f"FFmpeg timed out after {timeout}s: {' '.join(str(x) for x in cmd[:15])}...")
+            raise Exception(f"FFmpeg timed out after {timeout}s")
 
         if process.returncode != 0:
             error_msg = stderr.decode() if stderr else "Unknown error"
@@ -1062,6 +1149,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
         Just concatenates scenes and adds basic audio.
         """
+        await self._ensure_codec_detected()
         logger.info("ManifestRenderer: Simple render mode")
 
         output_path = project_dir / output_filename
@@ -1078,9 +1166,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
         # Create concat file
         concat_file = project_dir / "concat_list.txt"
-        with open(concat_file, "w") as f:
+        with open(concat_file, "w", encoding="utf-8") as f:
             for path in scene_paths:
-                f.write(f"file '{path}'\n")
+                safe_path = str(path).replace("\\", "/")
+                f.write(f"file '{safe_path}'\n")
 
         # Simple concat with VO
         vo_path = project_dir / "voiceover.mp3"

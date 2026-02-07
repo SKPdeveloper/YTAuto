@@ -290,12 +290,13 @@ class VideoAssembler:
 
         return cmd
 
-    async def _run_ffmpeg(self, cmd: List[str]) -> bool:
+    async def _run_ffmpeg(self, cmd: List[str], timeout: int = 300) -> bool:
         """
         Run FFmpeg command asynchronously.
 
         Args:
             cmd: FFmpeg command as list of arguments
+            timeout: Max seconds to wait (default 300)
 
         Returns:
             True if successful, False otherwise
@@ -307,7 +308,15 @@ class VideoAssembler:
                 stderr=asyncio.subprocess.PIPE,
             )
 
-            stdout, stderr = await process.communicate()
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(), timeout=timeout
+                )
+            except asyncio.TimeoutError:
+                logger.error(f"FFmpeg timed out after {timeout}s, killing process")
+                process.kill()
+                await process.wait()
+                return False
 
             if process.returncode == 0:
                 logger.info("FFmpeg completed successfully")

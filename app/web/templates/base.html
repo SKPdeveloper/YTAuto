@@ -263,7 +263,7 @@
                 'error': 'bg-red-100 border-red-300 text-red-800'
             };
             toast.className = `${colors[type]} border px-4 py-3 rounded-lg shadow-lg transition-all duration-300 transform translate-x-0`;
-            toast.innerHTML = message;
+            toast.textContent = message;
             document.getElementById('toast-container').appendChild(toast);
 
             setTimeout(() => {

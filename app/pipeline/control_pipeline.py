@@ -96,6 +96,9 @@ class ControlPipeline:
             # Stage 6.5: Generate audio (voiceover + music) - REQUIRED for Gen3a
             await self._generate_audio()
 
+            # Validate audio artifacts before proceeding
+            await self._validate_audio_artifacts()
+
             # Stage 7: Gen3a Video Analysis
             await self._run_gen3a_analysis()
 
@@ -735,27 +738,52 @@ class ControlPipeline:
 
             scene_6_dir.mkdir(parents=True, exist_ok=True)
 
-            # Use ffmpeg to reverse video
+            # Use ffmpeg to reverse video (with codec auto-detection)
             from app.core.config import settings as app_settings
-            ffmpeg_path = app_settings.FFMPEG_PATH or "ffmpeg"
+            ffmpeg_path = str(app_settings.FFMPEG_PATH) if app_settings.FFMPEG_PATH else "ffmpeg"
 
-            import subprocess
+            # Detect best codec (async subprocess)
+            encoder_params = ["-c:v", "libx264", "-preset", "medium", "-crf", "23"]
+            try:
+                enc_proc = await asyncio.create_subprocess_exec(
+                    ffmpeg_path, "-encoders", "-hide_banner",
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                )
+                enc_stdout, _ = await asyncio.wait_for(enc_proc.communicate(), timeout=10)
+                if enc_proc.returncode == 0 and b"h264_nvenc" in enc_stdout:
+                    test_proc = await asyncio.create_subprocess_exec(
+                        ffmpeg_path, "-y", "-f", "lavfi", "-i", "nullsrc=s=64x64:d=0.1",
+                        "-c:v", "h264_nvenc", "-f", "null", "-",
+                        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                    )
+                    await asyncio.wait_for(test_proc.communicate(), timeout=10)
+                    if test_proc.returncode == 0:
+                        encoder_params = ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "constqp", "-qp", "23"]
+            except Exception:
+                pass
+
             cmd = [
-                str(ffmpeg_path), "-y",
+                ffmpeg_path, "-y",
                 "-i", str(scene_1_video),
                 "-vf", "reverse",
                 "-af", "areverse",
+                *encoder_params,
+                "-c:a", "aac", "-b:a", "192k",
                 str(scene_6_video)
             ]
 
             logger.info(f"[FALLBACK] Reversing scene 1: {' '.join(cmd)}")
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            process = await asyncio.create_subprocess_exec(
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=120)
 
-            if result.returncode == 0 and scene_6_video.exists():
+            if process.returncode == 0 and scene_6_video.exists():
                 logger.success(f"[FALLBACK] ✅ Scene 6 created from reversed Scene 1: {scene_6_video}")
                 return True
             else:
-                logger.error(f"[FALLBACK] FFmpeg failed: {result.stderr}")
+                error_msg = stderr.decode() if stderr else "Unknown error"
+                logger.error(f"[FALLBACK] FFmpeg failed: {error_msg}")
                 return False
 
         except Exception as e:
@@ -798,8 +826,7 @@ class ControlPipeline:
         logger.success(f"[PIPELINE] Full montage rendered: {result}")
 
     async def _assemble_with_trimming(self, project_dir: Path) -> Path:
-        """Assemble final video with scene duration trimming."""
-        import subprocess
+        """Assemble final video with scene duration trimming (async)."""
         import json
 
         # Load project brief for durations
@@ -815,7 +842,10 @@ class ControlPipeline:
 
         scenes = sorted(brief.get('scenes', []), key=lambda s: s.get('scene_number', 0))
 
-        # Trim each video
+        from app.core.config import settings as app_settings
+        ffmpeg_path = str(app_settings.FFMPEG_PATH) if app_settings.FFMPEG_PATH else "ffmpeg"
+
+        # Trim each video (async)
         trimmed_files = []
         for scene_data in scenes:
             num = scene_data.get('scene_number')
@@ -827,8 +857,11 @@ class ControlPipeline:
             if not input_video.exists():
                 continue
 
-            cmd = ['ffmpeg', '-y', '-i', str(input_video), '-t', str(dur), '-c', 'copy', str(output_video)]
-            subprocess.run(cmd, capture_output=True)
+            cmd = [ffmpeg_path, '-y', '-i', str(input_video), '-t', str(dur), '-c', 'copy', str(output_video)]
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+            await asyncio.wait_for(proc.communicate(), timeout=60)
 
             if output_video.exists():
                 trimmed_files.append(output_video)
@@ -838,13 +871,16 @@ class ControlPipeline:
 
         # Concat
         concat_file = project_dir / "concat_trimmed.txt"
-        with open(concat_file, 'w') as f:
+        with open(concat_file, 'w', encoding='utf-8') as f:
             for path in trimmed_files:
                 f.write(f"file '{str(path).replace(chr(92), '/')}'\n")
 
         output_final = project_dir / "final_10s.mp4"
-        cmd = ['ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', str(concat_file), '-c', 'copy', str(output_final)]
-        subprocess.run(cmd, capture_output=True)
+        cmd = [ffmpeg_path, '-y', '-f', 'concat', '-safe', '0', '-i', str(concat_file), '-c', 'copy', str(output_final)]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        await asyncio.wait_for(proc.communicate(), timeout=60)
 
         return output_final
 
@@ -1012,13 +1048,24 @@ class ControlPipeline:
             project_brief = json.load(f)
 
         # ==========================================
-        # STEP 1: Generate Voiceover (ElevenLabs)
+        # STEP 1: Generate Voiceover (ElevenLabs) with timestamps
         # ==========================================
-        if not voiceover_path.exists():
+        alignment_path = project_dir / "vo_alignment.json"
+        timing_path = project_dir / "voiceover_timing.json"
+        subtitles_path = project_dir / "subtitles.ass"
+        voiceover_complete = (
+            voiceover_path.exists() and
+            alignment_path.exists() and
+            timing_path.exists() and
+            subtitles_path.exists()
+        )
+
+        if not voiceover_complete:
             try:
                 from app.services.audio_engine import AudioEngine
+                from app.services.glaze_models import VoiceoverSettings, VoiceoverConfig
 
-                logger.info("[PIPELINE] Generating voiceover...")
+                logger.info("[PIPELINE] Generating voiceover with timestamps...")
                 await self.notify_log("🎙️ Generating voiceover...", "info")
 
                 audio_engine = AudioEngine()
@@ -1036,18 +1083,24 @@ class ControlPipeline:
                     )
 
                 if full_script:
-                    # Get voice settings
-                    voice_settings = voiceover_config.get("settings", {})
-                    voice_id = voice_settings.get("voice_id", "Adam")
-
-                    result_path = await audio_engine.generate_and_save_voiceover(
-                        text=full_script,
-                        output_path=voiceover_path,
-                        voice_id=voice_id,
+                    settings_data = voiceover_config.get("settings", {})
+                    vo_config = VoiceoverConfig(
+                        settings=VoiceoverSettings(**settings_data) if settings_data else VoiceoverSettings(),
+                        full_script=full_script,
+                        total_duration_seconds=voiceover_config.get("total_duration_seconds", 30),
                     )
 
-                    if result_path and result_path.exists():
-                        logger.success(f"[PIPELINE] Voiceover generated: {result_path}")
+                    result_vo, result_align, result_subs, result_timing = await audio_engine.generate_voiceover_and_subtitles(
+                        voiceover_config=vo_config,
+                        project_dir=project_dir,
+                        hook_offset=0.3,
+                    )
+
+                    if result_vo and result_vo.exists():
+                        logger.success(f"[PIPELINE] Voiceover generated: {result_vo}")
+                        logger.success(f"[PIPELINE] Alignment: {result_align}")
+                        logger.success(f"[PIPELINE] Subtitles: {result_subs}")
+                        logger.success(f"[PIPELINE] Timing: {result_timing}")
                     else:
                         logger.warning("[PIPELINE] Voiceover generation returned no file")
                 else:
@@ -1056,7 +1109,7 @@ class ControlPipeline:
             except Exception as e:
                 logger.error(f"[PIPELINE] Voiceover generation failed: {e}")
         else:
-            logger.info(f"[PIPELINE] Voiceover already exists: {voiceover_path}")
+            logger.info(f"[PIPELINE] Voiceover with alignment already exists: {voiceover_path}")
 
         # ==========================================
         # STEP 2: Generate Music (if MusicGenerator available)
@@ -1097,6 +1150,40 @@ class ControlPipeline:
             logger.info(f"[PIPELINE] Music already exists: {music_path}")
 
         logger.success("[PIPELINE] Audio generation complete")
+
+    async def _validate_audio_artifacts(self):
+        """Validate all required audio artifacts exist before proceeding to Gen3a/Gen3b."""
+        if not self.project:
+            return
+
+        project_dir = settings.PROJECTS_DIR / self.project.project_id
+
+        required_files = {
+            "voiceover.mp3": "ElevenLabs voiceover audio",
+            "vo_alignment.json": "Character-level timestamps for word-by-word subtitles",
+            "voiceover_timing.json": "Scene-level timing for Gen3b manifest",
+            "subtitles.ass": "Word-by-word subtitle file",
+        }
+
+        problems = []
+        for filename, description in required_files.items():
+            path = project_dir / filename
+            if not path.exists():
+                problems.append(f"  - {filename}: MISSING ({description})")
+            elif path.stat().st_size == 0:
+                problems.append(f"  - {filename}: EMPTY (0 bytes)")
+
+        if problems:
+            msg = (
+                f"Audio artifacts incomplete:\n"
+                + "\n".join(problems)
+                + "\n\nEnsure AudioStage generated voiceover with ElevenLabs timestamps."
+            )
+            logger.error(f"[PIPELINE] {msg}")
+            await self.notify_log(f"Audio artifacts invalid: {len(problems)} file(s)", "error")
+            raise FileNotFoundError(msg)
+
+        logger.success("[PIPELINE] All audio artifacts validated: voiceover, alignment, timing, subtitles")
 
     async def _run_gen3a_analysis(self):
         """Run Gen3a video analysis (Gemini Vision)."""
@@ -1162,7 +1249,7 @@ class ControlPipeline:
 
         except Exception as e:
             logger.error(f"[PIPELINE] Gen3a analysis failed: {e}")
-            # Don't raise - continue without analysis
+            raise
 
     async def _run_gen3b_manifest(self):
         """Run Gen3b manifest generation."""
@@ -1223,7 +1310,7 @@ class ControlPipeline:
 
         except Exception as e:
             logger.error(f"[PIPELINE] Gen3b manifest generation failed: {e}")
-            # Don't raise - continue without manifest
+            raise
 
     async def _run_topaz_upscale(self):
         """Run Topaz Video AI upscaling."""
@@ -1232,7 +1319,7 @@ class ControlPipeline:
 
         await self._notify_stage("TOPAZ_UPSCALING", 95)
 
-        from app.modules.topaz_queue import TopazQueue
+        from app.modules.topaz_queue import get_topaz_queue
 
         project_dir = settings.PROJECTS_DIR / self.project.project_id
 
@@ -1253,7 +1340,7 @@ class ControlPipeline:
         logger.info(f"[PIPELINE] Starting Topaz upscaling: {input_video}")
 
         try:
-            queue = TopazQueue()
+            queue = get_topaz_queue()
 
             # Check if Topaz is available
             if not queue.is_topaz_available:
@@ -1385,14 +1472,16 @@ class ControlPipeline:
                 token_path=token_path
             )
 
-            # Authenticate
-            if not api.authenticate():
+            # Authenticate (run in thread — sync API)
+            auth_ok = await asyncio.to_thread(api.authenticate)
+            if not auth_ok:
                 logger.error("[PIPELINE] YouTube authentication failed")
                 return
 
-            # Upload video
+            # Upload video (run in thread — sync API, can take minutes)
             logger.info("[PIPELINE] Uploading to YouTube...")
-            success, video_id, error = api.upload_video(
+            success, video_id, error = await asyncio.to_thread(
+                api.upload_video,
                 video_path=video_path,
                 title=title,
                 description=description,
