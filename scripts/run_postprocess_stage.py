@@ -1,12 +1,17 @@
 """
-Run PostProcess Stage (FFmpeg Manifest Renderer) for a specific project.
+Run ManifestRenderer directly for a specific project.
+
+This replicates exactly what control_pipeline._assemble_final() does:
+loads gen3b_manifest.json and renders the final video.
 
 Usage:
-    python scripts/run_postprocess_stage.py proj_b99d6de73b2b
+    python scripts/run_postprocess_stage.py proj_be5f50fa8bd1
+    python scripts/run_postprocess_stage.py proj_be5f50fa8bd1 --simple   # simple render (no effects)
 """
 
 import sys
 import asyncio
+import json
 from pathlib import Path
 
 # Add project root to path
@@ -15,15 +20,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent.parent / "config" / ".env")
 
-from app.pipeline.postprocess_stage import PostProcessStage
-from app.api.schemas import ProjectData, SceneData
 from app.core.config import settings
 from loguru import logger
-import json
 
 
-async def run_postprocess_stage(project_id: str):
-    """Run PostProcess Stage for a project."""
+async def run_render(project_id: str, simple: bool = False):
+    """Run ManifestRenderer for a project (same as control_pipeline._assemble_final)."""
 
     project_dir = Path(settings.PROJECTS_DIR) / project_id
 
@@ -31,94 +33,84 @@ async def run_postprocess_stage(project_id: str):
         logger.error(f"Project not found: {project_dir}")
         return
 
-    # Check if manifest.json exists
-    manifest_path = project_dir / "manifest.json"
+    # Check for gen3b_manifest.json (the actual manifest file)
+    manifest_path = project_dir / "gen3b_manifest.json"
     if not manifest_path.exists():
-        logger.error(f"manifest.json not found - run GEN3b first!")
+        logger.error(f"gen3b_manifest.json not found in {project_dir}")
+        logger.info("Run GEN3b stage first, or check if the file exists with a different name")
         return
-
-    # Load project brief
-    brief_path = project_dir / "project_brief.json"
-    if not brief_path.exists():
-        logger.error(f"project_brief.json not found in {project_dir}")
-        return
-
-    with open(brief_path, "r", encoding="utf-8") as f:
-        brief = json.load(f)
-
-    # Build ProjectData from brief
-    scenes = []
-    brief_scenes = brief.get("scenes", [])
-    for i in range(1, 7):
-        scene_dir = project_dir / f"scene_{i}"
-        video_path = scene_dir / "video.mp4"
-        image_path = scene_dir / "image.png"
-
-        scene_brief = brief_scenes[i-1] if i-1 < len(brief_scenes) else {}
-
-        scenes.append(SceneData(
-            scene_number=i,
-            project_id=project_id,
-            description=scene_brief.get("visual_description", f"Scene {i}"),
-            image_prompt=scene_brief.get("image_prompt", ""),
-            audio_prompt=scene_brief.get("voiceover_segment", ""),
-            video_path=str(video_path) if video_path.exists() else None,
-            image_path=str(image_path) if image_path.exists() else None,
-        ))
-
-    project = ProjectData(
-        project_id=project_id,
-        topic=brief.get("property", {}).get("name", "Unknown"),
-        num_scenes=6,
-        project_dir=str(project_dir),
-        scenes=scenes,
-    )
-
-    logger.info("=" * 60)
-    logger.info(f"Running PostProcess Stage for: {project_id}")
-    logger.info(f"Project dir: {project_dir}")
-    logger.info("=" * 60)
 
     # Check inputs
+    logger.info("=" * 60)
+    logger.info(f"ManifestRenderer Test: {project_id}")
+    logger.info(f"Project dir: {project_dir}")
+    logger.info("=" * 60)
     logger.info("Checking inputs:")
-    logger.info(f"  manifest.json: {'OK' if manifest_path.exists() else 'MISSING'}")
-    logger.info(f"  voiceover.mp3: {'OK' if (project_dir / 'voiceover.mp3').exists() else 'MISSING'}")
-    logger.info(f"  music.mp3: {'OK' if (project_dir / 'music.mp3').exists() else 'MISSING'}")
-    logger.info(f"  ambient.mp3: {'OK' if (project_dir / 'ambient.mp3').exists() else 'optional'}")
+    logger.info(f"  gen3b_manifest.json: OK")
+    logger.info(f"  subtitles.ass:  {'OK' if (project_dir / 'subtitles.ass').exists() else 'MISSING (will skip subtitles)'}")
+    logger.info(f"  voiceover.mp3:  {'OK' if (project_dir / 'voiceover.mp3').exists() else 'MISSING'}")
+    logger.info(f"  music:          {'OK' if (project_dir / 'music.mp3').exists() or (project_dir / 'music' / 'background.mp3').exists() else 'MISSING'}")
+    logger.info(f"  voiceover_timing.json: {'OK' if (project_dir / 'voiceover_timing.json').exists() else 'MISSING (no VO ducking)'}")
 
-    # Check scene videos
     for i in range(1, 7):
         video_path = project_dir / f"scene_{i}" / "video.mp4"
         logger.info(f"  scene_{i}/video.mp4: {'OK' if video_path.exists() else 'MISSING'}")
 
-    # Create and run PostProcess Stage
-    stage = PostProcessStage(project=project)
+    # Remove old output if exists (force re-render)
+    for old_file in ["final.mp4", "final_video.mp4"]:
+        old_path = project_dir / old_file
+        if old_path.exists():
+            logger.warning(f"  Removing old {old_file} for fresh render")
+            old_path.unlink()
 
-    # Check if can run
-    can_run = await stage.can_run()
-    logger.info(f"Can run: {can_run}")
+    # Load manifest
+    logger.info("=" * 60)
+    logger.info("Loading manifest...")
 
-    if not can_run:
-        final_path = project_dir / "final_video.mp4"
-        if final_path.exists():
-            logger.info("final_video.mp4 already exists!")
-            return
+    from app.services.gen_models import Gen3bManifest
+    from app.services.manifest_renderer import ManifestRenderer
 
-    # Execute
-    result = await stage.execute()
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        manifest_data = json.load(f)
 
-    if result.success:
-        logger.success("PostProcess Stage completed!")
-        logger.success(f"Output: {result.data.get('final_video', 'N/A')}")
-        logger.success(f"Duration: {result.data.get('duration_seconds', 'N/A')}s")
+    manifest = Gen3bManifest(**manifest_data)
+
+    logger.info(f"  Total duration: {manifest.total_duration}s")
+    logger.info(f"  Scenes: {len(manifest.scenes)}")
+    logger.info(f"  Subtitles: {len(manifest.subtitles)}")
+    logger.info(f"  Hook: {manifest.hook.style} ({manifest.hook.duration}s)")
+
+    # Render
+    renderer = ManifestRenderer()
+
+    if simple:
+        logger.info("Using SIMPLE render (no effects, no subtitles)")
+        result = await renderer.render_simple(
+            manifest=manifest,
+            project_dir=project_dir,
+            output_filename="final_video.mp4",
+        )
     else:
-        logger.error(f"PostProcess Stage failed: {result.message}")
+        logger.info("Using FULL render (effects + subtitles + audio mix)")
+        result = await renderer.render(
+            manifest=manifest,
+            project_dir=project_dir,
+            output_filename="final_video.mp4",
+        )
+
+    logger.success("=" * 60)
+    logger.success(f"Render complete: {result}")
+    logger.success(f"Size: {result.stat().st_size / 1024 / 1024:.1f} MB")
+    logger.success("=" * 60)
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        project_id = "proj_b99d6de73b2b"
-    else:
-        project_id = sys.argv[1]
+        print("Usage: python scripts/run_postprocess_stage.py <project_id> [--simple]")
+        print("Example: python scripts/run_postprocess_stage.py proj_be5f50fa8bd1")
+        sys.exit(1)
 
-    asyncio.run(run_postprocess_stage(project_id))
+    project_id = sys.argv[1]
+    simple = "--simple" in sys.argv
+
+    asyncio.run(run_render(project_id, simple=simple))
