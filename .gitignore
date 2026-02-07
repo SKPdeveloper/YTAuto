@@ -66,6 +66,9 @@ coverage.xml
 projects/
 !projects/.gitkeep
 
+# Archived projects (published, failed, test)
+archive/
+
 # Assets (sound effects, media files)
 assets/
 
