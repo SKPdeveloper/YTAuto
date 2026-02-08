@@ -285,6 +285,8 @@ Check the blacklist: what hook types were used in the last 3-4 videos?
 - WARNINGS: "Don't", "Never", "Can't"
 - FOOD NOUNS: "Chocolate", "Honey", "The waffle"
 
+**PROHIBITED HOOK STARTERS:** Do not start the script with imperative commands like "Stop", "Wait", "Listen", "Look". These trigger an "ad reflex" — viewers associate them with spam/engagement bait and swipe immediately. Start directly with the statement or question.
+
 ---
 
 ## 🏛️ ARCHITECTURAL IDENTITY SYSTEM

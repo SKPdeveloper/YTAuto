@@ -762,11 +762,13 @@ class ProjectOrchestrator:
             # Topaz processing - потрібно перезапустити Topaz task
             try:
                 # Re-add to Topaz queue
-                final_video_path = project.project_dir / "final.mp4"
+                final_video_path = project.project_dir / "final_video.mp4"
+                if not final_video_path.exists():
+                    final_video_path = project.project_dir / "final.mp4"
                 if final_video_path.exists():
                     await self._add_to_topaz_queue(project, final_video_path)
                 else:
-                    raise FileNotFoundError(f"Final video not found: {final_video_path}")
+                    raise FileNotFoundError(f"Final video not found in project dir (checked final_video.mp4 and final.mp4)")
 
             except Exception as e:
                 await self._handle_stage_error(
@@ -809,26 +811,6 @@ class ProjectOrchestrator:
         logger.info(f"[{project_id}] Project cancelled by user")
 
         return project
-
-    async def _add_to_topaz_queue(self, project: ProjectData, video_path: Path):
-        """Додає відео до Topaz queue"""
-        # Ensure Topaz queue is running
-        if not self.topaz_queue.is_running:
-            await self.topaz_queue.start()
-
-        # Add to queue
-        task = await self.topaz_queue.add_task(
-            project_id=project.project_id,
-            scene_number=0,  # 0 = final video
-            input_path=video_path,
-            output_dir=project.project_dir,
-            metadata={
-                "type": "final_video",
-                "total_scenes": len(project.scenes),
-            }
-        )
-
-        logger.info(f"[{project.project_id}] Added to Topaz queue: {task.task_id}")
 
     # ========================================================================
     # SCRIPT GENERATION
@@ -1767,10 +1749,13 @@ class ProjectOrchestrator:
                 music_prompt = audio_data.get('suno_prompt',
                     "cinematic orchestral music, epic, dramatic, film score, no vocals")
 
+                # Estimate music duration from scene count (~5s per scene + hook)
+                scene_count = len(project.scenes) if project.scenes else 6
+                estimated_duration = max(30.0, scene_count * 5.0 + 5.0)
                 result = await music_generator.generate(
                     prompt=music_prompt,
                     output_path=background_music_path,
-                    duration=45.0,  # ~45 seconds for 6-10 scenes
+                    duration=estimated_duration,
                 )
 
                 if result.success:
@@ -1832,9 +1817,25 @@ class ProjectOrchestrator:
                     from app.services.glaze_models import VoiceoverSettings, VoiceoverConfig
 
                     voiceover_data = project_data['voiceover']
+
+                    # Build VoiceoverSettings from either nested 'settings' or flat fields
+                    if 'settings' in voiceover_data and isinstance(voiceover_data['settings'], dict):
+                        vo_settings = VoiceoverSettings(**voiceover_data['settings'])
+                    else:
+                        # Flat structure: voice_id, stability, etc. directly in voiceover
+                        vo_settings = VoiceoverSettings(
+                            voice_id=voiceover_data.get('voice_id', 'Adam'),
+                            stability=voiceover_data.get('stability', 0.5),
+                            similarity_boost=voiceover_data.get('similarity_boost', 0.75),
+                            style=voiceover_data.get('style', 0.0),
+                            speaker_boost=voiceover_data.get('speaker_boost', True),
+                        )
+
                     voiceover_config = VoiceoverConfig(
-                        settings=VoiceoverSettings(**voiceover_data['settings']),
+                        settings=vo_settings,
                         full_script=voiceover_data['full_script'],
+                        character=voiceover_data.get('character', 'announcer'),
+                        model=voiceover_data.get('model', 'eleven_multilingual_v2'),
                         total_duration_seconds=voiceover_data.get('total_duration_seconds', 30),
                     )
 
@@ -1936,19 +1937,11 @@ class ProjectOrchestrator:
         # ====================================================================
         logger.info("[POST] Steps 4-7: Running v7.4 Pipeline (GEN3a → GEN3b → Render)...")
 
-        try:
-            # This runs GEN3a → GEN3b → Render chain
-            await self._run_gen3a_analysis(project)
-            # GEN3a calls GEN3b, which calls Render
-            # After render, check for Topaz
-            return  # Topaz is handled in _run_manifest_render
-
-        except Exception as e:
-            logger.error(f"[POST] v7.4 Pipeline failed: {e}")
-            logger.warning("[POST] Falling back to simple assembly...")
-
-            # Fallback to simple assembly if v7.4 fails
-            await self._run_simple_assembly(project)
+        # Run GEN3a → GEN3b → Render chain (no silent fallback — errors must propagate)
+        await self._run_gen3a_analysis(project)
+        # GEN3a calls GEN3b, which calls Render
+        # After render, check for Topaz
+        return  # Topaz is handled in _run_manifest_render
 
     async def _run_simple_assembly(self, project: ProjectData):
         """

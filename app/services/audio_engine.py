@@ -212,6 +212,9 @@ class AudioEngine:
             ...     voice_settings=VoiceoverSettings(stability=0.5)
             ... )
         """
+        if not text or not text.strip():
+            raise ValueError("Empty voiceover text — cannot generate audio from empty input")
+
         from elevenlabs import AsyncElevenLabs, VoiceSettings
 
         # Convert pause markers to SSML
@@ -251,24 +254,27 @@ class AudioEngine:
                 # Initialize async client
                 client = AsyncElevenLabs(api_key=self.api_key)
 
-                # Generate audio - convert() returns an async generator directly
-                audio_generator = client.text_to_speech.convert(
-                    text=ssml_text,
-                    voice_id=effective_voice_id,
-                    model_id=self.model_id,
-                    output_format=self.output_format,
-                    voice_settings=elevenlabs_settings,
-                )
+                try:
+                    # Generate audio - convert() returns an async generator directly
+                    audio_generator = client.text_to_speech.convert(
+                        text=ssml_text,
+                        voice_id=effective_voice_id,
+                        model_id=self.model_id,
+                        output_format=self.output_format,
+                        voice_settings=elevenlabs_settings,
+                    )
 
-                # Collect audio bytes from generator
-                audio_chunks = []
-                async for chunk in audio_generator:
-                    audio_chunks.append(chunk)
+                    # Collect audio bytes from generator
+                    audio_chunks = []
+                    async for chunk in audio_generator:
+                        audio_chunks.append(chunk)
 
-                audio_bytes = b"".join(audio_chunks)
+                    audio_bytes = b"".join(audio_chunks)
 
-                logger.success(f"Voiceover generated: {len(audio_bytes)} bytes")
-                return audio_bytes
+                    logger.success(f"Voiceover generated: {len(audio_bytes)} bytes")
+                    return audio_bytes
+                finally:
+                    await client.close()
 
             except Exception as e:
                 retries += 1
@@ -303,6 +309,9 @@ class AudioEngine:
         from elevenlabs import AsyncElevenLabs, VoiceSettings
         import base64
 
+        if not text or not text.strip():
+            raise ValueError("Empty voiceover text — cannot generate audio from empty input")
+
         ssml_text = self._convert_pause_markers(text)
 
         raw_voice_id = voice_id or (
@@ -332,41 +341,47 @@ class AudioEngine:
             try:
                 client = AsyncElevenLabs(api_key=self.api_key)
 
-                response = await client.text_to_speech.convert_with_timestamps(
-                    text=ssml_text,
-                    voice_id=effective_voice_id,
-                    model_id=self.model_id,
-                    output_format="mp3_44100_128",
-                    voice_settings=elevenlabs_settings,
-                )
-
-                audio_bytes = base64.b64decode(response.audio_base_64)
-
-                if not response.alignment or not response.alignment.characters:
-                    raise ValueError(
-                        "ElevenLabs returned empty alignment data. "
-                        "Cannot generate word-by-word subtitles without character timestamps."
+                try:
+                    response = await client.text_to_speech.convert_with_timestamps(
+                        text=ssml_text,
+                        voice_id=effective_voice_id,
+                        model_id=self.model_id,
+                        output_format=self.output_format,
+                        voice_settings=elevenlabs_settings,
                     )
 
-                chars = response.alignment.characters
-                starts = response.alignment.character_start_times_seconds
-                ends = response.alignment.character_end_times_seconds
+                    audio_bytes = base64.b64decode(response.audio_base_64)
 
-                if len(chars) != len(starts) or len(chars) != len(ends):
-                    raise ValueError(
-                        f"ElevenLabs alignment array length mismatch: "
-                        f"chars={len(chars)}, starts={len(starts)}, ends={len(ends)}"
-                    )
+                    if not response.alignment or not response.alignment.characters:
+                        raise ValueError(
+                            "ElevenLabs returned empty alignment data. "
+                            "Cannot generate word-by-word subtitles without character timestamps."
+                        )
 
-                alignment_data = {
-                    'characters': chars,
-                    'character_start_times_seconds': starts,
-                    'character_end_times_seconds': ends,
-                }
+                    chars = response.alignment.characters
+                    starts = response.alignment.character_start_times_seconds
+                    ends = response.alignment.character_end_times_seconds
 
-                logger.success(f"Voiceover with timestamps: {len(audio_bytes)} bytes, {len(alignment_data['characters'])} chars aligned")
-                return audio_bytes, alignment_data
+                    if len(chars) != len(starts) or len(chars) != len(ends):
+                        raise ValueError(
+                            f"ElevenLabs alignment array length mismatch: "
+                            f"chars={len(chars)}, starts={len(starts)}, ends={len(ends)}"
+                        )
 
+                    alignment_data = {
+                        'characters': chars,
+                        'character_start_times_seconds': starts,
+                        'character_end_times_seconds': ends,
+                    }
+
+                    logger.success(f"Voiceover with timestamps: {len(audio_bytes)} bytes, {len(alignment_data['characters'])} chars aligned")
+                    return audio_bytes, alignment_data
+                finally:
+                    await client.close()
+
+            except ValueError:
+                # Non-transient data validation errors — don't retry
+                raise
             except Exception as e:
                 retries += 1
                 logger.error(f"Voiceover+timestamps error (attempt {retries}/{self.max_retries + 1}): {e}")
@@ -563,6 +578,7 @@ class AudioEngine:
         word_start = 0.0
         word_end = 0.0
         in_tag = False  # Track if we're inside a [tag]
+        in_xml_tag = False  # Track if we're inside an <xml> tag (SSML break tags etc.)
 
         for i, char in enumerate(chars):
             # Handle style tags like [whispers], [pause], etc.
@@ -575,8 +591,14 @@ class AudioEngine:
             if in_tag:
                 continue
 
-            # Skip XML-style tags
-            if char == '<' or char == '>':
+            # Handle XML-style tags like <break time="0.5s"/>
+            if char == '<':
+                in_xml_tag = True
+                continue
+            if char == '>':
+                in_xml_tag = False
+                continue
+            if in_xml_tag:
                 continue
 
             # Start new word
@@ -877,20 +899,23 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
         try:
             client = AsyncElevenLabs(api_key=self.api_key)
-            response = await client.voices.get_all()
+            try:
+                response = await client.voices.get_all()
 
-            voices = []
-            for voice in response.voices:
-                voices.append({
-                    "voice_id": voice.voice_id,
-                    "name": voice.name,
-                    "category": getattr(voice, "category", None),
-                    "description": getattr(voice, "description", None),
-                    "labels": getattr(voice, "labels", {}),
-                })
+                voices = []
+                for voice in response.voices:
+                    voices.append({
+                        "voice_id": voice.voice_id,
+                        "name": voice.name,
+                        "category": getattr(voice, "category", None),
+                        "description": getattr(voice, "description", None),
+                        "labels": getattr(voice, "labels", {}),
+                    })
 
-            logger.info(f"Found {len(voices)} voices")
-            return voices
+                logger.info(f"Found {len(voices)} voices")
+                return voices
+            finally:
+                await client.close()
 
         except Exception as e:
             logger.error(f"Failed to list voices: {e}")
@@ -1178,7 +1203,7 @@ class AudioMixer:
         config.sfx_events.append(SFXEvent(
             timestamp=timestamp,
             file_path=sfx_path,
-            volume=volume or DEFAULT_VOLUMES[AudioLayer.SFX],
+            volume=volume if volume is not None else DEFAULT_VOLUMES[AudioLayer.SFX],
             layer=AudioLayer.SFX,
             reason=reason,
         ))
@@ -1195,7 +1220,7 @@ class AudioMixer:
         config.foley_events.append(SFXEvent(
             timestamp=timestamp,
             file_path=foley_path,
-            volume=volume or DEFAULT_VOLUMES[AudioLayer.FOLEY],
+            volume=volume if volume is not None else DEFAULT_VOLUMES[AudioLayer.FOLEY],
             layer=AudioLayer.FOLEY,
             reason=reason,
         ))
@@ -1365,29 +1390,30 @@ class AudioMixer:
 
         return f"[{label}]volume='{volume_expr}':eval=frame[music]"
 
-    def get_input_files(self, config: AudioMixConfig) -> List[Tuple[str, Path]]:
+    def get_input_files(self, config: AudioMixConfig) -> List[Tuple[str, Path, bool]]:
         """
         Get list of input files for FFmpeg in order.
 
         Returns:
-            List of (layer_name, file_path) tuples in input order
+            List of (layer_name, file_path, needs_loop) tuples in input order.
+            needs_loop=True means `-stream_loop -1` should be added before the input.
         """
         inputs = []
 
         if config.vo and config.vo.file_path:
-            inputs.append(("vo", config.vo.file_path))
+            inputs.append(("vo", config.vo.file_path, False))
 
         if config.music and config.music.file_path:
-            inputs.append(("music", config.music.file_path))
+            inputs.append(("music", config.music.file_path, config.music.loop))
 
         if config.bed and config.bed.file_path:
-            inputs.append(("bed", config.bed.file_path))
+            inputs.append(("bed", config.bed.file_path, config.bed.loop))
 
         for i, sfx in enumerate(config.sfx_events):
-            inputs.append((f"sfx_{i}", sfx.file_path))
+            inputs.append((f"sfx_{i}", sfx.file_path, False))
 
         for i, foley in enumerate(config.foley_events):
-            inputs.append((f"foley_{i}", foley.file_path))
+            inputs.append((f"foley_{i}", foley.file_path, False))
 
         return inputs
 

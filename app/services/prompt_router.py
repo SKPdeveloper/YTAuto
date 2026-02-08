@@ -552,7 +552,7 @@ Generate a completely new, UNIQUE and VIRAL video concept.
 MODE: AUTO - Create an original topic yourself!
 
 CONSTRAINTS:
-- SCENES: Dynamic (the system prompt's DYNAMIC SCENE ENGINE decides the count, 6-10 scenes)
+- SCENES: TARGET {num_scenes} scenes (Dynamic Scene Engine range: 6-10, but AIM FOR {num_scenes})
 - TOTAL DURATION: {duration_seconds} seconds
 - VISUAL STYLE: {style}
 - TARGET AUDIENCE: {target_audience}
@@ -591,7 +591,7 @@ CRITICAL REQUIREMENTS:
 Develop this idea into a complete video concept for "Glaze City" style channel.
 
 CONSTRAINTS:
-- SCENES: Dynamic (the system prompt's DYNAMIC SCENE ENGINE decides the count, 6-10 scenes)
+- SCENES: TARGET {num_scenes} scenes (Dynamic Scene Engine range: 6-10, but AIM FOR {num_scenes})
 - TOTAL DURATION: {duration_seconds} seconds
 - VISUAL STYLE: {style}
 - TARGET AUDIENCE: {target_audience}

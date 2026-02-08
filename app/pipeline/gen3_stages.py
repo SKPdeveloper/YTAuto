@@ -246,7 +246,7 @@ class Gen3bStage(BasePipelineStage):
         has_analysis = gen3a_path.exists()
 
         # Check if manifest already exists
-        manifest_path = project_dir / "manifest.json"
+        manifest_path = project_dir / "gen3b_manifest.json"
         has_manifest = manifest_path.exists()
 
         return has_analysis and not has_manifest
@@ -282,8 +282,9 @@ class Gen3bStage(BasePipelineStage):
             gen3a_analysis = Gen3aOutput.model_validate(gen3a_data)
 
             # Load briefs (project_brief.json contains GEN1 output)
-            gen1_brief = await self._load_json(project_dir / "project_brief.json") or {}
-            gen2_brief = await self._load_json(project_dir / "gen2_brief.json") or {}
+            project_brief = await self._load_json(project_dir / "project_brief.json") or {}
+            gen1_brief = project_brief
+            gen2_brief = await self._load_json(project_dir / "gen2_brief.json") or project_brief
 
             await self.notify_progress(30, "Generating creative decisions...")
 
@@ -304,7 +305,7 @@ class Gen3bStage(BasePipelineStage):
             await self.notify_progress(80, "Saving manifest...")
 
             # Save manifest
-            manifest_path = project_dir / "manifest.json"
+            manifest_path = project_dir / "gen3b_manifest.json"
             self.gen3b_service.save_manifest(manifest, manifest_path)
 
             logger.success(f"[{self.project_id}] Manifest saved: {manifest_path}")
@@ -388,7 +389,7 @@ class Gen3bStage(BasePipelineStage):
             )
 
             # Save manifest
-            manifest_path = project_dir / "manifest.json"
+            manifest_path = project_dir / "gen3b_manifest.json"
             self.gen3b_service.save_manifest(manifest, manifest_path)
 
             return StageResult(

@@ -350,12 +350,19 @@ class ControlPipeline:
 
         # ================================================================
         # CRITICAL: ALL N IMAGES MUST EXIST BEFORE PROCEEDING
-        # INFINITE RETRY - keep generating until ALL images are ready
+        # Retry with limit - keep generating until ALL images are ready
         # ================================================================
+        MAX_IMAGE_RETRIES = 15
         retry_round = 0
 
-        while True:
+        while retry_round < MAX_IMAGE_RETRIES:
             retry_round += 1
+
+            # Check abort flag
+            from app.api.control_routes import get_state
+            state = get_state()
+            if state.abort_pipeline:
+                raise Exception("Pipeline aborted by user")
 
             # Check which scenes are missing images
             missing_scenes = []
@@ -369,7 +376,7 @@ class ControlPipeline:
                 logger.success(f"[PIPELINE] ✅ ALL {len(self.project.scenes)} IMAGES READY!")
                 break
 
-            logger.warning(f"[PIPELINE] Round {retry_round}: Missing {len(missing_scenes)} images: {[s.scene_number for s in missing_scenes]}")
+            logger.warning(f"[PIPELINE] Round {retry_round}/{MAX_IMAGE_RETRIES}: Missing {len(missing_scenes)} images: {[s.scene_number for s in missing_scenes]}")
             await self.notify_log(f"🔄 Round {retry_round}: Generating {len(missing_scenes)} missing images...", "warning")
             await self._notify_image_retry(retry_round, missing_scenes)
 
@@ -424,6 +431,11 @@ class ControlPipeline:
                     logger.error(f"[Scene {scene.scene_number}] Generation failed: {e}, will retry...")
 
             await asyncio.sleep(5)
+
+        # Check if we exhausted retries
+        remaining_missing = [s for s in self.project.scenes if not (s.image_path and Path(s.image_path).exists())]
+        if remaining_missing:
+            raise Exception(f"Failed to generate images for {len(remaining_missing)} scenes after {MAX_IMAGE_RETRIES} retries: {[s.scene_number for s in remaining_missing]}")
 
         # Notify UI about all scenes
         await self._notify_all_scenes()
@@ -630,10 +642,17 @@ class ControlPipeline:
         MAX_VIDEO_RETRIES = 10
         retry_round = 0
         loop_close_fallback_used = False
-        last_scene_num = max(s.scene_number for s in self.project.scenes)
+        # Find LOOP_CLOSE scene by reference_type, not by max scene number
+        loop_close_scene_obj = next((s for s in self.project.scenes if s.reference_type == "LOOP_CLOSE"), None)
+        last_scene_num = loop_close_scene_obj.scene_number if loop_close_scene_obj else max(s.scene_number for s in self.project.scenes)
 
         while True:
             retry_round += 1
+
+            # Check abort flag
+            from app.api.control_routes import get_state as _get_state
+            if _get_state().abort_pipeline:
+                raise Exception("Pipeline aborted by user")
 
             # Check which scenes need videos
             scenes_needing_video = []
@@ -735,7 +754,12 @@ class ControlPipeline:
         Last scene is LOOP_CLOSE - it should mirror scene 1 for seamless loop.
         """
         try:
-            last_scene_num = max(s.scene_number for s in self.project.scenes)
+            loop_close_scene = next((s for s in self.project.scenes if s.reference_type == "LOOP_CLOSE"), None)
+            if not loop_close_scene:
+                # Fallback to max scene number if no LOOP_CLOSE reference_type
+                last_scene_num = max(s.scene_number for s in self.project.scenes)
+            else:
+                last_scene_num = loop_close_scene.scene_number
             project_dir = settings.PROJECTS_DIR / self.project.project_id
             scene_1_video = project_dir / "scene_1" / "video.mp4"
             scene_N_dir = project_dir / f"scene_{last_scene_num}"
@@ -771,13 +795,15 @@ class ControlPipeline:
             except Exception:
                 pass
 
+            # AI-generated videos (Runway/Kling/etc) typically have NO audio stream.
+            # Using -af areverse on a video without audio causes FFmpeg to crash.
+            # Use -an to explicitly exclude audio.
             cmd = [
                 ffmpeg_path, "-y",
                 "-i", str(scene_1_video),
                 "-vf", "reverse",
-                "-af", "areverse",
+                "-an",
                 *encoder_params,
-                "-c:a", "aac", "-b:a", "192k",
                 str(scene_N_video)
             ]
 
@@ -1001,15 +1027,15 @@ class ControlPipeline:
 
         # Find assembled video
         video_path = None
-        for name in ["final.mp4", "assembled_video.mp4", "final_raw.mp4"]:
+        for name in ["final_video.mp4", "final.mp4", "assembled_video.mp4", "final_raw.mp4"]:
             path = project_dir / name
             if path.exists():
                 video_path = path
                 break
 
         if not video_path:
-            logger.warning("[PIPELINE] No assembled video found, auto-approving")
-            return "approved"
+            logger.error("[PIPELINE] No assembled video found for approval — assembly may have failed")
+            return "rejected"
 
         # Get video info
         video_size_mb = video_path.stat().st_size / (1024 * 1024)
@@ -1271,11 +1297,10 @@ class ControlPipeline:
 
         project_dir = settings.PROJECTS_DIR / self.project.project_id
 
-        # Check if Gen3a analysis exists
+        # Check if Gen3a analysis exists — raise instead of silently skipping
         gen3a_path = project_dir / "gen3a_analysis.json"
         if not gen3a_path.exists():
-            logger.warning("[PIPELINE] No Gen3a analysis found, skipping Gen3b")
-            return
+            raise FileNotFoundError(f"Gen3a analysis not found at {gen3a_path} — Gen3a stage may have failed")
 
         logger.info("[PIPELINE] Running Gen3b manifest generation...")
 
@@ -1315,7 +1340,7 @@ class ControlPipeline:
 
                 logger.success(f"[PIPELINE] Gen3b manifest saved: {output_path}")
             else:
-                logger.warning("[PIPELINE] Gen3b manifest generation returned empty result")
+                raise ValueError("Gen3b manifest generation returned None — Gemini may have failed")
 
         except Exception as e:
             logger.error(f"[PIPELINE] Gen3b manifest generation failed: {e}")
@@ -1399,7 +1424,7 @@ class ControlPipeline:
 
         # Find best available video (prefer 4K)
         video_path = None
-        for name in ["final_4k.mp4", "final.mp4"]:
+        for name in ["final_4k.mp4", "final_video.mp4", "final.mp4", "assembled_video.mp4"]:
             path = project_dir / name
             if path.exists():
                 video_path = path

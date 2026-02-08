@@ -29,6 +29,28 @@ from app.core.paths import get_project_path, get_scene_path
 from app.core.config import settings
 
 
+def _resolve_ffmpeg_path() -> str:
+    """Resolve FFmpeg path from settings, checking FFMPEG_PATH first, then TOPAZ_FFMPEG_PATH."""
+    if hasattr(settings, 'FFMPEG_PATH') and settings.FFMPEG_PATH and Path(settings.FFMPEG_PATH).exists():
+        return str(settings.FFMPEG_PATH)
+    if settings.TOPAZ_FFMPEG_PATH and Path(settings.TOPAZ_FFMPEG_PATH).exists():
+        return str(settings.TOPAZ_FFMPEG_PATH)
+    return "ffmpeg"
+
+
+def _resolve_ffprobe_path() -> str:
+    """Resolve ffprobe path from settings (colocated with ffmpeg)."""
+    ffmpeg = _resolve_ffmpeg_path()
+    if ffmpeg != "ffmpeg":
+        ffprobe = Path(ffmpeg).parent / "ffprobe.exe"
+        if ffprobe.exists():
+            return str(ffprobe)
+        ffprobe = Path(ffmpeg).parent / "ffprobe"
+        if ffprobe.exists():
+            return str(ffprobe)
+    return "ffprobe"
+
+
 class PostProcessStage(BasePipelineStage):
     """
     Stage 7: Post-Processing (v7.4)
@@ -56,10 +78,12 @@ class PostProcessStage(BasePipelineStage):
 
     async def can_run(self) -> bool:
         """Check if post-processing should run"""
-        project_dir = Path(self.project.project_dir) if hasattr(self.project, 'project_dir') else get_project_path(self.project_id)
+        project_dir = Path(self.project.project_dir) if self.project.project_dir else get_project_path(self.project_id)
 
-        # v7.4: Check for manifest.json from GEN3b
+        # v7.4: Check for manifest from GEN3b (check both possible filenames)
         manifest_path = project_dir / "gen3b_manifest.json"
+        if not manifest_path.exists():
+            manifest_path = project_dir / "manifest.json"
         has_manifest = manifest_path.exists()
 
         # Fallback: check if all scenes have videos
@@ -83,18 +107,21 @@ class PostProcessStage(BasePipelineStage):
 
         await self.notify_progress(0, "Starting post-processing (v7.4)...")
 
-        project_dir = Path(self.project.project_dir) if hasattr(self.project, 'project_dir') else get_project_path(self.project_id)
+        project_dir = Path(self.project.project_dir) if self.project.project_dir else get_project_path(self.project_id)
 
         try:
-            # Check for manifest.json
+            # Check for manifest (primary: gen3b_manifest.json, fallback: manifest.json)
             manifest_path = project_dir / "gen3b_manifest.json"
+            if not manifest_path.exists():
+                manifest_path = project_dir / "manifest.json"
 
             if manifest_path.exists():
                 # v7.4: Manifest-based rendering
+                logger.info(f"[{self.project_id}] Using manifest: {manifest_path.name}")
                 return await self._execute_manifest_render(project_dir, manifest_path)
             else:
-                # Fallback: Legacy assembly
-                logger.warning(f"[{self.project_id}] No manifest found, using legacy assembly")
+                # Fallback: Legacy assembly (NO manifest found at all)
+                logger.warning(f"[{self.project_id}] No manifest found (checked gen3b_manifest.json and manifest.json), using legacy assembly")
                 return await self._execute_legacy_render(project_dir)
 
         except Exception as e:
@@ -364,7 +391,7 @@ class PostProcessStage(BasePipelineStage):
 
             # Extract frame at 1 second using FFmpeg
             cmd = [
-                "ffmpeg", "-y",
+                _resolve_ffmpeg_path(), "-y",
                 "-ss", "1.0",
                 "-i", str(video_path),
                 "-vframes", "1",
@@ -401,7 +428,7 @@ class PostProcessStage(BasePipelineStage):
         try:
             import asyncio
             process = await asyncio.create_subprocess_exec(
-                "ffprobe", "-v", "error",
+                _resolve_ffprobe_path(), "-v", "error",
                 "-show_entries", "format=duration",
                 "-of", "default=noprint_wrappers=1:nokey=1",
                 str(video_path),

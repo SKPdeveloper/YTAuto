@@ -227,9 +227,10 @@ class ManifestRenderer:
             # Step 2: Create hook video
             hook_path = await self._create_hook(manifest, project_dir, processed_scenes)
 
-            # Step 3: Concatenate all clips
+            # Step 3: Concatenate all clips (trim scene 1 by hook duration to avoid duplicate)
             concat_path = await self._concatenate_clips(
-                hook_path, processed_scenes, project_dir
+                hook_path, processed_scenes, project_dir,
+                hook_duration=manifest.hook.duration if hook_path else 0.0,
             )
 
             # Step 4: Apply global effects
@@ -298,6 +299,12 @@ class ManifestRenderer:
 
         # Also clean effects_scene_N.mp4 files that may exist
         for f in project_dir.glob("effects_scene_*.mp4"):
+            f.unlink(missing_ok=True)
+            cleaned += 1
+
+        # Clean processed_scene_N.mp4 intermediates (created by speed processing,
+        # consumed by effects step, but not tracked in processed_scenes list)
+        for f in project_dir.glob("processed_scene_*.mp4"):
             f.unlink(missing_ok=True)
             cleaned += 1
 
@@ -387,10 +394,11 @@ class ManifestRenderer:
                 # Copy without speed changes
                 output_path = source_path
 
-            # Apply scene-specific effects
-            if scene.effects:
+            # Apply scene-specific effects (exclude hook effects — handled by _create_hook)
+            scene_effects = [e for e in scene.effects if not e.is_hook_effect]
+            if scene_effects:
                 effects_output = project_dir / f"effects_scene_{scene.scene_number}.mp4"
-                await self._apply_effects(output_path, scene.effects, effects_output)
+                await self._apply_effects(output_path, scene_effects, effects_output)
                 output_path = effects_output
 
             processed.append(output_path)
@@ -552,8 +560,10 @@ class ManifestRenderer:
         # contrast -> eq=contrast=X
         # saturation -> eq=saturation=X або hue=s=X
         effect_map = {
-            "ZOOM_IN": f"zoompan=z='min(zoom+0.0015,1.5)':d={int(duration * fps)}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={w}x{h}:fps={fps}",
-            "ZOOM_OUT": f"zoompan=z='max(1.5-zoom*0.0015,1)':d={int(duration * fps)}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={w}x{h}:fps={fps}",
+            "ZOOM_IN": f"scale={int(w*1.5)}:{int(h*1.5)},crop={w}:{h}:'(iw-{w})*min(1\\,t/{max(duration,0.01)})':"
+                       f"'(ih-{h})*min(1\\,t/{max(duration,0.01)})'",
+            "ZOOM_OUT": f"scale={int(w*1.5)}:{int(h*1.5)},crop={w}:{h}:'(iw-{w})*(1-min(1\\,t/{max(duration,0.01)}))': "
+                        f"'(ih-{h})*(1-min(1\\,t/{max(duration,0.01)}))'",
             "ZOOM_PUNCH": f"scale={w}:{h},eq=brightness=0.05:contrast=1.1",
             "CAMERA_SHAKE": f"crop=iw-20:ih-20:x='10+random(0)*10':y='10+random(0)*10',scale={w}:{h}",
             "SHAKE": f"crop=iw-20:ih-20:x='10+random(0)*10':y='10+random(0)*10',scale={w}:{h}",
@@ -569,7 +579,22 @@ class ManifestRenderer:
             "COOL": "colorbalance=rs=-0.1:gs=0:bs=0.1",
         }
 
-        return effect_map.get(effect_type)
+        # Try built-in map first, then fall back to manifest's pre-computed ffmpeg_filter
+        result = effect_map.get(effect_type)
+        if result:
+            return result
+
+        # Use the ffmpeg_filter from the manifest if GEN3b computed one
+        if effect.ffmpeg_filter:
+            # zoompan is an image-to-video filter: on video input it produces d frames
+            # PER INPUT FRAME, causing massive duration explosion (e.g. 75x longer)
+            if "zoompan" in effect.ffmpeg_filter:
+                logger.warning(f"  Skipping zoompan effect '{effect_type}' — not safe for video input")
+                return None
+            return effect.ffmpeg_filter
+
+        logger.warning(f"  Unknown effect type '{effect_type}' with no ffmpeg_filter — skipping")
+        return None
 
     async def _create_hook(
         self,
@@ -644,6 +669,25 @@ class ManifestRenderer:
                 "eq=contrast=1.4:brightness=-0.05",
                 "vignette=PI/3",
             ],
+            "PULSE": [
+                "eq=brightness=0.12:contrast=1.2",
+            ],
+            "ZOOM_CRASH": [
+                "eq=brightness=0.2:contrast=1.4",
+                "unsharp=7:7:2.0:7:7:0.0",
+            ],
+            "FLICKER": [
+                "eq=brightness=0.05",
+                "rgbashift=rh=-3:bh=3",
+            ],
+            "REWIND": [
+                "eq=brightness=0.08:saturation=0.8",
+                "rgbashift=rh=-4:bh=4",
+            ],
+            "MORPH_TEASE": [
+                "eq=saturation=1.4:brightness=0.05",
+                "vignette=PI/5",
+            ],
         }
 
         return style_filters.get(style, [])
@@ -653,16 +697,25 @@ class ManifestRenderer:
         hook_path: Optional[Path],
         scene_paths: List[Path],
         project_dir: Path,
+        hook_duration: float = 0.0,
     ) -> Path:
-        """Concatenate hook and all scenes using filter_complex."""
+        """Concatenate hook and all scenes using filter_complex.
+
+        When a hook is present, scene 1 is trimmed to skip the first hook_duration seconds
+        to avoid duplicating footage (hook already shows the beginning of scene 1).
+        """
         output_path = project_dir / "concatenated.mp4"
 
         # Збираємо всі файли для конкатенації
         input_files = []
+        # Track which input index is scene 1 (needs trimming if hook exists)
+        scene1_input_idx = -1
         if hook_path and hook_path.exists():
             input_files.append(hook_path)
-        for path in scene_paths:
+        for i, path in enumerate(scene_paths):
             if path.exists():
+                if i == 0 and hook_path and hook_path.exists() and hook_duration > 0:
+                    scene1_input_idx = len(input_files)
                 input_files.append(path)
 
         if not input_files:
@@ -690,8 +743,11 @@ class ManifestRenderer:
         concat_inputs = []
 
         for i in range(n):
-            # Нормалізуємо кожен вхід
-            filter_parts.append(f"[{i}:v]scale={w}:{h}:force_original_aspect_ratio=disable,fps={fps},format=yuv420p,setsar=1[v{i}]")
+            # Нормалізуємо кожен вхід; trim scene 1 if hook is present
+            trim_filter = ""
+            if i == scene1_input_idx and hook_duration > 0:
+                trim_filter = f"trim=start={hook_duration},setpts=PTS-STARTPTS,"
+            filter_parts.append(f"[{i}:v]{trim_filter}scale={w}:{h}:force_original_aspect_ratio=disable,fps={fps},format=yuv420p,setsar=1[v{i}]")
             concat_inputs.append(f"[v{i}]")
 
         # Конкатенуємо всі нормалізовані потоки
@@ -951,9 +1007,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         # Build full command
         cmd = [self.ffmpeg_path, "-y", "-i", str(video_path)]
 
-        # Add audio inputs
-        for _, path in input_files:
-            cmd.extend(["-i", str(path)])
+        # Add audio inputs (with -stream_loop -1 for loopable layers like music/bed)
+        for layer_name, path, needs_loop in input_files:
+            if needs_loop:
+                cmd.extend(["-stream_loop", "-1", "-i", str(path)])
+            else:
+                cmd.extend(["-i", str(path)])
 
         # Add filter complex and output
         if filter_complex:
@@ -1190,11 +1249,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             cmd.extend(["-i", str(music_path)])
             audio_inputs.append("music")
 
-        # Output settings
+        # Output settings (use codec-appropriate params)
         cmd.extend([
             "-c:v", self.config.video_codec,
-            "-preset", "fast",
-            "-crf", "23",
+            *self._get_encoder_params(),
         ])
 
         if audio_inputs:

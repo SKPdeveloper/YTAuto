@@ -11,7 +11,9 @@ This preprocessing runs BEFORE GEN3a receives the videos.
 GEN3a uses this precomputed data instead of analyzing audio itself.
 """
 
+import asyncio
 import json
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -90,8 +92,6 @@ class Gen3aPreprocessor:
         Returns:
             PreprocessingResult with work_dir and standardized video paths
         """
-        import shutil
-
         logger.info("=" * 60)
         logger.info("GEN3a Preprocessing v1.7.0")
         logger.info("=" * 60)
@@ -129,9 +129,9 @@ class Gen3aPreprocessor:
                     logger.info(f"  Reversing scene {scene_num} (LOOP_CLOSE) -> {dst_path.name}")
                     await self._reverse_video(src_path, dst_path)
                 else:
-                    # Copy other scenes
+                    # Copy other scenes (async to avoid blocking event loop with large files)
                     logger.info(f"  Copying scene {scene_num} -> {dst_path.name}")
-                    shutil.copy2(src_path, dst_path)
+                    await asyncio.to_thread(shutil.copy2, src_path, dst_path)
 
                 prepared_video_paths.append(dst_path)
                 logger.success(f"  {dst_path.name} ready")
@@ -151,8 +151,7 @@ class Gen3aPreprocessor:
         existing_beats_path = project_dir / "music" / "beat_analysis.json"
         if existing_beats_path.exists():
             # Copy existing analysis instead of re-analyzing
-            import shutil
-            shutil.copy2(existing_beats_path, beats_path)
+            await asyncio.to_thread(shutil.copy2, existing_beats_path, beats_path)
             with open(beats_path, 'r', encoding='utf-8') as f:
                 beats_data = json.load(f)
             logger.success(f"  beats.json copied from existing beat_analysis.json (BPM={beats_data.get('bpm', 'N/A')})")
@@ -254,46 +253,38 @@ class Gen3aPreprocessor:
             "sections": [{"start": 0.0, "end": 8.0, "label": "intro"}, ...]
         }
         """
+        return await asyncio.to_thread(self._analyze_beats_sync, music_path)
+
+    def _analyze_beats_sync(self, music_path: Path) -> Dict[str, Any]:
+        """Synchronous beat analysis (CPU-bound librosa work)."""
         import librosa
         import numpy as np
 
-        # Load audio
         y, sr = librosa.load(str(music_path), sr=22050)
         duration = librosa.get_duration(y=y, sr=sr)
 
-        # Get tempo and beat frames
         tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
         beat_times = librosa.frames_to_time(beat_frames, sr=sr)
 
-        # Handle tempo as array or scalar
         bpm = float(tempo[0]) if hasattr(tempo, '__len__') else float(tempo)
 
-        # Create beats array with strength classification
         beats = []
         for i, timestamp in enumerate(beat_times):
-            beat_number = (i % 4) + 1  # 1, 2, 3, 4 repeating
-
-            # Classify strength based on beat position in measure
+            beat_number = (i % 4) + 1
             if beat_number == 1:
-                strength = "STRONG"  # Downbeat
+                strength = "STRONG"
             elif beat_number == 3:
-                strength = "MEDIUM"  # Secondary accent
+                strength = "MEDIUM"
             else:
-                strength = "WEAK"  # Offbeats (2, 4)
-
+                strength = "WEAK"
             beats.append({
                 "timestamp": round(timestamp, 3),
                 "strength": strength,
                 "beat_number": beat_number,
             })
 
-        # Extract downbeats (beat 1 of each measure)
         downbeats = [b["timestamp"] for b in beats if b["beat_number"] == 1]
-
-        # Strong beats for cuts (beat 1 and 3)
         strong_beats_only = [b["timestamp"] for b in beats if b["strength"] in ["STRONG", "MEDIUM"]]
-
-        # Create sections based on duration
         sections = self._create_music_sections(duration, bpm)
 
         return {
@@ -314,7 +305,7 @@ class Gen3aPreprocessor:
         # Typical section length: 8-16 bars
         bars_per_section = 8
         beats_per_bar = 4
-        beat_duration = 60.0 / bpm
+        beat_duration = 60.0 / max(bpm, 1.0)
         section_duration = bars_per_section * beats_per_bar * beat_duration
 
         sections = []
@@ -356,41 +347,34 @@ class Gen3aPreprocessor:
             "longest_pause": {"start": 5.2, "end": 5.8, "duration": 0.6}
         }
         """
+        return await asyncio.to_thread(self._analyze_voiceover_timing_sync, voiceover_path)
+
+    def _analyze_voiceover_timing_sync(self, voiceover_path: Path) -> Dict[str, Any]:
+        """Synchronous voiceover timing analysis (CPU-bound librosa work)."""
         import librosa
         import numpy as np
 
-        # Load audio
         y, sr = librosa.load(str(voiceover_path), sr=22050)
         duration = librosa.get_duration(y=y, sr=sr)
 
-        # Compute RMS energy for speech detection
         frame_length = 2048
         hop_length = 512
         rms = librosa.feature.rms(y=y, frame_length=frame_length, hop_length=hop_length)[0]
         times = librosa.frames_to_time(np.arange(len(rms)), sr=sr, hop_length=hop_length)
-
-        # Normalize RMS
         rms_db = librosa.amplitude_to_db(rms, ref=np.max)
-
-        # Threshold for speech detection (-40 dB is typical for speech vs silence)
-        speech_threshold = -35  # dB below max
-
-        # Detect speech segments
+        speech_threshold = -35
         is_speech = rms_db > speech_threshold
 
-        # Convert to segments
         segments = []
         current_type = None
         segment_start = 0.0
 
         for i, (time, speech) in enumerate(zip(times, is_speech)):
             segment_type = "SPEECH" if speech else "PAUSE"
-
             if current_type is None:
                 current_type = segment_type
                 segment_start = time
             elif segment_type != current_type:
-                # End current segment
                 segments.append({
                     "start": round(segment_start, 3),
                     "end": round(time, 3),
@@ -399,7 +383,6 @@ class Gen3aPreprocessor:
                 current_type = segment_type
                 segment_start = time
 
-        # Add final segment
         if current_type:
             segments.append({
                 "start": round(segment_start, 3),
@@ -407,15 +390,12 @@ class Gen3aPreprocessor:
                 "type": current_type,
             })
 
-        # Merge short segments (< 0.1s)
         segments = self._merge_short_segments(segments, min_duration=0.1)
 
-        # Calculate statistics
         speech_duration = sum(
             s["end"] - s["start"] for s in segments if s["type"] == "SPEECH"
         )
         pause_segments = [s for s in segments if s["type"] == "PAUSE"]
-
         pause_durations = [s["end"] - s["start"] for s in pause_segments]
         avg_pause = sum(pause_durations) / len(pause_durations) if pause_durations else 0.0
 
@@ -475,16 +455,22 @@ class Gen3aPreprocessor:
 
         Returns audio_levels.json format per GEN3a v1.6.0 spec.
         """
+        return await asyncio.to_thread(self._analyze_audio_levels_sync, music_path, voiceover_path)
+
+    def _analyze_audio_levels_sync(
+        self,
+        music_path: Path,
+        voiceover_path: Optional[Path] = None
+    ) -> Dict[str, Any]:
+        """Synchronous audio level analysis (CPU-bound librosa work)."""
         import librosa
         import numpy as np
 
-        # Analyze music
         y_music, sr = librosa.load(str(music_path), sr=22050)
         music_rms = librosa.feature.rms(y=y_music)[0]
         music_peak_db = float(librosa.amplitude_to_db(np.max(np.abs(y_music))))
         music_mean_db = float(np.mean(librosa.amplitude_to_db(music_rms + 1e-10)))
 
-        # Analyze voiceover (if available)
         vo_peak_db = -6.0
         vo_mean_db = -18.0
         is_whisper_detected = False
@@ -500,11 +486,8 @@ class Gen3aPreprocessor:
         else:
             logger.warning("  No voiceover file for audio level analysis - using defaults")
 
-        # Calculate ducking recommendations
         music_ducking_normal_db = -10
         music_ducking_whisper_db = -18
-
-        # Check if VO needs boost
         vo_boost_needed = vo_peak_db < -12
         vo_boost_amount_db = max(0, -6 - vo_peak_db) if vo_boost_needed else 0
 
@@ -532,14 +515,19 @@ class Gen3aPreprocessor:
 
     async def _detect_video_codec(self, ffmpeg_path: str) -> list:
         """Detect best video codec and return encoder params (async)."""
-        import asyncio
-
+        proc = None
+        test_proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 ffmpeg_path, "-encoders", "-hide_banner",
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+            try:
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                raise
             if proc.returncode == 0 and b"h264_nvenc" in stdout:
                 # Verify NVENC actually works
                 test_proc = await asyncio.create_subprocess_exec(
@@ -547,36 +535,77 @@ class Gen3aPreprocessor:
                     "-c:v", "h264_nvenc", "-f", "null", "-",
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
                 )
-                await asyncio.wait_for(test_proc.communicate(), timeout=10)
+                try:
+                    await asyncio.wait_for(test_proc.communicate(), timeout=10)
+                except asyncio.TimeoutError:
+                    test_proc.kill()
+                    await test_proc.wait()
+                    raise
                 if test_proc.returncode == 0:
                     return ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "constqp", "-qp", "23"]
         except Exception:
             pass
         return ["-c:v", "libx264", "-preset", "medium", "-crf", "23"]
 
+    async def _has_audio_stream(self, input_path: Path, ffmpeg_path: str) -> bool:
+        """Check if a video file has an audio stream using ffprobe."""
+        # Only replace "ffmpeg" in the filename, not in directory components
+        # e.g. "C:/ffmpeg/bin/ffmpeg.exe" → "C:/ffmpeg/bin/ffprobe.exe" (not "C:/ffprobe/bin/...")
+        from pathlib import PurePath
+        _p = PurePath(ffmpeg_path)
+        ffprobe_path = str(_p.parent / _p.name.replace("ffmpeg", "ffprobe"))
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                ffprobe_path, "-v", "error",
+                "-select_streams", "a",
+                "-show_entries", "stream=codec_type",
+                "-of", "csv=p=0",
+                str(input_path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                return False
+            return proc.returncode == 0 and b"audio" in stdout
+        except Exception:
+            return False
+
     async def _reverse_video(self, input_path: Path, output_path: Path) -> Path:
         """
         Reverse video using FFmpeg (async, non-blocking).
 
         Last scene (LOOP_CLOSE) is reversed for seamless loop back to Scene 1.
+        Handles videos with or without audio streams.
+        Falls back to libx264 if NVENC fails at runtime.
         """
-        import asyncio
-
         ffmpeg_path = str(settings.FFMPEG_PATH) if settings.FFMPEG_PATH else "ffmpeg"
         encoder_params = await self._detect_video_codec(ffmpeg_path)
+        has_audio = await self._has_audio_stream(input_path, ffmpeg_path)
+
         cmd = [
             ffmpeg_path,
             "-y",  # Overwrite output
             "-i", str(input_path),
             "-vf", "reverse",
-            "-af", "areverse",
-            *encoder_params,
-            "-c:a", "aac",
-            "-b:a", "192k",
-            str(output_path),
         ]
 
-        logger.debug(f"Running FFmpeg: {' '.join(cmd)}")
+        if has_audio:
+            cmd.extend(["-af", "areverse"])
+        else:
+            cmd.append("-an")  # No audio output for video-only inputs
+
+        cmd.extend(encoder_params)
+
+        if has_audio:
+            cmd.extend(["-c:a", "aac", "-b:a", "192k"])
+
+        cmd.append(str(output_path))
+
+        logger.debug(f"Running FFmpeg reverse: {' '.join(cmd)}")
 
         process = await asyncio.create_subprocess_exec(
             *cmd,
@@ -584,11 +613,57 @@ class Gen3aPreprocessor:
             stderr=asyncio.subprocess.PIPE,
         )
 
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=120)
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=120)
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
+            raise RuntimeError(f"FFmpeg reverse timed out after 120s for {input_path.name}")
 
         if process.returncode != 0:
-            error_msg = stderr.decode() if stderr else "Unknown error"
-            raise RuntimeError(f"FFmpeg failed: {error_msg}")
+            error_msg = stderr.decode('utf-8', errors='ignore') if stderr else "Unknown error"
+            # If NVENC failed, retry with libx264
+            if "h264_nvenc" in " ".join(cmd) and ("nvenc" in error_msg.lower() or "encoder" in error_msg.lower()):
+                logger.warning(f"NVENC failed for reverse, retrying with libx264: {error_msg[:100]}")
+                return await self._reverse_video_libx264(input_path, output_path, ffmpeg_path, has_audio)
+            raise RuntimeError(f"FFmpeg reverse failed: {error_msg[:200]}")
+
+        if not output_path.exists():
+            raise RuntimeError(f"Output file not created: {output_path}")
+
+        return output_path
+
+    async def _reverse_video_libx264(
+        self, input_path: Path, output_path: Path, ffmpeg_path: str, has_audio: bool
+    ) -> Path:
+        """Fallback reversal using libx264 when NVENC fails."""
+        cmd = [
+            ffmpeg_path, "-y",
+            "-i", str(input_path),
+            "-vf", "reverse",
+        ]
+        if has_audio:
+            cmd.extend(["-af", "areverse"])
+        else:
+            cmd.append("-an")
+        cmd.extend(["-c:v", "libx264", "-preset", "medium", "-crf", "23"])
+        if has_audio:
+            cmd.extend(["-c:a", "aac", "-b:a", "192k"])
+        cmd.append(str(output_path))
+
+        process = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=120)
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
+            raise RuntimeError(f"FFmpeg libx264 reverse timed out after 120s for {input_path.name}")
+
+        if process.returncode != 0:
+            error_msg = stderr.decode('utf-8', errors='ignore') if stderr else "Unknown error"
+            raise RuntimeError(f"FFmpeg libx264 reverse failed: {error_msg[:200]}")
 
         if not output_path.exists():
             raise RuntimeError(f"Output file not created: {output_path}")

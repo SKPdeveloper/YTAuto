@@ -190,16 +190,16 @@ Return ONLY valid JSON."""
 
                 # Load precomputed data from gen3a_work/
                 if preprocessing_result.beats_json_path.exists():
-                    with open(preprocessing_result.beats_json_path, 'r') as f:
+                    with open(preprocessing_result.beats_json_path, 'r', encoding='utf-8') as f:
                         beats_data = json.load(f)
 
                 if preprocessing_result.vo_timing_json_path.exists():
-                    with open(preprocessing_result.vo_timing_json_path, 'r') as f:
+                    with open(preprocessing_result.vo_timing_json_path, 'r', encoding='utf-8') as f:
                         vo_timing_data = json.load(f)
 
                 if preprocessing_result.audio_levels_json_path.exists():
-                    with open(preprocessing_result.audio_levels_json_path, 'r') as f:
-                            audio_levels_data = json.load(f)
+                    with open(preprocessing_result.audio_levels_json_path, 'r', encoding='utf-8') as f:
+                        audio_levels_data = json.load(f)
 
             # ==========================================
             # STEP 2: BUILD ANALYSIS REQUEST
@@ -236,15 +236,20 @@ Return ONLY valid JSON."""
             # ==========================================
             # STEP 4: GEMINI ANALYSIS
             # ==========================================
-            logger.info("Sending to Gemini for analysis...")
+            if not video_parts:
+                raise ValueError(f"No videos were successfully uploaded to Gemini ({len(video_paths)} videos attempted). Cannot produce analysis.")
+
+            logger.info(f"Sending {len(video_parts)} videos to Gemini for analysis...")
             response = await self.client.aio.models.generate_content(
                 model=self.model_name,
                 contents=[request_content] + video_parts,
                 config=self.config,
             )
 
-            # Parse response
+            # Parse response — handle None/empty from safety filter
             raw_output = response.text
+            if not raw_output:
+                raise ValueError("Gemini returned empty response — content may have been blocked by safety filters")
             logger.info(f"Received response: {len(raw_output)} characters")
 
             # Log token usage
@@ -467,7 +472,7 @@ NO markdown formatting."""
                 speed_map_data = scene_data.get("speed_map", speed_analysis.get("speed_map", []))
 
                 scene = Gen3aSceneAnalysis(
-                    scene_number=scene_data.get("scene_number", 0),
+                    scene_number=scene_data.get("scene_number") or (idx + 1),
                     source_duration=scene_data.get("source_duration", 10.0),
                     output_duration=scene_data.get("output_duration",
                         speed_analysis.get("calculated_output_duration", 4.0)),
@@ -505,6 +510,9 @@ NO markdown formatting."""
                 import traceback
                 logger.debug(traceback.format_exc())
 
+        if not scenes:
+            raise ValueError(f"Failed to parse any scenes from Gemini response ({len(scene_list)} scenes in raw data)")
+
         # Parse music analysis - prefer precomputed data
         music_data = data.get("music_analysis", {})
         if beats_data:
@@ -535,41 +543,87 @@ NO markdown formatting."""
 
             # Build clean text lookup for each scene
             scene_vo_texts = []
-            for scene in gen1_scenes:
+            for si, scene in enumerate(gen1_scenes):
                 raw = scene.get("voiceover_segment", "") or scene.get("voiceover", "")
                 clean = _re.sub(r'\[[^\]]+\]', '', raw).strip().lower()
                 clean = _re.sub(r'<[^>]+>', '', clean).strip()
                 clean = ' '.join(clean.split())
                 scene_vo_texts.append({
-                    'scene_number': scene.get('scene_number', 0),
+                    'scene_number': scene.get('scene_number') or (si + 1),
                     'text_lower': clean,
                     'raw': raw,
                 })
 
-            # Group consecutive SPEECH segments and match to scenes by text overlap
+            # Match SPEECH segments to scenes using text overlap
+            # Multiple SPEECH segments can belong to one scene (librosa splits on pauses)
             speech_segments = [s for s in vo_timing_data.get("segments", []) if s.get("type") == "SPEECH"]
-            last_matched_scene_idx = 0
 
+            # Track which scenes have been matched (merge multi-segment scenes)
+            scene_segments: dict = {}  # scene_idx -> list of speech segments
+
+            current_scene_idx = 0
             for seg_i, segment in enumerate(speech_segments):
-                # Try to find which scene this speech segment belongs to
-                # by checking timing overlap or sequential order
-                matched_scene_idx = min(seg_i, len(scene_vo_texts) - 1) if scene_vo_texts else 0
+                # Try to find best matching scene by advancing from current position
+                # If current scene has no VO text (empty), skip it
+                best_idx = current_scene_idx
 
-                # Better: use sequential mapping but cap to scene count
-                if matched_scene_idx < len(scene_vo_texts):
-                    vo_text = scene_vo_texts[matched_scene_idx].get('raw', '')
-                    scene_num = scene_vo_texts[matched_scene_idx].get('scene_number', seg_i + 1)
-                else:
-                    vo_text = ""
-                    scene_num = seg_i + 1
+                # Skip scenes with empty VO text
+                while best_idx < len(scene_vo_texts) and not scene_vo_texts[best_idx]['text_lower']:
+                    best_idx += 1
+
+                # Cap to valid range — fall back to last scene that actually has VO text
+                if best_idx >= len(scene_vo_texts):
+                    best_idx = len(scene_vo_texts) - 1
+                    while best_idx > 0 and not scene_vo_texts[best_idx]['text_lower']:
+                        best_idx -= 1
+
+                if best_idx not in scene_segments:
+                    scene_segments[best_idx] = []
+                scene_segments[best_idx].append(segment)
+
+                # Check if this scene's text is "complete" by looking at accumulated segments
+                # Move to next scene when segments cover roughly the expected text
+                accumulated_duration = sum(
+                    s.get("end", 0) - s.get("start", 0) for s in scene_segments[best_idx]
+                )
+                # Heuristic: if accumulated >2s or next segment starts after gap, advance
+                if accumulated_duration > 1.5 and seg_i < len(speech_segments) - 1:
+                    next_start = speech_segments[seg_i + 1].get("start", 0)
+                    current_end = segment.get("end", 0)
+                    if next_start - current_end > 0.3:  # Gap between segments = new scene
+                        current_scene_idx = best_idx + 1
+
+            # Build VO segments from merged data
+            for scene_idx, scene_info in enumerate(scene_vo_texts):
+                segs = scene_segments.get(scene_idx, [])
+                if not segs and not scene_info['text_lower']:
+                    # Empty VO scene (e.g., loop scene) — skip
+                    continue
+                if not segs:
+                    # Scene has text but no matching speech segment — use estimated timing
+                    continue
+
+                scene_num = scene_info.get('scene_number', scene_idx + 1)
+                source_start = min(s.get("start", 0.0) for s in segs)
+                source_end = max(s.get("end", 0.0) for s in segs)
+
+                # Detect style from text tags
+                raw_text = scene_info.get('raw', '')
+                style_tag = "NORMAL"
+                if '[whispers]' in raw_text.lower() or '[whisper]' in raw_text.lower():
+                    style_tag = "WHISPER"
+                elif '[excited]' in raw_text.lower() or '[excitement]' in raw_text.lower():
+                    style_tag = "EXCITED"
+                elif '[dramatic]' in raw_text.lower():
+                    style_tag = "DRAMATIC"
 
                 vo_segments.append(VOSegmentAnalysis(
                     segment_id=f"VO{scene_num}",
-                    text=vo_text,
-                    source_start=segment.get("start", 0.0),
-                    source_end=segment.get("end", 0.0),
-                    style_tag="NORMAL",
-                    recommended_subtitle_style="NORMAL",
+                    text=raw_text,
+                    source_start=source_start,
+                    source_end=source_end,
+                    style_tag=style_tag,
+                    recommended_subtitle_style=style_tag,
                 ))
         else:
             vo_segments = [
@@ -659,6 +713,11 @@ JSON only, no markdown."""
 
         try:
             video_file = await self.client.aio.files.upload(file=video_path)
+            # Wait for file to become ACTIVE before sending to Gemini
+            active_file = await self._wait_for_file_active(video_file.name)
+            if not active_file:
+                raise RuntimeError(f"Video {video_path.name} failed to become ACTIVE in Gemini")
+            video_file = active_file
 
             response = await self.client.aio.models.generate_content(
                 model=self.model_name,
@@ -666,7 +725,10 @@ JSON only, no markdown."""
                 config=self.config,
             )
 
-            data = self._parse_json_response(response.text)
+            raw_text = response.text
+            if not raw_text:
+                raise ValueError("Gemini returned empty response — content may have been blocked by safety filters")
+            data = self._parse_json_response(raw_text)
 
             return Gen3aSceneAnalysis(
                 scene_number=scene_number,

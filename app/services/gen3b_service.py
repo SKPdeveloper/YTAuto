@@ -157,19 +157,24 @@ Return ONLY valid JSON."""
                 config=self.config,
             )
 
-            # Parse response
+            # Parse response — handle None from safety filter
             raw_output = response.text
+            if not raw_output:
+                raise ValueError("Gemini returned empty response — content may have been blocked by safety filters")
             logger.info(f"Received response: {len(raw_output)} characters")
 
             # Extract JSON
             manifest_data = self._parse_json_response(raw_output)
 
             # DEBUG: Save raw Gemini response for analysis
-            from app.core.config import settings
-            debug_path = Path(settings.PROJECTS_DIR) / gen3a_analysis.project_id / "gen3b_raw_response.json"
-            with open(debug_path, "w", encoding="utf-8") as f:
-                json.dump(manifest_data, f, indent=2, ensure_ascii=False)
-            logger.info(f"DEBUG: Raw response saved to {debug_path}")
+            try:
+                debug_path = Path(settings.PROJECTS_DIR) / gen3a_analysis.project_id / "gen3b_raw_response.json"
+                debug_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(debug_path, "w", encoding="utf-8") as f:
+                    json.dump(manifest_data, f, indent=2, ensure_ascii=False)
+                logger.info(f"DEBUG: Raw response saved to {debug_path}")
+            except Exception as e:
+                logger.warning(f"Failed to save debug response: {e}")
 
             # Convert to Gen3bManifest
             manifest = self._convert_to_manifest(manifest_data, gen3a_analysis, gen1_brief)
@@ -471,10 +476,10 @@ NO markdown formatting."""
                 continue  # Skip pause tags
             # Clean ElevenLabs tags from this segment
             clean_part = part
-            for tag in ["[shouts]", "[whispers]", "[whisper]", "[soft]", "[excited]",
-                        "[shout]", "[dramatic]", "[sarcastic]", "[sighs]", "[laughs]", "[sad]",
-                        "[angry]", "[happily]"]:
-                clean_part = clean_part.replace(tag, "").strip()
+            clean_part = re.sub(
+                r'\[(?:shouts?|whispers?|soft|excited|dramatic|sarcastic|sighs?|laughs?|sad|angry|happily)\]',
+                '', clean_part, flags=re.IGNORECASE
+            ).strip()
             clean_part = re.sub(r'<[^>]+>', '', clean_part)
             clean_part = " ".join(clean_part.split())
             if clean_part and len(clean_part) >= 3:
@@ -489,9 +494,13 @@ NO markdown formatting."""
         total_duration = end_time - start_time
         pause_gap = 0.4  # Gap between segments (pause duration estimate)
 
-        # Adjust duration for pauses
+        # Adjust duration for pauses — clamp to prevent negative when many segments in short duration
         num_pauses = len(text_segments) - 1
         speaking_duration = total_duration - (num_pauses * pause_gap)
+        if speaking_duration <= 0:
+            # Too many pauses for the duration — reduce pause gap proportionally
+            pause_gap = (total_duration * 0.2) / max(num_pauses, 1)
+            speaking_duration = total_duration - (num_pauses * pause_gap)
 
         result = []
         current_time = start_time
@@ -562,11 +571,15 @@ NO markdown formatting."""
             with open(timing_path, "r", encoding="utf-8") as f:
                 timing_data = json.load(f)
             for seg in timing_data.get("segments", []):
+                scene_num = seg.get("scene_number")
+                if scene_num is None:
+                    logger.warning(f"Skipping timing segment without scene_number: {seg}")
+                    continue
                 # Add hook offset to timing - voiceover plays after hook
-                vo_timing[seg["scene_number"]] = {
-                    "start_time": seg["start_time"] + HOOK_OFFSET,
-                    "end_time": seg["end_time"] + HOOK_OFFSET,
-                    "text": seg["text"],
+                vo_timing[scene_num] = {
+                    "start_time": seg.get("start_time", 0.0) + HOOK_OFFSET,
+                    "end_time": seg.get("end_time", 0.0) + HOOK_OFFSET,
+                    "text": seg.get("text", ""),
                 }
             logger.info(f"Loaded voiceover timing for {len(vo_timing)} segments (with {HOOK_OFFSET}s hook offset)")
         else:
@@ -616,8 +629,9 @@ NO markdown formatting."""
                     (s for s in manifest_scenes if s.scene_number == scene_num), None
                 )
                 if matching_scene:
-                    start_time = matching_scene.timeline_start + HOOK_OFFSET
-                    end_time = matching_scene.timeline_end + HOOK_OFFSET
+                    # timeline_start already accounts for hook position — don't add HOOK_OFFSET again
+                    start_time = matching_scene.timeline_start
+                    end_time = matching_scene.timeline_end
                 else:
                     # Last resort: skip this subtitle
                     logger.warning(f"Scene {scene_num}: no timeline data, skipping subtitle")
@@ -666,14 +680,10 @@ NO markdown formatting."""
                     logger.info(f"Added split subtitle {sub_id}: '{seg['text'][:30]}...' @ {seg['start']:.2f}s")
             else:
                 # No pause - single subtitle
-                # Clean up text - remove ElevenLabs audio tags for display
-                display_text = raw_text
-                for tag in ["[shouts]", "[whispers]", "[whisper]", "[pause]", "[soft]", "[excited]",
-                            "[shout]", "[dramatic]", "[sarcastic]", "[sighs]", "[laughs]", "[sad]",
-                            "[angry]", "[happily]", "[short pause]", "[long pause]"]:
-                    display_text = display_text.replace(tag, "").strip()
+                # Clean up text - remove ElevenLabs audio tags for display (case-insensitive)
+                display_text = re.sub(r'\[[\w\s]+\]', '', raw_text)
                 display_text = re.sub(r'<[^>]+>', '', display_text)
-                display_text = " ".join(display_text.split())
+                display_text = " ".join(display_text.split()).strip()
 
                 if not display_text or len(display_text) < 3:
                     continue
@@ -721,17 +731,18 @@ NO markdown formatting."""
                     continue
 
                 # Extract timing - Gemini nests in "timing" object
+                # Use `is not None` checks — 0.0 is a valid timestamp (falsy in Python `or` chains)
                 timing = item.get("timing", {})
-                output_start = (
-                    timing.get("output_start") or
-                    timing.get("segment_start") or
-                    item.get("output_start", 0.0)
-                )
-                output_end = (
-                    timing.get("output_end") or
-                    timing.get("segment_end") or
-                    item.get("output_end", 0.0)
-                )
+                output_start = timing.get("output_start")
+                if output_start is None:
+                    output_start = timing.get("segment_start")
+                if output_start is None:
+                    output_start = item.get("output_start", 0.0)
+                output_end = timing.get("output_end")
+                if output_end is None:
+                    output_end = timing.get("segment_end")
+                if output_end is None:
+                    output_end = item.get("output_end", 0.0)
 
                 # Extract text - GEN3b nests in text_source.clean_text
                 text_source = item.get("text_source", {})
@@ -755,9 +766,12 @@ NO markdown formatting."""
                 visual = item.get("visual", {})
                 animation = visual.get("animation") or item.get("animation", "fade")
 
-                # Extract position
+                # Extract position — Gemini may return string "bottom_center" or dict {"zone": "bottom_center"}
                 position = item.get("position", {})
-                position_zone = position.get("zone") or item.get("position", "bottom_center")
+                if isinstance(position, str):
+                    position_zone = position
+                else:
+                    position_zone = position.get("zone", "bottom_center") if isinstance(position, dict) else "bottom_center"
 
                 subtitle = ManifestSubtitle(
                     id=item.get("id", f"sub_{i+1}"),
@@ -815,7 +829,7 @@ NO markdown formatting."""
         raw_scenes = data.get("scenes") or data.get("timeline", [])
         logger.info(f"Raw scenes count: {len(raw_scenes)}")
         if not raw_scenes:
-            logger.warning(f"No scenes in data. Keys: {list(data.keys())}")
+            raise ValueError(f"GEN3b returned no scenes (available keys: {list(data.keys())})")
 
         # Build lookup for GEN3a scene data
         gen3a_scenes_map = {s.scene_number: s for s in gen3a_analysis.scenes}
@@ -823,13 +837,20 @@ NO markdown formatting."""
         for i, scene_data in enumerate(raw_scenes):
             try:
                 # Handle multiple possible field names (Gemini uses nested structure)
-                scene_number = (
+                raw_scene_num = (
                     scene_data.get("scene_number") or
                     scene_data.get("sequence_index") or
                     scene_data.get("scene") or
                     (i + 1)
                 )
-                scene_number = int(scene_number) if scene_number else i + 1
+                # Gemini sometimes returns "N (last scene)" or other non-numeric strings
+                try:
+                    scene_number = int(raw_scene_num) if raw_scene_num else i + 1
+                except (ValueError, TypeError):
+                    # Extract digits from string like "N (last scene)" or "8 (loop)"
+                    import re
+                    digits = re.findall(r'\d+', str(raw_scene_num))
+                    scene_number = int(digits[0]) if digits else i + 1
 
                 source_file = (
                     scene_data.get("source_file") or
@@ -839,23 +860,30 @@ NO markdown formatting."""
                 )
 
                 # Gemini nests timing in output_timing
+                # Use `is not None` — 0.0 is valid for scene 1 (falsy in Python `or` chains)
                 output_timing = scene_data.get("output_timing", {})
-                timeline_start = (
-                    scene_data.get("timeline_start") or
-                    output_timing.get("cumulative_start") or
-                    output_timing.get("start") or
-                    scene_data.get("start") or
-                    scene_data.get("in") or
-                    0.0
-                )
-                timeline_end = (
-                    scene_data.get("timeline_end") or
-                    output_timing.get("cumulative_end") or
-                    output_timing.get("end") or
-                    scene_data.get("end") or
-                    scene_data.get("out") or
-                    0.0
-                )
+                timeline_start = scene_data.get("timeline_start")
+                if timeline_start is None:
+                    timeline_start = output_timing.get("cumulative_start")
+                if timeline_start is None:
+                    timeline_start = output_timing.get("start")
+                if timeline_start is None:
+                    timeline_start = scene_data.get("start")
+                if timeline_start is None:
+                    timeline_start = scene_data.get("in")
+                if timeline_start is None:
+                    timeline_start = 0.0
+                timeline_end = scene_data.get("timeline_end")
+                if timeline_end is None:
+                    timeline_end = output_timing.get("cumulative_end")
+                if timeline_end is None:
+                    timeline_end = output_timing.get("end")
+                if timeline_end is None:
+                    timeline_end = scene_data.get("end")
+                if timeline_end is None:
+                    timeline_end = scene_data.get("out")
+                if timeline_end is None:
+                    timeline_end = 0.0
 
                 # -----------------------------------------------------------------
                 # GET GEN3a DATA FOR THIS SCENE (must be before speed_data fallback)
@@ -1081,11 +1109,18 @@ NO markdown formatting."""
             for layer in audio_layers_list:
                 layer_type = layer.get("type", "").upper()
                 if layer_type == "MUSIC":
+                    ducking_data = layer.get("ducking", {})
+                    # Gemini returns ducking.regions or ducking.enabled
+                    has_ducking = (
+                        ducking_data.get("enabled", False) or
+                        bool(ducking_data.get("regions")) or
+                        layer.get("duck_during_vo", False)
+                    )
                     audio_dict["music"] = {
                         "layer": "MUSIC",
                         "file": layer.get("file", ""),
                         "volume": self._db_to_linear(layer.get("volume_db", 0)),
-                        "duck_during_vo": layer.get("ducking", {}).get("enabled", False),
+                        "duck_during_vo": has_ducking,
                         "duck_amount": 0.4,
                     }
                 elif layer_type == "VOICEOVER":
@@ -1098,14 +1133,53 @@ NO markdown formatting."""
                     # Parse SFX events
                     sfx_events = []
                     for event in layer.get("events", []):
+                        # Gemini uses "time" or "timestamp" — 0.0 is valid, so use `is not None`
+                        evt_timestamp = event.get("timestamp")
+                        if evt_timestamp is None:
+                            evt_timestamp = event.get("time")
+                        if evt_timestamp is None:
+                            evt_timestamp = event.get("output_timestamp")
+                        if evt_timestamp is None:
+                            evt_timestamp = 0.0
+                        evt_id = event.get("id") or event.get("effect") or event.get("file", "").replace(".wav", "")
+                        if not evt_id:
+                            evt_id = f"sfx_event_{len(sfx_events)}"
                         sfx_events.append({
-                            "id": event.get("id", ""),
-                            "output_timestamp": event.get("timestamp", 0.0),
-                            "effect": event.get("id", ""),
+                            "id": evt_id,
+                            "output_timestamp": float(evt_timestamp),
+                            "effect": evt_id,
                             "file": event.get("file", ""),
                             "volume": self._db_to_linear(event.get("volume_db", 0)),
                         })
                     audio_dict["sfx_events"] = sfx_events
+                elif layer_type == "BED":
+                    audio_dict["bed"] = {
+                        "layer": "BED",
+                        "file": layer.get("file", ""),
+                        "volume": self._db_to_linear(layer.get("volume_db", 0)),
+                    }
+                elif layer_type == "FOLEY":
+                    foley_events = []
+                    for event in layer.get("events", []):
+                        # 0.0 is valid timestamp, use `is not None`
+                        evt_timestamp = event.get("timestamp")
+                        if evt_timestamp is None:
+                            evt_timestamp = event.get("time")
+                        if evt_timestamp is None:
+                            evt_timestamp = event.get("output_timestamp")
+                        if evt_timestamp is None:
+                            evt_timestamp = 0.0
+                        evt_id = event.get("id") or event.get("effect") or event.get("file", "").replace(".wav", "")
+                        if not evt_id:
+                            evt_id = f"foley_event_{len(foley_events)}"
+                        foley_events.append({
+                            "id": evt_id,
+                            "output_timestamp": float(evt_timestamp),
+                            "effect": evt_id,
+                            "file": event.get("file", ""),
+                            "volume": self._db_to_linear(event.get("volume_db", 0)),
+                        })
+                    audio_dict["foley_events"] = foley_events
             audio_data = audio_dict
 
         def safe_audio_layer(layer_data, layer_name: str) -> ManifestAudioLayer:
@@ -1125,7 +1199,23 @@ NO markdown formatting."""
         # =====================================================================
         # GLOBAL EFFECTS
         # =====================================================================
-        global_effects = self._safe_parse_list(data.get("global_effects", []), ManifestEffect)
+        raw_global_effects = data.get("global_effects", [])
+        # Gemini sometimes returns global_effects as dict {type: {params}} instead of list
+        if isinstance(raw_global_effects, dict):
+            effects_list = []
+            for effect_type, effect_data in raw_global_effects.items():
+                if isinstance(effect_data, dict):
+                    if not effect_data.get("enabled", True):
+                        continue  # Skip disabled effects
+                    effects_list.append({
+                        "type": effect_type,
+                        "params": effect_data.get("params", {}),
+                        "ffmpeg_filter": effect_data.get("ffmpeg_filter"),
+                    })
+                else:
+                    effects_list.append({"type": effect_type})
+            raw_global_effects = effects_list
+        global_effects = self._safe_parse_list(raw_global_effects, ManifestEffect)
 
         # =====================================================================
         # NEW GEN3a FIELDS
@@ -1260,7 +1350,7 @@ NO markdown formatting."""
             version="1.3.2",
             project_id=gen3a_analysis.project_id,
             generated_at=datetime.now().isoformat(),
-            total_duration=data.get("total_duration", gen3a_analysis.gen3b_handoff.total_output_duration),
+            total_duration=data.get("total_duration", gen3a_analysis.gen3b_handoff.total_output_duration if gen3a_analysis.gen3b_handoff else 25.0),
             target_duration=data.get("target_duration", 25.0),
             hook=hook,
             scenes=scenes,
@@ -1268,7 +1358,7 @@ NO markdown formatting."""
             subtitles=subtitles,
             global_effects=global_effects,
             loop_point=data.get("loop_point", 0.0),
-            loop_compliant=data.get("loop_compliant", gen3a_analysis.gen3b_handoff.loop_compliant),
+            loop_compliant=data.get("loop_compliant", gen3a_analysis.gen3b_handoff.loop_compliant if gen3a_analysis.gen3b_handoff else True),
             # NEW GEN3a fields
             music_analysis=music_analysis,
             hook_variety_analysis=hook_variety_analysis,
@@ -1286,9 +1376,15 @@ NO markdown formatting."""
             gen3b_raw=data,
         )
 
-    def _db_to_linear(self, db_value: float) -> float:
-        """Convert dB to linear volume (0-1 range)."""
-        if db_value is None or db_value == 0:
+    def _db_to_linear(self, db_value) -> float:
+        """Convert dB to linear volume (0-1 range). Handles string input from Gemini."""
+        if db_value is None:
+            return 1.0
+        try:
+            db_value = float(db_value)
+        except (ValueError, TypeError):
+            return 1.0
+        if db_value == 0:
             return 1.0
         import math
         return min(1.0, max(0.0, math.pow(10, db_value / 20)))
@@ -1439,7 +1535,7 @@ NO markdown formatting."""
             subtitles=[],
             global_effects=[],
             loop_point=0.0,
-            loop_compliant=gen3a_analysis.gen3b_handoff.loop_compliant,
+            loop_compliant=gen3a_analysis.gen3b_handoff.loop_compliant if gen3a_analysis.gen3b_handoff else True,
             # GEN3a fields
             music_analysis=music_analysis,
             hook_variety_analysis=hook_variety_analysis,

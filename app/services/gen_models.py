@@ -1000,6 +1000,18 @@ class Gen2SceneOutput(BaseModel):
     image_prompt: str = Field(..., description="Full prompt for Nano Banana Pro - REQUIRED")
     video_prompt: str = Field(..., description="Animation prompt for Kling i2v - NO duration spec (hardcoded) - REQUIRED")
 
+    @model_validator(mode='before')
+    @classmethod
+    def coerce_none_strings(cls, data: Any) -> Any:
+        """Gemini sometimes returns None for required string fields. Coerce to empty string."""
+        if isinstance(data, dict):
+            for key in ('visual_punctuation', 'image_prompt', 'video_prompt', 'reference_type'):
+                if key in data and data[key] is None:
+                    data[key] = ""
+            if 'motion_elements' in data and data['motion_elements'] is None:
+                data['motion_elements'] = []
+        return data
+
     # Motion and dynamics
     motion_elements: List[str] = Field(..., description="Motion elements - REQUIRED")
     energy_level: Optional[str] = Field(default=None, description="Energy level - from GEN1, optional in GEN2 v4.0")
@@ -1664,6 +1676,7 @@ class Gen3aSceneAnalysis(BaseModel):
     speed_map: List[SpeedSegment] = Field(..., description="Карта швидкості - REQUIRED")
     visual_classification: VisualClassification = Field(..., description="Класифікація - REQUIRED")
     easter_egg_verification: EasterEggVerification = Field(..., description="Верифікація Easter Egg - REQUIRED")
+    special_flags: List[str] = Field(default_factory=list, description="Special flags: HOOK_SCENE, LOOP_SCENE, EASTER_EGG_SCENE")
 
     @model_validator(mode='before')
     @classmethod
@@ -1943,7 +1956,7 @@ class EasterEggProtection(BaseModel):
 # ---------------------------------------------------------------------------
 
 class LoopProcessing(BaseModel):
-    """Обробка loop для сцени 6."""
+    """Обробка loop для останньої сцени (N)."""
     reverse: bool = Field(default=True, description="Чи реверсувати")
     duration_match: Dict[str, Any] = Field(default_factory=dict, description="Відповідність тривалості")
 
@@ -2069,7 +2082,7 @@ class ManifestScene(BaseModel):
     transition_to_next: Optional[TransitionToNext] = Field(default=None, description="Перехід до наступної сцени")
     effect_selection_log: Optional[EffectSelectionLog] = Field(default=None, description="Лог вибору ефектів")
     easter_egg_protection: Optional[EasterEggProtection] = Field(default=None, description="Захист easter egg")
-    loop_processing: Optional[LoopProcessing] = Field(default=None, description="Обробка loop (для сцени 6)")
+    loop_processing: Optional[LoopProcessing] = Field(default=None, description="Обробка loop (для останньої сцени N)")
 
 
 class ManifestSubtitle(BaseModel):
