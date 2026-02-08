@@ -518,7 +518,7 @@ class TopazQueue:
             "-i", str(input_path),
             "-vf", filter_str,
             "-c:v", settings.TOPAZ_CODEC,
-            "-b:v", settings.TOPAZ_BITRATE,
+            "-b:v", settings.TOPAZ_UPSCALE_BITRATE,
             "-pix_fmt", "yuv420p",
             "-c:a", "copy",  # Copy audio
             str(task.upscaled_output_path),

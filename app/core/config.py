@@ -345,7 +345,12 @@ class Settings(BaseSettings):
 
     TOPAZ_BITRATE: str = Field(
         default="65M",
-        description="Bitrate для вихідного відео (65M для 4K 60fps)"
+        description="Bitrate для FPS інтерполяції (65M для 1080p 60fps)"
+    )
+
+    TOPAZ_UPSCALE_BITRATE: str = Field(
+        default="68M",
+        description="Bitrate для 4K upscaling (68M — верхня межа YouTube для 4K 60fps)"
     )
 
     TOPAZ_QUALITY: int = Field(
