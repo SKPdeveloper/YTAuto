@@ -11,8 +11,20 @@ VALIDATION: All required fields are validated per GEN1/GEN2 contracts.
 """
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Any, Tuple, Union
 from enum import Enum
+
+
+def _coerce_to_str_list(v: Any) -> List[str]:
+    """Coerce Gemini output to List[str] — handles string, list, None."""
+    if v is None:
+        return []
+    if isinstance(v, str):
+        # Split comma-separated string into list
+        return [s.strip() for s in v.split(',') if s.strip()]
+    if isinstance(v, list):
+        return [str(item) for item in v]
+    return [str(v)]
 
 
 # ============================================================================
@@ -88,14 +100,23 @@ VALID_HOOK_TYPES = [
     "THE_ABSURD_LOGIC",
     "THE_SCALE_SHOCK",
     "THE_SENSORY_ATTACK",
+    "THE_WHISPER",
+    "THE_SOUND_FIRST",
+    "THE_TEXTURE_ZOOM",
 ]
 
-# Valid psychological triggers
+# Valid psychological triggers (accept any string — GEN1 prompt encourages creative values)
 VALID_PSYCHOLOGICAL_TRIGGERS = [
     "DISBELIEF",
     "PATTERN_BREAK",
     "AWE",
     "SENSORY",
+    "CONTRAST_HOOK",
+    "AUDIO_PRIME",
+    "CURIOSITY_GAP",
+    "OLFACTORY_RECALL",
+    "SYNAESTHESIA",
+    "OLFACTORY_MEMORY",
 ]
 
 # Valid narrative purposes
@@ -341,22 +362,38 @@ class Gen1Hook(BaseModel):
     @field_validator('psychological_trigger')
     @classmethod
     def validate_psychological_trigger(cls, v: str) -> str:
-        """Validate psychological trigger is one of allowed values."""
-        v_upper = v.upper().strip()
-        if v_upper not in VALID_PSYCHOLOGICAL_TRIGGERS:
-            # Default to DISBELIEF if invalid
-            return "DISBELIEF"
-        return v_upper
+        """Normalize psychological trigger — accept any value (GEN1 prompt encourages creative values)."""
+        return v.upper().strip()
 
 
 class Gen1ArchitecturalIdentity(BaseModel):
     """Architectural identity for visual consistency - ALL FIELDS REQUIRED."""
     style_code: str = Field(..., description="MODERN_MIN | MID_CENTURY | BRUTALIST | etc. - REQUIRED")
     style_description: str = Field(..., description="2-3 sentence description - REQUIRED")
-    stories: int = Field(..., description="Number of stories - REQUIRED")
-    distinctive_features: List[str] = Field(..., description="Key features - REQUIRED")
-    silhouette_description: str = Field(..., description="One sentence describing shape - REQUIRED")
-    interior_style: str = Field(..., description="How interiors should feel - REQUIRED")
+    stories: int = Field(default=10, description="Number of stories - REQUIRED")
+    distinctive_features: List[str] = Field(default_factory=list, description="Key features")
+    silhouette_description: str = Field(default="", description="One sentence describing shape")
+    interior_style: str = Field(default="", description="How interiors should feel")
+
+    @field_validator('distinctive_features', mode='before')
+    @classmethod
+    def coerce_distinctive_features(cls, v: Any) -> List[str]:
+        return _coerce_to_str_list(v)
+
+    @field_validator('stories', mode='before')
+    @classmethod
+    def coerce_stories(cls, v: Any) -> int:
+        """Gemini sometimes returns a string like 'Suspended' or 'Vertical cliff' instead of int."""
+        if isinstance(v, int):
+            return v
+        if isinstance(v, str):
+            # Try to extract digits
+            import re
+            digits = re.findall(r'\d+', v)
+            if digits:
+                return int(digits[0])
+            return 10  # default fallback
+        return 10
 
 
 class Gen1FoodDNA(BaseModel):
@@ -367,16 +404,21 @@ class Gen1FoodDNA(BaseModel):
     floors_become: str = Field(..., description="What floors are made of")
     doors_become: str = Field(..., description="What doors are made of")
     columns_become: str = Field(..., description="What columns are made of")
-    furniture_becomes: str = Field(..., description="What furniture is made of")
+    furniture_becomes: str = Field(default="", description="What furniture is made of")
 
 
 class Gen1FoodIdentity(BaseModel):
-    """Food identity for the project - ALL FIELDS REQUIRED."""
+    """Food identity for the project."""
     primary_food: str = Field(..., description="Primary food material - REQUIRED")
     food_dna: Gen1FoodDNA = Field(..., description="Food-to-architecture mapping - REQUIRED")
-    texture_keywords: List[str] = Field(..., description="Texture words - REQUIRED")
-    color_keywords: List[str] = Field(..., description="Color words - REQUIRED")
-    atmosphere: str = Field(..., description="Overall atmosphere - REQUIRED")
+    texture_keywords: List[str] = Field(default_factory=list, description="Texture words")
+    color_keywords: List[str] = Field(default_factory=list, description="Color words")
+    atmosphere: str = Field(default="", description="Overall atmosphere")
+
+    @field_validator('texture_keywords', 'color_keywords', mode='before')
+    @classmethod
+    def coerce_keywords(cls, v: Any) -> List[str]:
+        return _coerce_to_str_list(v)
 
 
 class Gen1LightingMaster(BaseModel):
@@ -422,13 +464,18 @@ class Gen1EasterEgg(BaseModel):
 
 
 class Gen1VisualConcept(BaseModel):
-    """Visual concept for a scene (from GEN1) - ALL FIELDS REQUIRED."""
+    """Visual concept for a scene (from GEN1)."""
     subject: str = Field(..., description="Main subject of the scene - REQUIRED")
-    environment: str = Field(..., description="Environment/setting - REQUIRED")
-    mood: str = Field(..., description="Emotional quality - REQUIRED")
-    key_elements: List[str] = Field(..., description="Key visual elements - REQUIRED")
-    lighting_note: str = Field(..., description="Specific lighting for this scene - REQUIRED")
-    motion_elements: List[str] = Field(..., description="What should move - REQUIRED")
+    environment: str = Field(default="", description="Environment/setting")
+    mood: str = Field(default="", description="Emotional quality")
+    key_elements: List[str] = Field(default_factory=list, description="Key visual elements")
+    lighting_note: str = Field(default="", description="Specific lighting for this scene")
+    motion_elements: List[str] = Field(default_factory=list, description="What should move")
+
+    @field_validator('key_elements', 'motion_elements', mode='before')
+    @classmethod
+    def coerce_lists(cls, v: Any) -> List[str]:
+        return _coerce_to_str_list(v)
 
 
 class Gen1CameraIntent(BaseModel):
@@ -682,9 +729,23 @@ class Gen1ViralAssessment(BaseModel):
     improvement_if_regenerated: Optional[str] = Field(default=None, description="GEN1 v6 improvement note")
 
 
+class Gen1ReplayHook(BaseModel):
+    """Replay hook for engagement (v8.0.0)."""
+    model_config = ConfigDict(extra='allow')
+    tier: str = Field(default="FEEL_AGAIN", description="FEEL_AGAIN | MISSED_DETAIL | SHARE_MOMENT")
+    format: str = Field(default="SENSORY_PEAK", description="SENSORY_PEAK | DENSITY_OVERLOAD | BACKGROUND_ACTION | AUDIO_LAYER | MONEY_SHOT")
+    description: str = Field(default="", description="What the replay hook is")
+    scene_number: Optional[int] = Field(default=None, description="Which scene contains it")
+    rewatch_trigger: Optional[str] = Field(default=None, description="Why viewer replays")
+    comment_bait: Optional[str] = Field(default=None, description="Comment bait text")
+    validation_check: Optional[str] = Field(default=None, description="QA check")
+
+
 class Gen1Engagement(BaseModel):
-    """Engagement elements - ALL FIELDS REQUIRED."""
-    easter_egg: Gen1EasterEgg = Field(..., description="Easter egg - REQUIRED")
+    """Engagement elements — v8.0.0 uses replay_hooks instead of easter_egg."""
+    model_config = ConfigDict(extra='allow')
+    easter_egg: Optional[Gen1EasterEgg] = Field(default=None, description="Easter egg — OPTIONAL in v8.0.0")
+    replay_hooks: List[Gen1ReplayHook] = Field(default_factory=list, description="Replay hooks (v8.0.0)")
     share_trigger: Gen1ShareTrigger = Field(..., description="Share trigger - REQUIRED")
     hashtags: List[str] = Field(default_factory=list, description="3 hashtags")
 
@@ -742,31 +803,36 @@ class Gen1Output(BaseModel):
         """
         Fix scene_number values based on array position and fill missing voiceover.
         This handles LLM errors where scene_number doesn't match array index.
+        Also renames GEN1 prompt field names to match Pydantic model field names.
         """
-        if isinstance(data, dict) and 'scenes' in data and isinstance(data['scenes'], list):
-            total_scenes = len(data['scenes'])
-            for i, scene in enumerate(data['scenes']):
-                if isinstance(scene, dict):
-                    expected_number = i + 1
-                    actual_number = scene.get('scene_number')
-
-                    # Fix wrong scene_number
-                    if actual_number != expected_number:
-                        scene['scene_number'] = expected_number
-
-                    # Ensure voiceover_segment exists for non-aerial/non-loop scenes
-                    purpose = scene.get('narrative_purpose', '').upper()
-                    if purpose not in ('AERIAL', 'LOOP_CLOSE', 'AERIAL_WOW', 'AERIAL_REVEAL'):
-                        if not scene.get('voiceover_segment'):
-                            if scene.get('broker_script'):
-                                scene['voiceover_segment'] = scene['broker_script']
-                            else:
-                                scene_name = scene.get('scene_name', f'Scene {expected_number}')
-                                scene['voiceover_segment'] = f"[dramatic] {scene_name}."
+        if isinstance(data, dict):
+            # GEN1 prompt outputs "structure" but model expects "property"
+            if 'structure' in data and 'property' not in data:
+                data['property'] = data.pop('structure')
 
             # Handle _concept_reasoning field from GEN1 v6 (rename to concept_reasoning)
             if '_concept_reasoning' in data and 'concept_reasoning' not in data:
                 data['concept_reasoning'] = data.pop('_concept_reasoning')
+
+            if 'scenes' in data and isinstance(data['scenes'], list):
+                for i, scene in enumerate(data['scenes']):
+                    if isinstance(scene, dict):
+                        expected_number = i + 1
+                        actual_number = scene.get('scene_number')
+
+                        # Fix wrong scene_number
+                        if actual_number != expected_number:
+                            scene['scene_number'] = expected_number
+
+                        # Ensure voiceover_segment exists for non-aerial/non-loop scenes
+                        purpose = scene.get('narrative_purpose', '').upper()
+                        if purpose not in ('AERIAL', 'LOOP_CLOSE', 'AERIAL_WOW', 'AERIAL_REVEAL'):
+                            if not scene.get('voiceover_segment'):
+                                if scene.get('broker_script'):
+                                    scene['voiceover_segment'] = scene['broker_script']
+                                else:
+                                    scene_name = scene.get('scene_name', f'Scene {expected_number}')
+                                    scene['voiceover_segment'] = f"[dramatic] {scene_name}."
         return data
 
     @model_validator(mode='after')
@@ -841,17 +907,19 @@ class Gen1Output(BaseModel):
         # viral_assessment is now REQUIRED - no defaults needed
 
         # ===== ENGAGEMENT VALIDATION =====
+        # easter_egg is optional in v8.0.0 (replaced by replay_hooks)
         egg = self.engagement.easter_egg
-        is_audio_only = getattr(egg, 'format', None) == 'AUDIO_ONLY'
-        if not is_audio_only:
-            if not egg.object:
-                errors.append("Missing engagement.easter_egg.object")
-            if egg.scene_number is None or egg.scene_number == 0:
-                errors.append("Missing engagement.easter_egg.scene_number")
-            elif egg.scene_number < 2 or egg.scene_number > len(self.scenes) - 1:
-                errors.append(f"easter_egg.scene_number must be 2-{len(self.scenes)-1}, got {egg.scene_number}")
-            if not egg.placement:
-                errors.append("Missing engagement.easter_egg.placement")
+        if egg is not None:
+            is_audio_only = getattr(egg, 'format', None) == 'AUDIO_ONLY'
+            if not is_audio_only:
+                if not egg.object:
+                    errors.append("Missing engagement.easter_egg.object")
+                if egg.scene_number is None or egg.scene_number == 0:
+                    errors.append("Missing engagement.easter_egg.scene_number")
+                elif egg.scene_number < 2 or egg.scene_number > len(self.scenes) - 1:
+                    errors.append(f"easter_egg.scene_number must be 2-{len(self.scenes)-1}, got {egg.scene_number}")
+                if not egg.placement:
+                    errors.append("Missing engagement.easter_egg.placement")
 
         # If critical errors, raise
         if errors:
@@ -888,12 +956,13 @@ class Gen1Output(BaseModel):
             (self.audio.suno_prompt, "audio.suno_prompt"),
         ]
 
-        # Easter egg checks - only for VISUAL format
-        if getattr(self.engagement.easter_egg, 'format', None) != 'AUDIO_ONLY':
-            checks.extend([
-                (self.engagement.easter_egg.object, "engagement.easter_egg.object"),
-                (self.engagement.easter_egg.placement, "engagement.easter_egg.placement"),
-            ])
+        # Easter egg checks - only for VISUAL format (optional in v8.0.0)
+        if self.engagement.easter_egg is not None:
+            if getattr(self.engagement.easter_egg, 'format', None) != 'AUDIO_ONLY':
+                checks.extend([
+                    (self.engagement.easter_egg.object, "engagement.easter_egg.object"),
+                    (self.engagement.easter_egg.placement, "engagement.easter_egg.placement"),
+                ])
 
         for value, field_name in checks:
             if not value:
@@ -948,7 +1017,7 @@ class Gen2FirstFrameComposition(BaseModel):
     safe_zone: str = Field(..., description="Subject in upper 60% - REQUIRED")
     motion_visible: str = Field(..., description="What's moving in first frame - REQUIRED")
     scroll_stop: str = Field(..., description="Why viewer stops scrolling - REQUIRED")
-    scale_proof: str = Field(..., description="Scale proof elements - REQUIRED")
+    scale_proof: str = Field(default="", description="Scale proof elements — optional")
 
 
 class Gen2PostProductionNotes(BaseModel):
@@ -1014,12 +1083,16 @@ class Gen2SceneOutput(BaseModel):
             for key in ('visual_punctuation', 'image_prompt', 'video_prompt', 'reference_type'):
                 if key in data and data[key] is None:
                     data[key] = ""
-            if 'motion_elements' in data and data['motion_elements'] is None:
+            # Coerce motion_elements: None→[], string→list
+            me = data.get('motion_elements')
+            if me is None:
                 data['motion_elements'] = []
+            elif isinstance(me, str):
+                data['motion_elements'] = [s.strip() for s in me.split(',') if s.strip()]
         return data
 
     # Motion and dynamics
-    motion_elements: List[str] = Field(..., description="Motion elements - REQUIRED")
+    motion_elements: List[str] = Field(default_factory=list, description="Motion elements")
     energy_level: Optional[str] = Field(default=None, description="Energy level - from GEN1, optional in GEN2 v4.0")
     visual_punctuation: str = Field(..., description="Visual beat - REQUIRED")
 
@@ -1136,6 +1209,14 @@ class Gen2VisualSummary(BaseModel):
     def normalize_summary(cls, data: Any) -> Any:
         """Normalize visual summary fields from Gemini output."""
         if isinstance(data, dict):
+            # motion_summary: Gemini sometimes returns dict instead of string
+            ms = data.get('motion_summary')
+            if isinstance(ms, dict):
+                data['motion_summary'] = str(ms)
+            # energy_pattern: same issue
+            ep = data.get('energy_pattern')
+            if isinstance(ep, dict):
+                data['energy_pattern'] = str(ep)
             # Handle loop_ready as alias for loop_verified
             if 'loop_ready' in data and 'loop_verified' not in data:
                 data['loop_verified'] = data['loop_ready']
@@ -1241,7 +1322,7 @@ class DeliveryPayload(BaseModel):
     # REQUIRED HANDOFF FIELDS - from GEN1 contract
     lighting_master: Gen1LightingMaster = Field(..., description="Lighting config")
     foreground_element: Gen1ForegroundElement = Field(..., description="Foreground element")
-    easter_egg: Gen1EasterEgg = Field(..., description="Easter egg info")
+    easter_egg: Optional[Gen1EasterEgg] = Field(default=None, description="Easter egg info — optional in v8.0.0")
     architectural_identity: Gen1ArchitecturalIdentity = Field(..., description="Architectural style")
     food_identity: Gen1FoodIdentity = Field(..., description="Food identity")
 
@@ -1282,15 +1363,16 @@ class DeliveryPayload(BaseModel):
         if not self.foreground_element.prompt_snippet:
             errors.append("Missing foreground_element.prompt_snippet")
 
-        # ===== EASTER EGG VALIDATION =====
-        is_audio_only = getattr(self.easter_egg, 'format', None) == 'AUDIO_ONLY'
-        if not is_audio_only:
-            if not self.easter_egg.object:
-                errors.append("Missing easter_egg.object")
-            if self.easter_egg.scene_number is None or self.easter_egg.scene_number == 0:
-                errors.append("Missing easter_egg.scene_number")
-            elif self.easter_egg.scene_number < 2 or self.easter_egg.scene_number > len(self.scenes) - 1:
-                errors.append(f"easter_egg.scene_number must be 2-{len(self.scenes)-1}, got {self.easter_egg.scene_number}")
+        # ===== EASTER EGG VALIDATION (optional in v8.0.0) =====
+        if self.easter_egg is not None:
+            is_audio_only = getattr(self.easter_egg, 'format', None) == 'AUDIO_ONLY'
+            if not is_audio_only:
+                if not self.easter_egg.object:
+                    errors.append("Missing easter_egg.object")
+                if self.easter_egg.scene_number is None or self.easter_egg.scene_number == 0:
+                    errors.append("Missing easter_egg.scene_number")
+                elif self.easter_egg.scene_number < 2 or self.easter_egg.scene_number > len(self.scenes) - 1:
+                    errors.append(f"easter_egg.scene_number must be 2-{len(self.scenes)-1}, got {self.easter_egg.scene_number}")
 
         # ===== SCENE CONTENT VALIDATION =====
         for scene in self.scenes:
@@ -1314,7 +1396,7 @@ class DeliveryPayload(BaseModel):
             "architecture": self.architectural_identity.style_code,
             "food": self.food_identity.primary_food,
             "lighting": self.lighting_master.preset,
-            "easter_egg_scene": self.easter_egg.scene_number,
+            "easter_egg_scene": self.easter_egg.scene_number if self.easter_egg else None,
         }
 
     @classmethod
@@ -1322,10 +1404,11 @@ class DeliveryPayload(BaseModel):
         """Create delivery payload from GEN1 output."""
         # Create scene inputs for GEN2
         scene_inputs = []
-        easter_egg_scene = gen1.engagement.easter_egg.scene_number
+        # easter_egg is optional in v8.0.0 (replaced by replay_hooks)
+        easter_egg_scene = gen1.engagement.easter_egg.scene_number if gen1.engagement.easter_egg else None
 
         for scene in gen1.scenes:
-            has_easter_egg = scene.scene_number == easter_egg_scene
+            has_easter_egg = easter_egg_scene is not None and scene.scene_number == easter_egg_scene
 
             scene_input = Gen2SceneInput(
                 scene_number=scene.scene_number,
@@ -2245,6 +2328,7 @@ __all__ = [
     "Gen1LightingMaster",
     "Gen1ForegroundElement",
     "Gen1EasterEgg",
+    "Gen1ReplayHook",
     "Gen1VisualConcept",
     "Gen1CameraIntent",
     "Gen1SceneConcept",

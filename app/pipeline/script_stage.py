@@ -368,7 +368,10 @@ class ScriptStage(BasePipelineStage):
 
         # Log audio config
         await self.notify_log(f"🎵 Музика: {gen1.audio.suno_prompt[:80]}...", "info")
-        await self.notify_log(f"🥚 Easter Egg: Scene {gen1.engagement.easter_egg.scene_number} - {gen1.engagement.easter_egg.object}", "info")
+        if gen1.engagement.easter_egg and gen1.engagement.easter_egg.object:
+            await self.notify_log(f"🥚 Easter Egg: Scene {gen1.engagement.easter_egg.scene_number} - {gen1.engagement.easter_egg.object}", "info")
+        elif gen1.engagement.replay_hooks:
+            await self.notify_log(f"🔁 Replay Hooks: {len(gen1.engagement.replay_hooks)}", "info")
 
     async def _log_gen2_output_to_client(self, gen2) -> None:
         """Log GEN2 output details to web client"""

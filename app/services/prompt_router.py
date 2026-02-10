@@ -161,7 +161,7 @@ VAL_GEN2_PROMPT_PATH = CONFIG_DIR / "VAL_GEN2.txt"
 DEBUG_DIR = Path(__file__).parent.parent.parent / "debug" / "gen_responses"
 
 # Validation constants
-MAX_VALIDATION_RETRIES = 7  # Max retries for GEN1/GEN2 validation
+MAX_VALIDATION_RETRIES = 3  # Max retries for GEN1/GEN2 validation
 
 
 # =============================================================================
@@ -477,6 +477,8 @@ class PromptRouter:
             except Exception as parse_error:
                 logger.error(f"[GEN1] Model validation failed: {parse_error}")
                 logger.error(f"[GEN1] JSON data: {json.dumps(json_data, indent=2, ensure_ascii=False)[:3000]}")
+                # Store error for retry guidance instead of raising blindly
+                self._last_gen1_parse_error = str(parse_error)[:500]
                 raise
 
             logger.success(f"[GEN1] Generated: {gen1_output.metadata.title}")
@@ -790,7 +792,8 @@ You MUST fix ALL the issues listed above. Pay special attention to:
         logger.info(f"  Lighting: {payload.lighting_master.preset}")
         logger.info(f"  Architecture: {payload.architectural_identity.style_code}")
         logger.info(f"  Food: {payload.food_identity.primary_food}")
-        logger.info(f"  Easter egg in scene: {payload.easter_egg.scene_number}")
+        if payload.easter_egg and payload.easter_egg.object:
+            logger.info(f"  Easter egg in scene: {payload.easter_egg.scene_number}")
 
         return payload
 
@@ -843,8 +846,9 @@ You MUST fix ALL the issues listed above. Pay special attention to:
         if not payload.foreground_element.prompt_snippet:
             errors.append("Missing foreground_element.prompt_snippet")
 
-        if not payload.easter_egg.object:
-            errors.append("Missing easter_egg.object")
+        if payload.easter_egg and not payload.easter_egg.object:
+            # Only check if easter_egg was provided (v8.0.0 uses replay_hooks instead)
+            pass
 
         # === SCENE CONTENT VALIDATION ===
         for scene in payload.scenes:
@@ -1334,6 +1338,25 @@ CRITICAL REQUIREMENTS:
             return 0.5
         return 0.5
 
+    def _build_loop_config(self, gen1) -> "LoopConfig":
+        """Build LoopConfig from GEN1 loop data (extra field)."""
+        gen1_loop = getattr(gen1, 'loop', None)
+        if gen1_loop is None and gen1.__pydantic_extra__:
+            gen1_loop = gen1.__pydantic_extra__.get('loop')
+
+        if isinstance(gen1_loop, dict):
+            return LoopConfig(
+                last_line=gen1_loop.get('scene_n_exit', '') or gen1_loop.get('last_line', '') or '',
+                first_line=gen1_loop.get('scene_1_entry', '') or gen1_loop.get('first_line', '') or '',
+                connection=gen1_loop.get('technique', '') or gen1_loop.get('connection', '')
+                    or "Last scene (LOOP_CLOSE) matches Scene 1 with reversed camera",
+                bridge_sfx=gen1_loop.get('bridge_sfx', '') or '',
+            )
+
+        return LoopConfig(
+            connection="Last scene (LOOP_CLOSE) matches Scene 1 with reversed camera",
+        )
+
     def _parse_bpm_from_suno_prompt(self, suno_prompt: str) -> int:
         """Extract BPM from suno prompt like 'Tropical house, 124 bpm'."""
         if not suno_prompt:
@@ -1497,16 +1520,17 @@ CRITICAL REQUIREMENTS:
 
                 # First frame composition (Scene 1 only)
                 if gen2_scene.first_frame_composition:
+                    ffc = gen2_scene.first_frame_composition
                     scene_first_frame = FirstFrameCompositionGEN2(
-                        hook_element=gen2_scene.first_frame_composition.hook_element,
-                        focal_point=gen2_scene.first_frame_composition.focal_point,
-                        foreground=gen2_scene.first_frame_composition.foreground,
-                        background=gen2_scene.first_frame_composition.background,
-                        scale_proof=gen2_scene.first_frame_composition.scale_proof,
-                        color_anchor=gen2_scene.first_frame_composition.color_anchor,
-                        safe_zone=gen2_scene.first_frame_composition.safe_zone,
-                        motion_visible=gen2_scene.first_frame_composition.motion_visible,
-                        scroll_stop=gen2_scene.first_frame_composition.scroll_stop,
+                        hook_element=ffc.hook_element or "",
+                        focal_point=ffc.focal_point or "",
+                        foreground=ffc.foreground or "",
+                        background=ffc.background or "",
+                        scale_proof=ffc.scale_proof or "",
+                        color_anchor=ffc.color_anchor or "",
+                        safe_zone=ffc.safe_zone or "",
+                        motion_visible=ffc.motion_visible or "",
+                        scroll_stop=ffc.scroll_stop or "",
                     )
 
                 # Scale techniques (exterior scenes)
@@ -1522,11 +1546,12 @@ CRITICAL REQUIREMENTS:
 
                 # Easter egg integration
                 if gen2_scene.easter_egg_integration:
+                    eei = gen2_scene.easter_egg_integration
                     scene_easter_egg_integration = EasterEggIntegration(
-                        object=gen2_scene.easter_egg_integration.object,
-                        placement_in_prompt=gen2_scene.easter_egg_integration.placement_in_prompt,
-                        visibility_check=gen2_scene.easter_egg_integration.visibility_check,
-                        integrated_in_image_prompt=gen2_scene.easter_egg_integration.integrated_in_image_prompt,
+                        object=eei.object or "",
+                        placement_in_prompt=eei.placement_in_prompt or "",
+                        visibility_check=eei.visibility_check or "",
+                        integrated_in_image_prompt=getattr(eei, 'integrated_in_image_prompt', True),
                     )
 
             # Build full visual_concept from GEN1
@@ -1548,11 +1573,24 @@ CRITICAL REQUIREMENTS:
             )
 
             # Collect extra fields from GEN1 and GEN2 scenes
+            # Remove keys that are already passed as explicit kwargs to avoid
+            # "got multiple values for keyword argument" errors
+            _explicit_keys = {
+                'scene_number', 'scene_name', 'timestamp', 'duration_seconds',
+                'voiceover', 'voiceover_segment', 'on_screen_text',
+                'narrative_purpose', 'energy_level', 'visual_description',
+                'camera_movement', 'motion_elements', 'broker_script',
+                'visual_concept', 'camera_intent', 'audio_sfx', 'audio_moment',
+                'image_prompt', 'video_prompt', 'reference_type', 'video_tool',
+                'status', 'inheritance', 'post_production_notes',
+                'first_frame_composition', 'scale_techniques',
+                'visual_punctuation', 'easter_egg_integration',
+            }
             extra_kwargs = {}
             if gen1_scene.__pydantic_extra__:
-                extra_kwargs.update(gen1_scene.__pydantic_extra__)
+                extra_kwargs.update({k: v for k, v in gen1_scene.__pydantic_extra__.items() if k not in _explicit_keys})
             if gen2_scene and gen2_scene.__pydantic_extra__:
-                extra_kwargs.update(gen2_scene.__pydantic_extra__)
+                extra_kwargs.update({k: v for k, v in gen2_scene.__pydantic_extra__.items() if k not in _explicit_keys})
 
             glaze_scene = GlazeScene(
                 scene_number=gen1_scene.scene_number,
@@ -1597,14 +1635,15 @@ CRITICAL REQUIREMENTS:
 
         # Build final project with all required fields from GEN1
         total_duration = sum(s.duration_seconds for s in glaze_scenes)
-        youtube_title = gen1.youtube.title or gen1.youtube_title or gen1.metadata.title or "Glaze City Property"
+        youtube_title = (gen1.youtube.title if gen1.youtube else None) or gen1.youtube_title or gen1.metadata.title or "Glaze City Property"
 
         # Find easter egg scene in GEN2 to get placement_in_prompt for safe_zone_position
-        easter_egg_scene_num = gen1.engagement.easter_egg.scene_number
-        gen2_easter_egg_scene = gen2_scenes.get(easter_egg_scene_num)
         gen2_placement_in_prompt = ""
-        if gen2_easter_egg_scene and gen2_easter_egg_scene.easter_egg_integration:
-            gen2_placement_in_prompt = gen2_easter_egg_scene.easter_egg_integration.placement_in_prompt or ""
+        if gen1.engagement.easter_egg and gen1.engagement.easter_egg.scene_number:
+            easter_egg_scene_num = gen1.engagement.easter_egg.scene_number
+            gen2_easter_egg_scene = gen2_scenes.get(easter_egg_scene_num)
+            if gen2_easter_egg_scene and gen2_easter_egg_scene.easter_egg_integration:
+                gen2_placement_in_prompt = gen2_easter_egg_scene.easter_egg_integration.placement_in_prompt or ""
 
         # Build full audio data from GEN1
         sonic_hook_data = None
@@ -1625,8 +1664,8 @@ CRITICAL REQUIREMENTS:
             if gen1.audio.foley_palette:
                 # Get primary_sounds: prefer sounds[].id, fallback to primary_sounds
                 if gen1.audio.foley_palette.sounds:
-                    primary = [s.id for s in gen1.audio.foley_palette.sounds]
-                    search_from_sounds = [s.search for s in gen1.audio.foley_palette.sounds]
+                    primary = [getattr(s, 'id', '') for s in gen1.audio.foley_palette.sounds if getattr(s, 'id', None)]
+                    search_from_sounds = [getattr(s, 'search', '') for s in gen1.audio.foley_palette.sounds if getattr(s, 'search', None)]
                 else:
                     primary = gen1.audio.foley_palette.primary_sounds or []
                     search_from_sounds = []
@@ -1647,10 +1686,10 @@ CRITICAL REQUIREMENTS:
                 for sfx_scene in gen1.audio.sfx_per_scene:
                     sfx_items = [
                         SceneSFX(
-                            type=item.type,
-                            timing=item.timing,
-                            description=item.description,
-                            volume=item.volume if hasattr(item, 'volume') else "MEDIUM",
+                            type=getattr(item, 'type', 'EFFECT'),
+                            timing=getattr(item, 'timing', '0.0s'),
+                            description=getattr(item, 'description', ''),
+                            volume=getattr(item, 'volume', 'MEDIUM'),
                         )
                         for item in sfx_scene.sfx
                     ]
@@ -1786,23 +1825,22 @@ CRITICAL REQUIREMENTS:
                 avoid_styles=[],
             ),
             # Easter egg with all required fields (safe_zone_position from GEN2 if available)
+            # v8.0.0: easter_egg may be None (replaced by replay_hooks)
             easter_egg=EasterEgg(
-                object=gen1.engagement.easter_egg.object,
-                scene_number=gen1.engagement.easter_egg.scene_number,
-                placement=gen1.engagement.easter_egg.placement,
-                visibility=gen1.engagement.easter_egg.visibility,
-                comment_bait=gen1.engagement.easter_egg.comment_bait,
-                validation_check=gen1.engagement.easter_egg.validation_check,
+                object=gen1.engagement.easter_egg.object if gen1.engagement.easter_egg else "",
+                scene_number=gen1.engagement.easter_egg.scene_number if gen1.engagement.easter_egg else 0,
+                placement=gen1.engagement.easter_egg.placement if gen1.engagement.easter_egg else "",
+                visibility=gen1.engagement.easter_egg.visibility if gen1.engagement.easter_egg else "FINDABLE",
+                comment_bait=gen1.engagement.easter_egg.comment_bait if gen1.engagement.easter_egg else "",
+                validation_check=gen1.engagement.easter_egg.validation_check if gen1.engagement.easter_egg else "",
                 safe_zone_position=self._parse_safe_zone_from_placement(
-                    gen1.engagement.easter_egg.placement,
-                    gen1.engagement.easter_egg.validation_check,
-                    gen2_placement_in_prompt,  # GEN2's placement_in_prompt has highest priority
-                ),
-                visibility_score=self._parse_visibility_score(gen1.engagement.easter_egg.visibility),
+                    gen1.engagement.easter_egg.placement if gen1.engagement.easter_egg else "",
+                    gen1.engagement.easter_egg.validation_check if gen1.engagement.easter_egg else "",
+                    gen2_placement_in_prompt,
+                ) if gen1.engagement.easter_egg else "center-left",
+                visibility_score=self._parse_visibility_score(gen1.engagement.easter_egg.visibility) if gen1.engagement.easter_egg else 0.7,
             ),
-            loop=LoopConfig(
-                connection=f"Last scene (LOOP_CLOSE) matches Scene 1 with reversed camera",
-            ),
+            loop=self._build_loop_config(gen1),
             scenes=glaze_scenes,
             voiceover=VoiceoverConfig(
                 settings=VoiceoverSettings(
@@ -1833,14 +1871,14 @@ CRITICAL REQUIREMENTS:
             ),
             # Publish config for multi-channel support
             publish_config=PublishConfig(
-                target_channel=gen1.publish_config.target_channel if gen1.publish_config else "glaze_city"
+                target_channel=getattr(gen1.publish_config, 'target_channel', "glaze_city") if gen1.publish_config else "glaze_city"
             ),
             youtube=ViralMetadata(
-                title=(gen1.youtube.title if gen1.youtube else None) or gen1.youtube_title or gen1.metadata.title,
-                description=(gen1.youtube.description if gen1.youtube else None) or gen1.youtube_description or "",
-                pinned_comment=(gen1.youtube.pinned_comment if gen1.youtube else None) or gen1.youtube_pinned_comment or gen1.engagement.easter_egg.comment_bait or "",
-                hashtags=gen1.youtube_hashtags or gen1.engagement.hashtags,
-                tags=(gen1.youtube.tags if gen1.youtube else None) or gen1.youtube_tags,
+                title=(gen1.youtube.title if gen1.youtube else None) or gen1.youtube_title or gen1.metadata.title or "Glaze City Property",
+                description=(gen1.youtube.description if gen1.youtube else None) or gen1.youtube_description or gen1.metadata.title or "Glaze City",
+                pinned_comment=(gen1.youtube.pinned_comment if gen1.youtube else None) or gen1.youtube_pinned_comment or (gen1.engagement.easter_egg.comment_bait if gen1.engagement.easter_egg else "") or "",
+                hashtags=gen1.youtube_hashtags or gen1.engagement.hashtags or [],
+                tags=(gen1.youtube.tags if gen1.youtube else None) or gen1.youtube_tags or [],
             ),
             # Viral audit with scores from GEN1 viral_assessment
             viral_audit=ViralAudit(
@@ -2041,9 +2079,8 @@ CRITICAL REQUIREMENTS:
             if not scene.visual_concept:
                 missing_fields.append(f"scene_{scene.scene_number}.visual_concept")
 
-        # ===== EASTER EGG VALIDATION =====
-        if not project.easter_egg.object:
-            missing_fields.append("easter_egg.object")
+        # ===== EASTER EGG VALIDATION (optional in v8.0.0) =====
+        # easter_egg may be empty when GEN1 v8.0.0 uses replay_hooks instead
 
         is_valid = len(missing_fields) == 0
 
@@ -2120,6 +2157,11 @@ CRITICAL REQUIREMENTS:
 
             if not gen1_output:
                 logger.error(f"[GEN1] Generation failed (attempt {attempt})")
+                # Capture parse error for retry guidance so Gemini knows what to fix
+                parse_err = getattr(self, '_last_gen1_parse_error', None)
+                if parse_err:
+                    last_retry_guidance = [f"JSON PARSE ERROR: {parse_err}", "Ensure ALL required fields are present and valid"]
+                    self._last_gen1_parse_error = None
                 if attempt < MAX_VALIDATION_RETRIES:
                     logger.info("Retrying GEN1...")
                 continue

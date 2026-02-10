@@ -168,33 +168,48 @@ def reload_banlist() -> Dict[str, Set[str]]:
 # ============================================================================
 
 class Category(str, Enum):
-    """Категорії контенту з GEN1.txt."""
-    LUXURY_LISTINGS = "LUXURY_LISTINGS"
+    """Категорії контенту з GEN1.txt v8.0.0."""
+    GRAND_STRUCTURES = "GRAND_STRUCTURES"
     VEHICLES = "VEHICLES"
+    ENTERTAINMENT = "ENTERTAINMENT"
+    INFRASTRUCTURE = "INFRASTRUCTURE"
+    RESIDENTIAL = "RESIDENTIAL"
+    NATURE_FORMATIONS = "NATURE_FORMATIONS"
+    # Legacy categories (backwards compatibility)
+    LUXURY_LISTINGS = "LUXURY_LISTINGS"
     TRANSIT = "TRANSIT"
     LANDMARKS = "LANDMARKS"
     COMMERCIAL = "COMMERCIAL"
-    INFRASTRUCTURE = "INFRASTRUCTURE"
-    ENTERTAINMENT = "ENTERTAINMENT"
     NEIGHBORHOODS = "NEIGHBORHOODS"
     NATURE = "NATURE"
     FREESTYLE = "FREESTYLE"
+    # Gemini creative variations
+    INDUSTRIAL = "INDUSTRIAL"
+    MILITARY = "MILITARY"
+    SPECIALIZED = "SPECIALIZED"
+    HOSPITALITY = "HOSPITALITY"
 
 
 class HookType(str, Enum):
-    """Типи хуків з GEN1.txt HOOK MATRIX."""
+    """Типи хуків з GEN1.txt v8.0.0 HOOK MATRIX."""
     THE_IMPOSSIBLE = "THE_IMPOSSIBLE"
     THE_ABSURD_LOGIC = "THE_ABSURD_LOGIC"
     THE_SCALE_SHOCK = "THE_SCALE_SHOCK"
     THE_SENSORY_ATTACK = "THE_SENSORY_ATTACK"
+    THE_WHISPER = "THE_WHISPER"
+    THE_SOUND_FIRST = "THE_SOUND_FIRST"
+    THE_TEXTURE_ZOOM = "THE_TEXTURE_ZOOM"
 
 
 class PsychologicalTrigger(str, Enum):
-    """Психологічні тригери з GEN1.txt."""
+    """Психологічні тригери з GEN1.txt v8.0.0."""
     DISBELIEF = "DISBELIEF"
     PATTERN_BREAK = "PATTERN_BREAK"
     AWE = "AWE"
     SENSORY = "SENSORY"
+    CONTRAST_HOOK = "CONTRAST_HOOK"
+    AUDIO_PRIME = "AUDIO_PRIME"
+    CURIOSITY_GAP = "CURIOSITY_GAP"
 
 
 class LightingPreset(str, Enum):
@@ -217,21 +232,27 @@ class LightingPreset(str, Enum):
 
 
 class AtmosphereMode(str, Enum):
-    """Режими атмосфери з GEN1.txt."""
+    """Режими атмосфери з GEN1.txt v8.0.0."""
     CINEMATIC = "CINEMATIC"
     VIBRANT = "VIBRANT"
     PLAYFUL = "PLAYFUL"
     GOLDEN_WARM = "GOLDEN_WARM"
     TROPICAL = "TROPICAL"
+    ETHEREAL = "ETHEREAL"
+    NOIR = "NOIR"
+    HAUNTED = "HAUNTED"
 
 
 class SonicHookType(str, Enum):
-    """Типи sonic hook з GEN1.txt AUDIO SYSTEM."""
+    """Типи sonic hook з GEN1.txt v8.0.0 AUDIO SYSTEM."""
     THE_BOOM = "THE_BOOM"
     THE_SIZZLE = "THE_SIZZLE"
     THE_WHOOSH = "THE_WHOOSH"
     THE_CHIME = "THE_CHIME"
     THE_DROP = "THE_DROP"
+    THE_CRUNCH = "THE_CRUNCH"
+    THE_GLITCH = "THE_GLITCH"
+    THE_SILENCE = "THE_SILENCE"
 
 
 class VolumeLevel(str, Enum):
@@ -268,10 +289,11 @@ class NarrativePurpose(str, Enum):
 
 
 class ReferenceHint(str, Enum):
-    """Reference hint з GEN1.txt."""
+    """Reference hint з GEN1.txt v8.0.0."""
     PRIMARY = "PRIMARY"
     REQUIRES_REF = "REQUIRES_REF"
     INDEPENDENT = "INDEPENDENT"
+    LOOP_CLOSE = "LOOP_CLOSE"
 
 
 class EnergyLevel(str, Enum):
@@ -342,7 +364,7 @@ MAX_SCENES: int = 10
 MIN_YOUTUBE_DESCRIPTION_LENGTH: int = 100
 MAX_YOUTUBE_TITLE_LENGTH: int = 60
 MIN_VIRAL_SCORE: float = 0.7
-MIN_MOTION_ELEMENTS: int = 3  # Require at least 3 motion elements for quality
+MIN_MOTION_ELEMENTS: int = 2  # GEN1.txt: "2+ items — first = start, second = change"
 MIN_DISTINCTIVE_FEATURES: int = 2
 MIN_TEXTURE_KEYWORDS: int = 2
 MIN_COLOR_KEYWORDS: int = 2
@@ -677,9 +699,10 @@ class Gen1Validator:
         if prop is None:
             return
 
-        required = ["name", "location", "price", "tagline"]
+        required = ["name", "location", "tagline"]
         for field_name in required:
             self._require_non_empty(prop, field_name, f"property.{field_name}")
+        # price is optional (not all concepts have a price)
 
     def _validate_hook(self) -> None:
         """
@@ -695,9 +718,10 @@ class Gen1Validator:
         hook_type = self._get_nested(hook, "type")
         self._validate_enum_field(hook_type, HookType, "hook.type")
 
-        # psychological_trigger (ENUM)
+        # psychological_trigger — accept any non-empty value (GEN1 prompt says "Create your OWN variations")
         trigger = self._get_nested(hook, "psychological_trigger")
-        self._validate_enum_field(trigger, PsychologicalTrigger, "hook.psychological_trigger")
+        if not trigger:
+            self._add_error("hook.psychological_trigger", "Required field is missing or empty")
 
         # first_words (складна перевірка)
         first_words = self._get_nested(hook, "first_words", "")
@@ -740,39 +764,38 @@ class Gen1Validator:
             # Перевіряємо перше слово
             actual_first_word = clean_text.split()[0].lower()
             if actual_first_word in banned_words:
-                self._add_error(
+                self._add_warning(
                     "hook.first_words",
-                    f"Cannot start with '{actual_first_word}' (banned first word)",
-                    code="BANNED_FIRST_WORD",
+                    f"Starts with '{actual_first_word}' (weak first word)",
                     suggestion="Use IMPACT words: numbers, sensory words, warnings, food nouns"
                 )
 
             # Перевіряємо заборонені фрази
             for phrase in banned_phrases:
                 if clean_text_lower.startswith(phrase):
-                    self._add_error(
+                    self._add_warning(
                         "hook.first_words",
-                        f"Cannot start with phrase '{phrase}'",
-                        code="BANNED_FIRST_PHRASE",
+                        f"Starts with generic phrase '{phrase}'",
                         suggestion="Avoid generic YouTube opener phrases"
                     )
                     break
 
         # Перевіряємо наявність emotion tag
-        # GEN1 v6: emotion tag may be in complete_hook_vo instead of first_words
-        has_emotion_tag = any(tag in first_words for tag in ELEVENLABS_EMOTION_TAGS)
-        if not has_emotion_tag:
-            # Also check complete_hook_vo (v6 format puts emotion tags there)
-            hook = self._get_field("hook")
-            complete_vo = self._get_nested(hook, "complete_hook_vo", "") if hook else ""
-            has_emotion_in_vo = any(tag in complete_vo for tag in ELEVENLABS_EMOTION_TAGS)
-            if not has_emotion_in_vo:
-                self._add_error(
-                    "hook.first_words",
-                    "Must contain an emotion tag",
-                    code="MISSING_EMOTION_TAG",
-                    suggestion=f"Add one of: {', '.join(sorted(ELEVENLABS_EMOTION_TAGS))}"
-                )
+        # GEN1 v6: emotion tag is required in complete_hook_vo (full voiceover text).
+        # first_words is the impact opener — tag there is optional.
+        hook = self._get_field("hook")
+        complete_vo = self._get_nested(hook, "complete_hook_vo", "") if hook else ""
+        has_emotion_in_first = any(tag in first_words for tag in ELEVENLABS_EMOTION_TAGS)
+        has_emotion_in_vo = any(tag in complete_vo for tag in ELEVENLABS_EMOTION_TAGS)
+
+        if not has_emotion_in_first and not has_emotion_in_vo:
+            # No emotion tag anywhere — this is an error
+            self._add_error(
+                "hook.complete_hook_vo",
+                "Must contain an emotion tag",
+                code="MISSING_EMOTION_TAG",
+                suggestion=f"Add one of: {', '.join(sorted(ELEVENLABS_EMOTION_TAGS))}"
+            )
 
     def _validate_architectural_identity(self) -> None:
         """Валідація architectural_identity об'єкту."""
@@ -992,19 +1015,22 @@ class Gen1Validator:
             )
 
     def _validate_engagement(self) -> None:
-        """Валідація engagement об'єкту (Easter Egg)."""
+        """Валідація engagement об'єкту (Easter Egg / Replay Hooks)."""
         engagement = self._get_field("engagement")
         if engagement is None:
             return
 
-        # easter_egg
+        # easter_egg — optional in v8.0.0 (replaced by replay_hooks)
         egg = self._get_nested(engagement, "easter_egg", {})
         if not egg:
-            self._add_error(
-                "engagement.easter_egg",
-                "Required object is missing",
-                code="MISSING_EASTER_EGG"
-            )
+            # v8.0.0: easter_egg no longer required, check for replay_hooks instead
+            replay_hooks = self._get_nested(engagement, "replay_hooks", [])
+            if not replay_hooks:
+                self._add_warning(
+                    "engagement",
+                    "Neither easter_egg nor replay_hooks found — engagement may be weak",
+                    code="MISSING_ENGAGEMENT_HOOKS"
+                )
         else:
             # GEN1 v6: AUDIO_ONLY easter eggs don't require visual fields
             egg_format = self._get_nested(egg, "format", "VISUAL")
@@ -1319,13 +1345,20 @@ class Gen1Validator:
                 self._require_non_empty(visual, "subject", f"{prefix}.visual_concept.subject")
                 self._require_non_empty(visual, "environment", f"{prefix}.visual_concept.environment")
 
-                # motion_elements (>= 3)
+                # motion_elements: error if <2, warning if 2 for HIGH/EXPLOSIVE
                 motion = self._get_nested(visual, "motion_elements", [])
-                if not isinstance(motion, list) or len(motion) < MIN_MOTION_ELEMENTS:
+                motion_count = len(motion) if isinstance(motion, list) else 0
+                if motion_count < MIN_MOTION_ELEMENTS:
                     self._add_error(
                         f"{prefix}.visual_concept.motion_elements",
-                        f"Must have at least {MIN_MOTION_ELEMENTS} items, got {len(motion) if isinstance(motion, list) else 0}",
+                        f"Must have at least {MIN_MOTION_ELEMENTS} items, got {motion_count}",
                         code="INSUFFICIENT_MOTION"
+                    )
+                elif motion_count == 2 and energy in ("HIGH", "EXPLOSIVE"):
+                    self._add_warning(
+                        f"{prefix}.visual_concept.motion_elements",
+                        f"{energy} scene has only 2 motion_elements — 3+ recommended for better dynamics",
+                        suggestion="Add a third motion element for richer video movement"
                     )
 
             # camera_intent
@@ -1360,23 +1393,30 @@ class Gen1Validator:
                 if scene_num == 1:
                     scene1_movement = movement
 
-            # broker_script (required for scenes 1-4)
+            # VO text (v8.0.0 uses narrator_script / voiceover_segment, legacy used broker_script)
             if scene_num <= 4:
-                broker = self._get_nested(scene, "broker_script", "")
-                if not broker:
-                    self._add_error(
-                        f"{prefix}.broker_script",
-                        "Required for scenes 1-4",
-                        code="MISSING_BROKER_SCRIPT"
-                    )
+                vo_text = (
+                    self._get_nested(scene, "voiceover_segment", "")
+                    or self._get_nested(scene, "narrator_script", "")
+                    or self._get_nested(scene, "broker_script", "")
+                )
+                if not vo_text:
+                    # ASMR scenes (typically scene 4) may have empty VO intentionally
+                    purpose = self._get_nested(scene, "narrative_purpose", "")
+                    if purpose != "STRUCTURAL_DETAIL":
+                        self._add_warning(
+                            f"{prefix}.voiceover_segment",
+                            "No VO text for early scene (1-4) — may reduce retention",
+                            code="MISSING_VO_EARLY_SCENE"
+                        )
                 else:
-                    # Check for AI markers in broker_script
-                    broker_lower = broker.lower()
+                    # Check for AI markers
+                    vo_lower = vo_text.lower()
                     ai_markers = get_ai_markers()
-                    found_ai = [m for m in ai_markers if m in broker_lower]
+                    found_ai = [m for m in ai_markers if m in vo_lower]
                     if found_ai:
                         self._add_error(
-                            f"{prefix}.broker_script",
+                            f"{prefix}.voiceover_segment",
                             f"Contains AI markers: {', '.join(found_ai[:3])}",
                             code="AI_MARKERS_IN_SCENE",
                             suggestion="Remove AI-sounding words"
@@ -1496,6 +1536,9 @@ class Gen1Validator:
             return False
         return True
 
+    # Enum fields that should only warn (not error) when Gemini uses creative values
+    _SOFT_ENUM_FIELDS = {"metadata.concept.category", "lighting_master.preset", "atmosphere_mode", "audio.sonic_hook.type"}
+
     def _validate_enum_field(
         self,
         value: Any,
@@ -1504,6 +1547,7 @@ class Gen1Validator:
     ) -> bool:
         """
         Валідація enum значення.
+        Soft enums (category, lighting, atmosphere) produce warnings, not errors.
 
         Returns:
             True якщо валідне
@@ -1518,6 +1562,14 @@ class Gen1Validator:
 
         valid_values = [e.value for e in enum_class]
         if value not in valid_values:
+            if field_path in self._SOFT_ENUM_FIELDS:
+                # Gemini is creative — accept non-standard values with warning
+                self._add_warning(
+                    field_path,
+                    f"Non-standard value '{value}' (accepted)",
+                    suggestion=f"Standard values: {', '.join(valid_values[:5])}..."
+                )
+                return True  # Accept it
             self._add_error(
                 field_path,
                 f"Invalid value '{value}'",

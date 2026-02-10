@@ -59,7 +59,7 @@ class ReferenceType(str, Enum):
 # ============================================================================
 
 # Мінімальна кількість motion_elements
-MIN_MOTION_ELEMENTS: int = 3
+MIN_MOTION_ELEMENTS: int = 2  # GEN2.txt: MEDIUM=2-3, LOW=2, HIGH=3+, EXPLOSIVE=4+
 
 # Максимальна кількість слів у video_prompt
 MAX_VIDEO_PROMPT_WORDS: int = 40
@@ -430,12 +430,14 @@ class Gen2Validator:
             )
             return
 
-        # gigantism_applied
-        if gs.get("gigantism_applied") is not True:
-            self._add_error(
+        # gigantism_applied — adaptive per v6: depends on subject_scale
+        # MACRO/INTIMATE/CLOSE_UP → false (APPETITE MODE), MASSIVE/TOWERING → true (ARCHITECTURE)
+        # Accept both true and false; only warn if missing entirely
+        if gs.get("gigantism_applied") is None:
+            self._add_warning(
                 "global_settings.gigantism_applied",
-                "Must be true",
-                code="GIGANTISM_NOT_APPLIED"
+                "Field missing — should be true (architecture) or false (appetite/macro)",
+                code="MISSING_GIGANTISM"
             )
 
         # negative_prompt
@@ -614,6 +616,16 @@ class Gen2Validator:
             scene_num = scene.get("scene_number", i + 1)
             self._validate_scene(scene, scene_num, i, easter_egg_scene)
 
+    def _get_scene_energy(self, scene_num: int) -> Optional[str]:
+        """Get energy_level for a scene from GEN1 handoff data."""
+        if not self._gen1_data:
+            return None
+        gen1_scenes = self._gen1_data.get("scenes", [])
+        for s in gen1_scenes:
+            if s.get("scene_number") == scene_num:
+                return s.get("energy_level")
+        return None
+
     def _get_easter_egg_scene(self) -> Optional[int]:
         """Отримати номер сцени з easter egg."""
         # Try from GEN1
@@ -690,15 +702,25 @@ class Gen2Validator:
             elif scene_num == self._total_scenes:
                 self._last_scene_movement = video_prompt
 
-        # motion_elements
+        # motion_elements: error if <2, warning if 2 for HIGH/EXPLOSIVE
         motion = scene.get("motion_elements", [])
-        if not isinstance(motion, list) or len(motion) < MIN_MOTION_ELEMENTS:
+        motion_count = len(motion) if isinstance(motion, list) else 0
+        if motion_count < MIN_MOTION_ELEMENTS:
             self._add_error(
                 f"{prefix}.motion_elements",
-                f"Must have at least {MIN_MOTION_ELEMENTS} items, got {len(motion) if isinstance(motion, list) else 0}",
+                f"Must have at least {MIN_MOTION_ELEMENTS} items, got {motion_count}",
                 code="INSUFFICIENT_MOTION"
             )
             check.motion_elements = "FAIL"
+        elif motion_count == 2:
+            # Check energy from GEN1 handoff — HIGH/EXPLOSIVE benefit from 3+
+            scene_energy = self._get_scene_energy(scene_num)
+            if scene_energy in ("HIGH", "EXPLOSIVE"):
+                self._add_warning(
+                    f"{prefix}.motion_elements",
+                    f"{scene_energy} scene has only 2 motion_elements — 3+ recommended for better dynamics",
+                    suggestion="Add a third motion element for richer video movement"
+                )
 
         # scale_techniques (required for exterior scenes)
         exterior_scenes = getattr(self, '_exterior_scenes', EXTERIOR_SCENES_BASE)
@@ -808,16 +830,24 @@ class Gen2Validator:
                         "Should not be empty"
                     )
 
-        # image_prompt must have >= 2 scale keywords
+        # image_prompt scale keywords — tier-dependent per GEN2.txt v6:
+        # TIER 1-2 (MACRO/APPETITE): scale keywords BANNED
+        # TIER 3 (BALANCED): selective
+        # TIER 4 (ARCHITECTURE): required 2+
+        # Since Scene 1 is often MACRO_ENTRY (80%), only warn if missing
         image_prompt = scene.get("image_prompt", "").lower()
         scale_count = sum(1 for kw in SCALE_KEYWORDS if kw in image_prompt)
-        if scale_count < MIN_SCALE_KEYWORDS:
+        visual_tier = scene.get("visual_tier", "")
+        if visual_tier in ("TIER_4_ARCHITECTURE",) and scale_count < MIN_SCALE_KEYWORDS:
             self._add_error(
                 f"{prefix}.image_prompt",
-                f"Scene 1 must have at least {MIN_SCALE_KEYWORDS} scale keywords, found {scale_count}",
+                f"TIER_4 Scene 1 must have at least {MIN_SCALE_KEYWORDS} scale keywords, found {scale_count}",
                 code="INSUFFICIENT_SCALE_KEYWORDS",
                 suggestion=f"Add: {', '.join(SCALE_KEYWORDS)}"
             )
+        elif not visual_tier.startswith("TIER_4") and scale_count < MIN_SCALE_KEYWORDS:
+            # Non-architecture tiers: scale keywords optional
+            pass
 
     def _validate_last_scene_specific(
         self,
@@ -1163,8 +1193,8 @@ class Gen2Validator:
         scene1 = scenes[0] if scenes else {}
 
         gs_status = "PASS"
-        if not gs or gs.get("gigantism_applied") is not True:
-            gs_status = "FAIL"
+        if not gs or gs.get("gigantism_applied") is None:
+            gs_status = "WARN"
 
         # Check anti-toy in negative
         negative = gs.get("negative_prompt", "").lower() if gs else ""
@@ -1172,10 +1202,14 @@ class Gen2Validator:
         if not all(kw in negative for kw in ANTI_TOY_KEYWORDS):
             anti_toy_status = "FAIL"
 
-        # Check Scene 1 scale keywords
+        # Check Scene 1 scale keywords (tier-dependent)
         s1_prompt = scene1.get("image_prompt", "").lower()
+        s1_tier = scene1.get("visual_tier", "")
         scale_count = sum(1 for kw in SCALE_KEYWORDS if kw in s1_prompt)
-        scale_status = "PASS" if scale_count >= MIN_SCALE_KEYWORDS else "FAIL"
+        if s1_tier in ("TIER_4_ARCHITECTURE",):
+            scale_status = "PASS" if scale_count >= MIN_SCALE_KEYWORDS else "FAIL"
+        else:
+            scale_status = "PASS"  # Non-architecture tiers don't require scale keywords
 
         return {
             "global_settings": gs_status,
