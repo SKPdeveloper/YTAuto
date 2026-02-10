@@ -631,7 +631,7 @@ class Gen1Validator:
 
         # version
         version = self._get_nested(metadata, "version")
-        valid_versions = ("3.0", "3.1", "6.0.0", "6.0.1")
+        valid_versions = ("3.0", "3.1", "6.0.0", "6.0.1", "8.0.0")
         if version and version not in valid_versions:
             self._add_warning(
                 "metadata.version",

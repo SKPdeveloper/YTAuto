@@ -10,7 +10,7 @@ The delivery module (prompt_router.py) handles the data flow between stages.
 VALIDATION: All required fields are validated per GEN1/GEN2 contracts.
 """
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing import List, Optional, Dict, Any, Tuple
 from enum import Enum
 
@@ -469,6 +469,8 @@ class SceneTrick(BaseModel):
 
 class Gen1SceneConcept(BaseModel):
     """Scene concept from GEN1 (story & structure, not visual prompts) - ALL FIELDS REQUIRED."""
+    model_config = ConfigDict(extra='allow')
+
     scene_number: int = Field(..., description="Scene number (1-based) - REQUIRED")
     scene_name: str = Field(..., description="Scene name - REQUIRED")
     duration_seconds: float = Field(..., description="Scene duration - REQUIRED")
@@ -704,6 +706,8 @@ class Gen1Output(BaseModel):
 
     Validates all REQUIRED_GEN1_FIELDS per contract.
     """
+    model_config = ConfigDict(extra='allow')
+
     concept_reasoning: Optional[str] = Field(default=None, description="GEN1 v6 concept reasoning")
     metadata: Gen1Metadata = Field(..., description="Project metadata")
     publish_config: Optional[Gen1PublishConfig] = Field(default=None, description="Publish configuration for multi-channel support")
@@ -993,6 +997,8 @@ class Gen2EasterEggIntegration(BaseModel):
 
 class Gen2SceneOutput(BaseModel):
     """Output from GEN2 - visual prompts for one scene - ALL FIELDS REQUIRED."""
+    model_config = ConfigDict(extra='allow')
+
     scene_number: int = Field(..., description="Scene number - REQUIRED")
     reference_type: str = Field(..., description="PRIMARY | REQUIRES_REF | INDEPENDENT | LOOP_CLOSE - REQUIRED")
 
@@ -1171,6 +1177,8 @@ class Gen2GlobalSettings(BaseModel):
 
 class Gen2BatchOutput(BaseModel):
     """Batch output from GEN2 - ALL FIELDS REQUIRED."""
+    model_config = ConfigDict(extra='allow')
+
     scenes: List[Gen2SceneOutput] = Field(..., description="Scene outputs - REQUIRED")
     visual_summary: Gen2VisualSummary = Field(..., description="Visual summary - REQUIRED")
     global_settings: Gen2GlobalSettings = Field(default_factory=Gen2GlobalSettings, description="Global settings for visual generation")

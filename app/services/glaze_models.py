@@ -8,7 +8,7 @@ IMPORTANT: Ці моделі відповідають формату вивод�
 PROTECTED файлів: config/GEN1.txt, GEN2.txt, GEN3a.txt, GEN3b.txt
 """
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing import List, Optional, Dict, Any, Union, Literal
 from pathlib import Path
 from datetime import datetime
@@ -466,6 +466,7 @@ class VisualSummary(BaseModel):
 
 class GlazeScene(BaseModel):
     """Повні дані однієї сцени - Fields with defaults can be populated later."""
+    model_config = ConfigDict(extra='allow')
 
     scene_number: int = Field(..., description="Номер сцени - REQUIRED")
     scene_name: str = Field(default="", description="Назва сцени")
@@ -801,6 +802,7 @@ class GlazeCityProject(BaseModel):
     - youtube (title, description) - NEVER NULL
     - scenes (6-10 scenes)
     """
+    model_config = ConfigDict(extra='allow')
 
     # Property - REQUIRED
     property: PropertyBrief

@@ -79,6 +79,12 @@ logs/
 # Debug responses
 debug/
 
+# Old prompt versions
+config/Old_GENS/
+
+# Internal test/patch scripts
+scripts/
+
 # Database
 data/
 !data/.gitkeep

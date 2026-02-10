@@ -1547,6 +1547,13 @@ CRITICAL REQUIREMENTS:
                 special=gen1_scene.camera_intent.special,
             )
 
+            # Collect extra fields from GEN1 and GEN2 scenes
+            extra_kwargs = {}
+            if gen1_scene.__pydantic_extra__:
+                extra_kwargs.update(gen1_scene.__pydantic_extra__)
+            if gen2_scene and gen2_scene.__pydantic_extra__:
+                extra_kwargs.update(gen2_scene.__pydantic_extra__)
+
             glaze_scene = GlazeScene(
                 scene_number=gen1_scene.scene_number,
                 scene_name=gen1_scene.scene_name,
@@ -1583,6 +1590,7 @@ CRITICAL REQUIREMENTS:
                 scale_techniques=scene_scale_techniques,
                 visual_punctuation=scene_visual_punctuation,
                 easter_egg_integration=scene_easter_egg_integration,
+                **extra_kwargs,  # Forward undeclared fields from GEN1/GEN2 scenes
             )
             glaze_scenes.append(glaze_scene)
             current_timestamp += gen1_scene.duration_seconds
