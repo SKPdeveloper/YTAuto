@@ -221,6 +221,9 @@ class ManifestRenderer:
         subtitled_path = None
 
         try:
+            # Step 0: Align scene boundaries to voiceover timing
+            self._align_scenes_to_voiceover(manifest, project_dir)
+
             # Step 1: Process scenes with speed changes
             processed_scenes = await self._process_scenes(manifest.scenes, project_dir)
 
@@ -238,9 +241,10 @@ class ManifestRenderer:
                 concat_path, manifest.global_effects, project_dir
             )
 
-            # Step 5: Add subtitles
+            # Step 5: Add subtitles (shifted by actual hook duration)
+            hook_dur = manifest.hook.duration if manifest.hook else 0.0
             subtitled_path = await self._add_subtitles(
-                effects_path, manifest.subtitles, project_dir
+                effects_path, manifest.subtitles, project_dir, hook_dur
             )
 
             # Step 6: Mix 5-layer audio
@@ -365,6 +369,231 @@ class ManifestRenderer:
         # Return the direct path (may not exist, caller will handle)
         return direct_path
 
+    # ------------------------------------------------------------------
+    # VO–Video Alignment
+    # ------------------------------------------------------------------
+
+    def _align_scenes_to_voiceover(
+        self,
+        manifest: Gen3bManifest,
+        project_dir: Path,
+    ) -> None:
+        """
+        Recalculate scene timeline boundaries so each scene is visible
+        when its voiceover segment plays.
+
+        The voiceover audio has fixed timing (from TTS).  Gen3b scene
+        durations are driven by video analysis and may differ from VO
+        segment durations, causing narration about scene N to play while
+        scene N-1 (or N+1) is still on screen.
+
+        Algorithm:
+        1. For each VO scene, compute an anchor = hook_offset + vo_start − LEAD
+           (the scene should appear slightly before narration begins).
+        2. Forward sweep: VO scenes snap to their anchors, no-VO scenes
+           fill the gaps (treated as B-roll for the adjacent narration).
+        3. Speed segments are rescaled proportionally so the new output
+           duration matches the adjusted timeline slot.
+
+        Must be called BEFORE _process_scenes() since it modifies
+        speed_segments in-place.
+        """
+        import json as _json
+
+        vo_timing_path = project_dir / "voiceover_timing.json"
+        if not vo_timing_path.exists():
+            logger.info("  No voiceover_timing.json — skipping VO alignment")
+            return
+
+        try:
+            with open(vo_timing_path, "r", encoding="utf-8") as f:
+                vo_data = _json.load(f)
+        except Exception as e:
+            logger.warning(f"  Failed to read voiceover_timing.json: {e}")
+            return
+
+        segments = vo_data.get("segments", [])
+        if not segments:
+            logger.info("  No VO segments — skipping alignment")
+            return
+
+        scenes = manifest.scenes
+        if not scenes:
+            return
+
+        hook_offset = manifest.hook.duration if manifest.hook else 0.0
+
+        # Build VO map: scene_number → (abs_start, abs_end)
+        vo_map: Dict[int, tuple] = {}
+        for seg in segments:
+            sn = seg.get("scene_number")
+            if sn is not None:
+                vo_map[sn] = (
+                    seg["start_time"] + hook_offset,
+                    seg["end_time"] + hook_offset,
+                )
+
+        if not vo_map:
+            return
+
+        # ── tunables ──
+        LEAD = 0.3           # show visual before narration starts
+        MIN_NO_VO = 1.5      # minimum duration for scenes without VO
+        TAIL_AFTER_LAST = 2.0 # visual tail after last VO ends
+        MAX_SPEED = 8.0       # don't speed up beyond this
+        MIN_SPEED = 0.5       # don't slow down beyond this
+
+        n = len(scenes)
+
+        # Phase 1: compute anchor (desired start) for every VO scene
+        anchors: Dict[int, float] = {}  # scene index → desired start
+        for i, scene in enumerate(scenes):
+            sn = scene.scene_number
+            if sn in vo_map:
+                if i == 0:
+                    anchors[i] = 0.0  # first scene always starts at 0
+                else:
+                    anchors[i] = max(0.0, vo_map[sn][0] - LEAD)
+
+        # Phase 2: forward sweep — compute new start / end for each scene
+        new_starts = [0.0] * n
+        new_ends = [0.0] * n
+        cursor = 0.0
+
+        for i in range(n):
+            sn = scenes[i].scene_number
+
+            # --- determine start ---
+            if i in anchors:
+                new_starts[i] = max(cursor, anchors[i])
+            else:
+                new_starts[i] = cursor
+
+            # --- determine end ---
+            if sn in vo_map:
+                vo_end_abs = vo_map[sn][1]
+
+                # find next anchor (next VO scene)
+                next_anchor_time = None
+                no_vo_between = 0
+                for j in range(i + 1, n):
+                    if j in anchors:
+                        next_anchor_time = anchors[j]
+                        break
+                    no_vo_between += 1
+
+                if next_anchor_time is not None:
+                    # Reserve MIN_NO_VO per no-VO scene in between
+                    reserved = no_vo_between * MIN_NO_VO
+                    max_end = next_anchor_time - reserved
+                    # Scene must last at least until VO ends
+                    ideal_end = vo_end_abs + 0.1
+                    new_ends[i] = max(
+                        new_starts[i] + 1.0,  # absolute minimum
+                        min(ideal_end, max_end),
+                    )
+                else:
+                    # Last VO scene (or no more VO scenes after)
+                    new_ends[i] = max(
+                        new_starts[i] + 1.5,
+                        vo_end_abs + 0.3,
+                    )
+            else:
+                # No VO — fill gap until next anchor
+                next_anchor_time = None
+                remaining_no_vo = 1
+                for j in range(i + 1, n):
+                    if j in anchors:
+                        next_anchor_time = anchors[j]
+                        break
+                    remaining_no_vo += 1
+
+                if next_anchor_time is not None:
+                    available = next_anchor_time - new_starts[i]
+                    per_scene = available / remaining_no_vo
+                    new_ends[i] = new_starts[i] + max(per_scene, 0.5)
+                else:
+                    # No more anchors — use minimum duration
+                    new_ends[i] = new_starts[i] + MIN_NO_VO
+
+            cursor = new_ends[i]
+
+        # Extend last scene for visual tail after VO
+        last_sn = scenes[-1].scene_number
+        if last_sn in vo_map:
+            vo_end = vo_map[last_sn][1]
+            new_ends[-1] = max(new_ends[-1], vo_end + TAIL_AFTER_LAST)
+        else:
+            new_ends[-1] = max(new_ends[-1], new_ends[-1] + TAIL_AFTER_LAST)
+
+        # Phase 3: apply new timings and rescale speed segments
+        logger.info("  VO–Video Alignment:")
+        old_total = manifest.total_duration
+        for i, scene in enumerate(scenes):
+            old_dur = scene.timeline_end - scene.timeline_start
+            new_dur = new_ends[i] - new_starts[i]
+
+            scene.timeline_start = new_starts[i]
+            scene.timeline_end = new_ends[i]
+
+            self._rescale_speed_segments(scene, new_dur, MAX_SPEED, MIN_SPEED)
+
+            vo_tag = ""
+            if scene.scene_number in vo_map:
+                vs, ve = vo_map[scene.scene_number]
+                vo_tag = f"  VO {vs:.1f}–{ve:.1f}"
+            else:
+                vo_tag = "  (no VO)"
+            logger.info(
+                f"    S{scene.scene_number}: "
+                f"{new_starts[i]:.2f}–{new_ends[i]:.2f} "
+                f"({new_dur:.2f}s, was {old_dur:.2f}s)"
+                f"{vo_tag}"
+            )
+
+        manifest.total_duration = new_ends[-1]
+        logger.info(
+            f"  Aligned total: {manifest.total_duration:.2f}s (was {old_total:.2f}s)"
+        )
+
+    @staticmethod
+    def _rescale_speed_segments(
+        scene: ManifestScene,
+        new_target_duration: float,
+        max_speed: float = 8.0,
+        min_speed: float = 0.5,
+    ) -> None:
+        """
+        Rescale all speed segments proportionally so the scene's total
+        output duration matches *new_target_duration*.
+
+        The source_start / source_end boundaries stay the same — only
+        ``speed`` and ``output_duration`` are adjusted.
+        """
+        segs = scene.speed_segments
+        if not segs:
+            return
+
+        current_total = sum(
+            (seg.source_end - seg.source_start) / max(seg.speed, 0.01)
+            for seg in segs
+        )
+        if current_total <= 0 or new_target_duration <= 0:
+            return
+
+        ratio = new_target_duration / current_total  # >1 means slower, <1 means faster
+
+        for seg in segs:
+            new_speed = seg.speed / ratio
+            # Clamp to sane range
+            new_speed = max(min_speed, min(new_speed, max_speed))
+            seg.speed = round(new_speed, 4)
+            seg.output_duration = round(
+                (seg.source_end - seg.source_start) / seg.speed, 6
+            )
+
+    # ------------------------------------------------------------------
+
     async def _process_scenes(
         self,
         scenes: List[ManifestScene],
@@ -398,7 +627,8 @@ class ManifestRenderer:
             scene_effects = [e for e in scene.effects if not e.is_hook_effect]
             if scene_effects:
                 effects_output = project_dir / f"effects_scene_{scene.scene_number}.mp4"
-                await self._apply_effects(output_path, scene_effects, effects_output)
+                await self._apply_effects(output_path, scene_effects, effects_output,
+                                          scene_timeline_start=scene.timeline_start)
                 output_path = effects_output
 
             processed.append(output_path)
@@ -512,12 +742,13 @@ class ManifestRenderer:
         input_path: Path,
         effects: List[ManifestEffect],
         output_path: Path,
+        scene_timeline_start: float = 0.0,
     ) -> None:
         """Apply visual effects to video."""
         filters = []
 
         for effect in effects:
-            effect_filter = self._get_effect_filter(effect)
+            effect_filter = self._get_effect_filter(effect, scene_timeline_start=scene_timeline_start)
             if effect_filter:
                 filters.append(effect_filter)
 
@@ -541,14 +772,22 @@ class ManifestRenderer:
 
         await self._run_ffmpeg(cmd)
 
-    def _get_effect_filter(self, effect: ManifestEffect) -> Optional[str]:
-        """Convert ManifestEffect to FFmpeg filter string."""
+    def _get_effect_filter(self, effect: ManifestEffect, scene_timeline_start: float = 0.0) -> Optional[str]:
+        """Convert ManifestEffect to FFmpeg filter string.
+
+        Args:
+            effect: The manifest effect to convert
+            scene_timeline_start: Scene's absolute start time in the final timeline.
+                Effect timestamps are converted to local scene time by subtracting this.
+        """
         effect_type = effect.type.upper()
         params = effect.params or {}
 
-        # Handle None values for timing (global effects may not have timing)
-        start = effect.output_start if effect.output_start is not None else 0.0
-        end = effect.output_end if effect.output_end is not None else 1.0
+        # Convert absolute timeline timestamps to local scene time
+        abs_start = effect.output_start if effect.output_start is not None else 0.0
+        abs_end = effect.output_end if effect.output_end is not None else 1.0
+        start = max(0.0, abs_start - scene_timeline_start)
+        end = max(start + 0.01, abs_end - scene_timeline_start)
         duration = end - start
 
         # Map effect types to FFmpeg filters
@@ -559,16 +798,20 @@ class ManifestRenderer:
         # brightness -> eq=brightness=X або exposure=exposure=X
         # contrast -> eq=contrast=X
         # saturation -> eq=saturation=X або hue=s=X
+        # Safe duration divisor for time-based expressions
+        dur = max(duration, 0.01)
+
         effect_map = {
-            "ZOOM_IN": f"scale={int(w*1.5)}:{int(h*1.5)},crop={w}:{h}:'(iw-{w})*min(1\\,t/{max(duration,0.01)})':"
-                       f"'(ih-{h})*min(1\\,t/{max(duration,0.01)})'",
-            "ZOOM_OUT": f"scale={int(w*1.5)}:{int(h*1.5)},crop={w}:{h}:'(iw-{w})*(1-min(1\\,t/{max(duration,0.01)}))': "
-                        f"'(ih-{h})*(1-min(1\\,t/{max(duration,0.01)}))'",
+            # --- Original effects ---
+            "ZOOM_IN": f"scale={int(w*1.5)}:{int(h*1.5)},crop={w}:{h}:'(iw-{w})*min(1\\,t/{dur})':"
+                       f"'(ih-{h})*min(1\\,t/{dur})'",
+            "ZOOM_OUT": f"scale={int(w*1.5)}:{int(h*1.5)},crop={w}:{h}:'(iw-{w})*(1-min(1\\,t/{dur}))':"
+                        f"'(ih-{h})*(1-min(1\\,t/{dur}))'",
             "ZOOM_PUNCH": f"scale={w}:{h},eq=brightness=0.05:contrast=1.1",
             "CAMERA_SHAKE": f"crop=iw-20:ih-20:x='10+random(0)*10':y='10+random(0)*10',scale={w}:{h}",
             "SHAKE": f"crop=iw-20:ih-20:x='10+random(0)*10':y='10+random(0)*10',scale={w}:{h}",
             "GLOW": "eq=brightness=0.06:saturation=1.3",
-            "FLASH": f"fade=t=in:st={start}:d=0.1,fade=t=out:st={start + 0.1}:d=0.1",
+            "FLASH": f"eq=brightness=0.4:saturation=0.5:enable='between(t\\,{start}\\,{start + 0.15})'",
             "VIGNETTE": "vignette=PI/4",
             "RGB_SPLIT": "rgbashift=rh=-3:bh=3",
             "CHROMATIC_ABERRATION": "rgbashift=rh=-3:bh=3",
@@ -577,6 +820,35 @@ class ManifestRenderer:
             "COLOR_BOOST": "eq=saturation=1.3:contrast=1.1",
             "WARM": "colorbalance=rs=0.1:gs=0.05:bs=-0.1",
             "COOL": "colorbalance=rs=-0.1:gs=0:bs=0.1",
+            # --- Zoom variants (scale+crop, no zoompan) ---
+            "SLOW_ZOOM": f"scale={int(w*1.08)}:{int(h*1.08)},crop={w}:{h}:"
+                         f"'(iw-{w})/2':'(ih-{h})/2'",
+            "DRAMATIC_ZOOM": f"scale={int(w*1.15)}:{int(h*1.15)},crop={w}:{h}:"
+                             f"'(iw-{w})*min(1\\,t/{dur})/2':'(ih-{h})*min(1\\,t/{dur})/2'",
+            "FOCUS_PULL": "gblur=sigma=2",
+            # --- Glow / flash variants ---
+            "SOFT_GLOW": "eq=brightness=0.04:saturation=1.15",
+            "IMPACT_FLASH": f"eq=brightness=0.5:saturation=0.3:enable='between(t\\,{start}\\,{start + 0.06})'",
+            "FLASH_WHITE": f"eq=brightness=0.5:saturation=0.3:enable='between(t\\,{start}\\,{start + 0.1})'",
+            # --- Motion / drift (crop-based, no zoompan) ---
+            "PARALLAX": f"scale={int(w*1.1)}:{int(h*1.1)},crop={w}:{h}:"
+                        f"'(iw-{w})/2+(iw-{w})/2*sin(t*0.8)':'(ih-{h})/2'",
+            "DRIFT": f"scale={int(w*1.08)}:{int(h*1.08)},crop={w}:{h}:"
+                     f"'(iw-{w})/2+(iw-{w})/2*sin(t*0.5)':'(ih-{h})/2'",
+            "GENTLE_DRIFT": f"scale={int(w*1.05)}:{int(h*1.05)},crop={w}:{h}:"
+                            f"'(iw-{w})/2+(iw-{w})/2*sin(t*0.3)':'(ih-{h})/2'",
+            "GENTLE_PAN": f"scale={int(w*1.08)}:{int(h*1.08)},crop={w}:{h}:"
+                          f"'(iw-{w})*min(1\\,t/{dur})':'(ih-{h})/2'",
+            # --- Color grading ---
+            "COLOR_GRADING": "eq=saturation=1.2:contrast=1.05:brightness=0.02",
+            "WARM_GRADE": "colorbalance=rs=0.08:gs=0.04:bs=-0.06",
+            "LIGHT_LEAK": "colorbalance=rs=0.12:gs=0.06:bs=-0.04",
+            # --- Vignette / lens ---
+            "SOFT_VIGNETTE": "vignette=PI/5",
+            "LENS_FLARE": "lenscorrection=k1=0.02:k2=0.02",
+            # --- Film look ---
+            "FILM_GRAIN": "noise=alls=8:allf=t",
+            "MOTION_BLUR": "tmix=frames=5:weights='1 1 1 1 1'",
         }
 
         # Try built-in map first, then fall back to manifest's pre-computed ffmpeg_filter
@@ -789,12 +1061,17 @@ class ManifestRenderer:
         input_path: Path,
         subtitles: List[ManifestSubtitle],
         project_dir: Path,
+        hook_duration: float = 0.0,
     ) -> Path:
         """
         Add word-by-word subtitles to video.
 
         REQUIRES: subtitles.ass generated from vo_alignment.json (word-by-word timing)
         NO FALLBACK: Scene-level subtitles are not acceptable for viral content.
+
+        The .ass file is generated at Stage 2 with a guessed hook_offset (0.3s).
+        At render time the actual hook duration is known, so we re-shift all
+        Dialogue lines to match the real offset.
         """
         if not subtitles:
             return input_path
@@ -806,15 +1083,19 @@ class ManifestRenderer:
             logger.warning(f"  subtitles.ass not found at {ass_path}, skipping subtitle overlay")
             return input_path
 
-        logger.info(f"  Using word-by-word subtitles from {ass_path.name}")
+        # Re-shift subtitles to match actual hook duration.
+        # The .ass was written with hook_offset=0.3 at audio generation time.
+        # We parse actual timings from the file and re-write with correct offset.
+        shifted_ass_path = project_dir / "subtitles_shifted.ass"
+        self._shift_ass_timings(ass_path, shifted_ass_path, hook_duration)
+
+        logger.info(f"  Using word-by-word subtitles (hook shift: {hook_duration:.2f}s)")
 
         # Use relative path for ASS filter to avoid Windows 'C:' colon issue.
-        # FFmpeg's filter parser treats ':' as option separator and no escaping works reliably.
-        # Running FFmpeg with cwd=project_dir lets us use just the filename.
         cmd = [
             self.ffmpeg_path, "-y",
             "-i", str(input_path),
-            "-vf", f"ass={ass_path.name}",
+            "-vf", f"ass={shifted_ass_path.name}",
             "-c:v", self.config.video_codec,
             *self._get_encoder_params(),
             "-c:a", "copy",
@@ -824,7 +1105,82 @@ class ManifestRenderer:
         await self._run_ffmpeg(cmd, cwd=project_dir)
         logger.info(f"  Added {len(subtitles)} subtitles")
 
+        # Clean up shifted file
+        try:
+            shifted_ass_path.unlink()
+        except Exception:
+            pass
+
         return output_path
+
+    @staticmethod
+    def _shift_ass_timings(
+        input_ass: Path,
+        output_ass: Path,
+        target_offset: float,
+    ) -> None:
+        """
+        Re-write an ASS file so that all Dialogue lines are shifted to
+        start at `target_offset` instead of whatever offset they currently have.
+
+        Approach: find the earliest Dialogue start time, compute the delta
+        between that and `target_offset`, then shift every Dialogue line by
+        that delta.
+        """
+        import re
+
+        _ASS_TIME_RE = re.compile(
+            r"Dialogue:\s*\d+,(\d+):(\d+):(\d+)\.(\d+),(\d+):(\d+):(\d+)\.(\d+),"
+        )
+
+        def _parse_ass_ts(h: str, m: str, s: str, cs: str) -> float:
+            return int(h) * 3600 + int(m) * 60 + int(s) + int(cs) / 100
+
+        def _format_ass_ts(t: float) -> str:
+            t = max(t, 0.0)
+            h = int(t // 3600)
+            t -= h * 3600
+            m = int(t // 60)
+            t -= m * 60
+            s = int(t)
+            cs = int(round((t - s) * 100))
+            return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+
+        lines = input_ass.read_text(encoding="utf-8").splitlines()
+
+        # First pass: find earliest start time
+        earliest = None
+        for line in lines:
+            match = _ASS_TIME_RE.match(line)
+            if match:
+                start = _parse_ass_ts(match.group(1), match.group(2), match.group(3), match.group(4))
+                if earliest is None or start < earliest:
+                    earliest = start
+
+        if earliest is None:
+            # No Dialogue lines — just copy as-is
+            output_ass.write_text(input_ass.read_text(encoding="utf-8"), encoding="utf-8")
+            return
+
+        delta = target_offset - earliest
+
+        # Second pass: shift all Dialogue times
+        shifted_lines = []
+        for line in lines:
+            match = _ASS_TIME_RE.match(line)
+            if match:
+                start = _parse_ass_ts(match.group(1), match.group(2), match.group(3), match.group(4))
+                end = _parse_ass_ts(match.group(5), match.group(6), match.group(7), match.group(8))
+                new_start = _format_ass_ts(start + delta)
+                new_end = _format_ass_ts(end + delta)
+                # Replace the two timestamps in the Dialogue line
+                parts = line.split(",", 3)  # "Dialogue: 0", "H:MM:SS.CS", "H:MM:SS.CS", rest
+                parts[1] = new_start
+                parts[2] = new_end
+                line = ",".join(parts)
+            shifted_lines.append(line)
+
+        output_ass.write_text("\n".join(shifted_lines), encoding="utf-8")
 
     def _create_ass_file(
         self,
@@ -954,6 +1310,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
         # Add SFX events from manifest
         audio_layers = manifest.audio_layers
+        manifest_sfx_added = 0
         for sfx in audio_layers.sfx_events:
             sfx_path = project_dir / "sfx" / sfx.file
             if sfx_path.exists():
@@ -964,9 +1321,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     sfx.volume,
                     sfx.effect,
                 )
+                manifest_sfx_added += 1
 
-        # AUTO-SFX: If no SFX from manifest, auto-discover SFX files
-        if not audio_layers.sfx_events:
+        # AUTO-SFX: If no SFX were actually loaded, auto-discover from sfx/ directory
+        if manifest_sfx_added == 0:
             await self._auto_add_sfx(audio_config, manifest, project_dir)
 
         # Add FOLEY events

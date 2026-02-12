@@ -340,6 +340,11 @@ class SimpleVideoGenerator:
             raise Exception(f"Failed to get current URL: {e}")
 
         if force_refresh or "higgsfield.ai/create/video" not in current_url:
+            # Navigate away first to clear cached React state (image/prompt from previous generation)
+            logger.debug("Clearing page state (about:blank)...")
+            await asyncio.to_thread(self.driver.get, "about:blank")
+            await asyncio.sleep(1)
+
             logger.debug(f"Navigating to {HIGGSFIELD_VIDEO_URL}")
             await asyncio.to_thread(self.driver.get, HIGGSFIELD_VIDEO_URL)
             await asyncio.sleep(4)
@@ -410,6 +415,84 @@ class SimpleVideoGenerator:
                 logger.debug("Removed current image")
         except Exception:
             pass
+
+    async def _clear_image_via_js(self) -> bool:
+        """
+        Clear existing image using JavaScript DOM traversal.
+
+        More robust than pixel-based detection — searches for close/remove buttons
+        by their SVG content (X icon) or aria attributes, regardless of position.
+        """
+        try:
+            result = await asyncio.to_thread(
+                self.driver.execute_script,
+                """
+                // Strategy 1: Find button with SVG close icon (X pattern) in the left panel
+                // The left panel is typically within the first 300px of the page
+                var allBtns = document.querySelectorAll('button');
+                for (var btn of allBtns) {
+                    var rect = btn.getBoundingClientRect();
+                    // Must be in left panel area (x < 300) and small (likely a close button)
+                    if (rect.width > 50 || rect.height > 50 || rect.x > 300) continue;
+                    if (rect.width < 8 || rect.height < 8) continue;
+
+                    // Check for SVG with close/X icon (path data with diagonal lines)
+                    var svg = btn.querySelector('svg');
+                    if (svg) {
+                        var paths = svg.querySelectorAll('path, line');
+                        if (paths.length >= 1 && paths.length <= 4) {
+                            // Small button with simple SVG = likely close/remove button
+                            btn.click();
+                            return 'clicked_svg_btn';
+                        }
+                    }
+
+                    // Check text content for X or ×
+                    var text = btn.textContent.trim();
+                    if (text === '×' || text === 'x' || text === 'X' || text === '✕') {
+                        btn.click();
+                        return 'clicked_text_btn';
+                    }
+                }
+
+                // Strategy 2: Find by aria-label
+                var closeBtns = document.querySelectorAll('[aria-label*="close"], [aria-label*="remove"], [aria-label*="delete"], [aria-label*="clear"]');
+                for (var btn of closeBtns) {
+                    var rect = btn.getBoundingClientRect();
+                    if (rect.x < 300 && rect.width < 50) {
+                        btn.click();
+                        return 'clicked_aria_btn';
+                    }
+                }
+
+                // Strategy 3: Find any small absolute-positioned button overlaying an image
+                var imgs = document.querySelectorAll('img');
+                for (var img of imgs) {
+                    var imgRect = img.getBoundingClientRect();
+                    if (imgRect.x > 300 || imgRect.width > 200) continue;  // Not in left panel
+                    // Find buttons near this image's top-right corner
+                    for (var btn of allBtns) {
+                        var btnRect = btn.getBoundingClientRect();
+                        if (btnRect.width < 40 && btnRect.height < 40 &&
+                            Math.abs(btnRect.x - (imgRect.x + imgRect.width)) < 30 &&
+                            Math.abs(btnRect.y - imgRect.y) < 30) {
+                            btn.click();
+                            return 'clicked_overlay_btn';
+                        }
+                    }
+                }
+
+                return null;
+                """
+            )
+            if result:
+                logger.info(f"Cleared image via JS: {result}")
+                return True
+            logger.debug("JS image clearing: no suitable button found")
+            return False
+        except Exception as e:
+            logger.warning(f"JS image clearing failed: {e}")
+            return False
 
     async def _clear_preset_image(self) -> bool:
         """
@@ -543,66 +626,72 @@ class SimpleVideoGenerator:
         """Загрузить изображение (с поддержкой нового Higgsfield UI)"""
         logger.debug(f"Uploading: {image_path}")
 
-        # 1. ВСЕГДА сначала пробуем очистить существующее изображение
-        # Это критически важно, т.к. Higgsfield кэширует предыдущее изображение
-        logger.info("Step 1: Clearing any existing image...")
-
-        # Попробуем очистить несколько раз
-        for attempt in range(3):
-            cleared = await self._clear_preset_image()
-            if cleared:
-                logger.info(f"Cleared existing image (attempt {attempt + 1})")
-                await asyncio.sleep(2)
-                # Проверяем появился ли file input (признак что очистка сработала)
-                file_inputs = await asyncio.to_thread(
-                    self.driver.find_elements,
-                    By.CSS_SELECTOR,
-                    'input[type="file"]'
-                )
-                if file_inputs:
-                    logger.info("File input appeared - image cleared successfully!")
-                    break
-                else:
-                    logger.warning(f"File input not found after clear attempt {attempt + 1}, retrying...")
-            else:
-                # Может быть изображения не было - это ОК
-                logger.debug(f"No image to clear (attempt {attempt + 1})")
-                break
-
-        # 2. Проверяем есть ли file input
+        # 1. Check if file input already exists (clean page after about:blank navigation)
         file_inputs = await asyncio.to_thread(
             self.driver.find_elements,
             By.CSS_SELECTOR,
             'input[type="file"]'
         )
 
-        # 3. Если file input нет, ждём его появления
-        if not file_inputs:
-            logger.debug("No file input found, waiting...")
-            for attempt in range(10):
-                file_inputs = await asyncio.to_thread(
-                    self.driver.find_elements,
-                    By.CSS_SELECTOR,
-                    'input[type="file"]'
-                )
-                if file_inputs:
-                    logger.debug(f"File input appeared after {attempt}s")
+        if file_inputs:
+            logger.info("File input found immediately - clean page")
+        else:
+            # 2. Page has cached image — need to clear it
+            logger.info("No file input - page has cached image, clearing...")
+
+            # Method A: Try pixel-based X button (legacy)
+            for attempt in range(3):
+                cleared = await self._clear_preset_image()
+                if cleared:
+                    logger.info(f"Cleared existing image (attempt {attempt + 1})")
+                    await asyncio.sleep(2)
+                    file_inputs = await asyncio.to_thread(
+                        self.driver.find_elements,
+                        By.CSS_SELECTOR,
+                        'input[type="file"]'
+                    )
+                    if file_inputs:
+                        logger.info("File input appeared after clearing!")
+                        break
+                else:
                     break
-                await asyncio.sleep(1)
 
-        # 4. Если всё ещё нет, пробуем кнопку "Change"
-        if not file_inputs:
-            change_btns = await asyncio.to_thread(
-                self.driver.find_elements,
-                By.XPATH,
-                "//button[contains(., 'Change')]"
-            )
-            if change_btns:
-                logger.debug("Clicking 'Change' button...")
-                await asyncio.to_thread(change_btns[0].click)
-                await asyncio.sleep(2)
+            # Method B: Try JavaScript to find and click ANY close/remove button near image preview
+            if not file_inputs:
+                logger.info("Trying JS-based image removal...")
+                cleared_js = await self._clear_image_via_js()
+                if cleared_js:
+                    await asyncio.sleep(2)
+                    file_inputs = await asyncio.to_thread(
+                        self.driver.find_elements,
+                        By.CSS_SELECTOR,
+                        'input[type="file"]'
+                    )
 
-                # Снова ищем file input
+            # Method C: Try "Change" button
+            if not file_inputs:
+                change_btns = await asyncio.to_thread(
+                    self.driver.find_elements,
+                    By.XPATH,
+                    "//button[contains(., 'Change')]"
+                )
+                if change_btns:
+                    logger.debug("Clicking 'Change' button...")
+                    await asyncio.to_thread(
+                        self.driver.execute_script,
+                        "arguments[0].click();",
+                        change_btns[0]
+                    )
+                    await asyncio.sleep(2)
+                    file_inputs = await asyncio.to_thread(
+                        self.driver.find_elements,
+                        By.CSS_SELECTOR,
+                        'input[type="file"]'
+                    )
+
+            # Method D: Wait for file input (maybe clearing is async)
+            if not file_inputs:
+                logger.debug("Waiting for file input to appear...")
                 for attempt in range(10):
                     file_inputs = await asyncio.to_thread(
                         self.driver.find_elements,
@@ -610,12 +699,35 @@ class SimpleVideoGenerator:
                         'input[type="file"]'
                     )
                     if file_inputs:
+                        logger.debug(f"File input appeared after {attempt}s")
                         break
                     await asyncio.sleep(1)
 
-        # 4. Финальная проверка
+            # Method E (last resort): Force page reload via JS and try again
+            if not file_inputs:
+                logger.warning("All clearing methods failed — force reloading page...")
+                await asyncio.to_thread(
+                    self.driver.execute_script,
+                    "window.localStorage.clear(); window.sessionStorage.clear();"
+                )
+                await asyncio.to_thread(self.driver.get, "about:blank")
+                await asyncio.sleep(1)
+                await asyncio.to_thread(self.driver.get, HIGGSFIELD_VIDEO_URL)
+                await asyncio.sleep(5)
+                for attempt in range(15):
+                    file_inputs = await asyncio.to_thread(
+                        self.driver.find_elements,
+                        By.CSS_SELECTOR,
+                        'input[type="file"]'
+                    )
+                    if file_inputs:
+                        logger.info(f"File input found after localStorage clear + reload")
+                        break
+                    await asyncio.sleep(1)
+
+        # Final check
         if not file_inputs:
-            raise Exception("File input not found after all attempts")
+            raise Exception("File input not found after all attempts (5 methods tried)")
 
         # 5. Загрузить файл
         logger.debug(f"Sending file to input...")
@@ -695,12 +807,12 @@ class SimpleVideoGenerator:
             else:
                 if detected_start:
                     # Было в процессе, теперь готово
-                    logger.debug(f"Generation complete ({i*5}s)")
+                    logger.info(f"Generation complete ({i*5}s)")
                     return
                 else:
                     # Ждем пока генерация начнется
-                    if i > 6:  # После 30 секунд
-                        logger.debug(f"No generation status detected ({i*5}s)")
+                    if i > 12:  # После 60 секунд (was 30s — too short)
+                        logger.warning(f"No generation status detected after {i*5}s — generation may not have started")
                         return
                     await asyncio.sleep(5)
 

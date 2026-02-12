@@ -150,24 +150,29 @@ class Settings(BaseSettings):
     )
 
     # ========================================================================
-    # REPLICATE MUSIC GENERATION (Stable Audio Open 1.0)
+    # REPLICATE MUSIC GENERATION (Meta MusicGen)
     # ========================================================================
 
     REPLICATE_MUSIC_MODEL: str = Field(
-        default="stackadoc/stable-audio-open-1.0",
+        default="meta/musicgen",
         description="Replicate model for music generation"
     )
 
     REPLICATE_MUSIC_DURATION: float = Field(
         default=30.0,
         ge=1.0,
-        le=47.0,
-        description="Duration of generated music in seconds (max 47s)"
+        le=30.0,
+        description="Duration of generated music in seconds (max 30s)"
     )
 
     REPLICATE_MUSIC_SAMPLE_RATE: int = Field(
         default=44100,
         description="Sample rate for generated audio"
+    )
+
+    REPLICATE_MUSIC_FORMAT: str = Field(
+        default="mp3",
+        description="Output format for generated music (mp3 or wav)"
     )
 
     # ========================================================================

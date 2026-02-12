@@ -254,27 +254,24 @@ class AudioEngine:
                 # Initialize async client
                 client = AsyncElevenLabs(api_key=self.api_key)
 
-                try:
-                    # Generate audio - convert() returns an async generator directly
-                    audio_generator = client.text_to_speech.convert(
-                        text=ssml_text,
-                        voice_id=effective_voice_id,
-                        model_id=self.model_id,
-                        output_format=self.output_format,
-                        voice_settings=elevenlabs_settings,
-                    )
+                # Generate audio - convert() returns an async generator directly
+                audio_generator = client.text_to_speech.convert(
+                    text=ssml_text,
+                    voice_id=effective_voice_id,
+                    model_id=self.model_id,
+                    output_format=self.output_format,
+                    voice_settings=elevenlabs_settings,
+                )
 
-                    # Collect audio bytes from generator
-                    audio_chunks = []
-                    async for chunk in audio_generator:
-                        audio_chunks.append(chunk)
+                # Collect audio bytes from generator
+                audio_chunks = []
+                async for chunk in audio_generator:
+                    audio_chunks.append(chunk)
 
-                    audio_bytes = b"".join(audio_chunks)
+                audio_bytes = b"".join(audio_chunks)
 
-                    logger.success(f"Voiceover generated: {len(audio_bytes)} bytes")
-                    return audio_bytes
-                finally:
-                    await client.close()
+                logger.success(f"Voiceover generated: {len(audio_bytes)} bytes")
+                return audio_bytes
 
             except Exception as e:
                 retries += 1
@@ -341,43 +338,40 @@ class AudioEngine:
             try:
                 client = AsyncElevenLabs(api_key=self.api_key)
 
-                try:
-                    response = await client.text_to_speech.convert_with_timestamps(
-                        text=ssml_text,
-                        voice_id=effective_voice_id,
-                        model_id=self.model_id,
-                        output_format=self.output_format,
-                        voice_settings=elevenlabs_settings,
+                response = await client.text_to_speech.convert_with_timestamps(
+                    text=ssml_text,
+                    voice_id=effective_voice_id,
+                    model_id=self.model_id,
+                    output_format=self.output_format,
+                    voice_settings=elevenlabs_settings,
+                )
+
+                audio_bytes = base64.b64decode(response.audio_base_64)
+
+                if not response.alignment or not response.alignment.characters:
+                    raise ValueError(
+                        "ElevenLabs returned empty alignment data. "
+                        "Cannot generate word-by-word subtitles without character timestamps."
                     )
 
-                    audio_bytes = base64.b64decode(response.audio_base_64)
+                chars = response.alignment.characters
+                starts = response.alignment.character_start_times_seconds
+                ends = response.alignment.character_end_times_seconds
 
-                    if not response.alignment or not response.alignment.characters:
-                        raise ValueError(
-                            "ElevenLabs returned empty alignment data. "
-                            "Cannot generate word-by-word subtitles without character timestamps."
-                        )
+                if len(chars) != len(starts) or len(chars) != len(ends):
+                    raise ValueError(
+                        f"ElevenLabs alignment array length mismatch: "
+                        f"chars={len(chars)}, starts={len(starts)}, ends={len(ends)}"
+                    )
 
-                    chars = response.alignment.characters
-                    starts = response.alignment.character_start_times_seconds
-                    ends = response.alignment.character_end_times_seconds
+                alignment_data = {
+                    'characters': chars,
+                    'character_start_times_seconds': starts,
+                    'character_end_times_seconds': ends,
+                }
 
-                    if len(chars) != len(starts) or len(chars) != len(ends):
-                        raise ValueError(
-                            f"ElevenLabs alignment array length mismatch: "
-                            f"chars={len(chars)}, starts={len(starts)}, ends={len(ends)}"
-                        )
-
-                    alignment_data = {
-                        'characters': chars,
-                        'character_start_times_seconds': starts,
-                        'character_end_times_seconds': ends,
-                    }
-
-                    logger.success(f"Voiceover with timestamps: {len(audio_bytes)} bytes, {len(alignment_data['characters'])} chars aligned")
-                    return audio_bytes, alignment_data
-                finally:
-                    await client.close()
+                logger.success(f"Voiceover with timestamps: {len(audio_bytes)} bytes, {len(alignment_data['characters'])} chars aligned")
+                return audio_bytes, alignment_data
 
             except ValueError:
                 # Non-transient data validation errors — don't retry
@@ -899,23 +893,20 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
         try:
             client = AsyncElevenLabs(api_key=self.api_key)
-            try:
-                response = await client.voices.get_all()
+            response = await client.voices.get_all()
 
-                voices = []
-                for voice in response.voices:
-                    voices.append({
-                        "voice_id": voice.voice_id,
-                        "name": voice.name,
-                        "category": getattr(voice, "category", None),
-                        "description": getattr(voice, "description", None),
-                        "labels": getattr(voice, "labels", {}),
-                    })
+            voices = []
+            for voice in response.voices:
+                voices.append({
+                    "voice_id": voice.voice_id,
+                    "name": voice.name,
+                    "category": getattr(voice, "category", None),
+                    "description": getattr(voice, "description", None),
+                    "labels": getattr(voice, "labels", {}),
+                })
 
-                logger.info(f"Found {len(voices)} voices")
-                return voices
-            finally:
-                await client.close()
+            logger.info(f"Found {len(voices)} voices")
+            return voices
 
         except Exception as e:
             logger.error(f"Failed to list voices: {e}")

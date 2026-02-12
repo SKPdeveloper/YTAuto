@@ -16,6 +16,7 @@ See PROTECTED_FILES.md for details.
 """
 
 import json
+import math
 from google import genai
 from google.genai import types
 from pathlib import Path
@@ -33,6 +34,125 @@ from app.utils.prompt_loader import load_prompt_with_banlist
 # PROTECTED SYSTEM PROMPT - DO NOT EDIT THE SOURCE FILE
 # =============================================================================
 SYSTEM_PROMPT_PATH = Path(__file__).parent.parent.parent / "config" / "GEN1.txt"
+
+
+# =============================================================================
+# DUPLICATE FRAMES DETECTION (pixel-level pre-check, no AI dependency)
+# =============================================================================
+
+def _row_std_dev(img_gray: Image.Image, y: int, width: int, sample_step: int = 3) -> float:
+    """Compute standard deviation of pixel brightness in a single row."""
+    row_strip = img_gray.crop((0, y, width, y + 1))
+    pixels = list(row_strip.getdata())
+    sampled = pixels[::sample_step]
+    if len(sampled) < 10:
+        return 999.0
+    mean = sum(sampled) / len(sampled)
+    variance = sum((p - mean) ** 2 for p in sampled) / len(sampled)
+    return math.sqrt(variance)
+
+
+def detect_duplicate_frames(image_path: Path) -> bool:
+    """
+    Fast pixel-level detection of duplicate frames (2+ images in one).
+
+    Common AI generation glitch: generator produces a collage/grid instead
+    of a single image. Detected by finding a horizontal seam (divider band)
+    near the center — a strip of near-uniform color (usually white/black)
+    with real image content on both sides.
+
+    Algorithm:
+    1. Scan rows in center 30% of the image
+    2. Find bands of low-variance rows (uniform color = potential seam)
+    3. Check content 30-60px AWAY from seam on both sides
+    4. If both sides have real content (high variance), it's a double image
+
+    Args:
+        image_path: Path to the image to check
+
+    Returns:
+        True if duplicate frames detected (image should be rejected)
+    """
+    try:
+        img = Image.open(image_path).convert('L')  # Grayscale
+        width, height = img.size
+
+        # Only check center 30% of image height
+        y_start = int(height * 0.35)
+        y_end = int(height * 0.65)
+
+        # Phase 1: Find seam band (consecutive low-variance rows)
+        seam_start = None
+        seam_end = None
+
+        y = y_start
+        while y < y_end:
+            std = _row_std_dev(img, y, width)
+
+            if std < 5.0:
+                # Found a low-variance row — scan for the full band
+                band_start = y
+                band_end = y
+                while band_end < y_end:
+                    next_std = _row_std_dev(img, band_end + 1, width)
+                    if next_std < 10.0:
+                        band_end += 1
+                    else:
+                        break
+
+                band_width = band_end - band_start + 1
+
+                # Seam band: 1-30 rows of uniform color (not a huge uniform area)
+                if 1 <= band_width <= 30:
+                    seam_start = band_start
+                    seam_end = band_end
+                    break
+
+                # Skip past this band
+                y = band_end + 1
+                continue
+
+            y += 1
+
+        if seam_start is None:
+            return False
+
+        # Phase 2: Check content AWAY from the seam (30-60px on each side)
+        # Skip transition zone near the seam edge
+        above_check_start = max(0, seam_start - 60)
+        above_check_end = max(0, seam_start - 15)
+        below_check_start = min(height - 1, seam_end + 15)
+        below_check_end = min(height - 1, seam_end + 60)
+
+        above_stds = [
+            _row_std_dev(img, cy, width)
+            for cy in range(above_check_start, above_check_end, 4)
+        ]
+        below_stds = [
+            _row_std_dev(img, cy, width)
+            for cy in range(below_check_start, below_check_end, 4)
+        ]
+
+        if not above_stds or not below_stds:
+            return False
+
+        avg_above = sum(above_stds) / len(above_stds)
+        avg_below = sum(below_stds) / len(below_stds)
+
+        # Both sides must have real image content (std > 15)
+        if avg_above > 15 and avg_below > 15:
+            band_width = seam_end - seam_start + 1
+            logger.warning(
+                f"DUPLICATE_FRAMES detected: seam at y={seam_start}-{seam_end} "
+                f"(band={band_width}px, above_avg={avg_above:.1f}, below_avg={avg_below:.1f})"
+            )
+            return True
+
+        return False
+
+    except Exception as e:
+        logger.warning(f"Duplicate frame detection failed: {e}")
+        return False  # Don't block pipeline on detection errors
 
 
 class ContentBrain:
@@ -269,9 +389,27 @@ class ContentBrain:
         if not image_path.exists():
             raise FileNotFoundError(f"Image not found: {image_path}")
 
+        # ============================================================
+        # PRE-CHECK: Detect duplicate frames (pixel-level, no AI cost)
+        # ============================================================
+        import asyncio as _asyncio
+
+        is_duplicate = await _asyncio.to_thread(detect_duplicate_frames, image_path)
+        if is_duplicate:
+            logger.warning(f"[Scene {scene_number}] DUPLICATE_FRAMES detected — instant reject")
+            return SimpleValidationResult(
+                approved=False,
+                confidence=1.0,
+                feedback="Зображення містить 2+ окремих кадри (duplicate frame glitch). Потрібна перегенерація.",
+                issues=["DUPLICATE_FRAMES: зображення розділене на 2+ частини горизонтальною лінією"],
+                strengths=[],
+                suggestions=["Перегенерувати зображення — генератор видав колаж замість одного кадру"],
+                matches_prompt=False,
+                quality_score=0.0,
+            )
+
         try:
             # Load image (run in thread to avoid blocking event loop with large files)
-            import asyncio as _asyncio
 
             def _load_and_resize():
                 img = Image.open(image_path)
@@ -509,6 +647,10 @@ class ContentBrain:
 3. **Настрій:** Чи передає зображення правильну атмосферу?
 4. **Якість:** Чи зображення професійне, без артефактів?
 5. **Композиція:** Чи добре скомпоноване для відео?
+
+## КРИТИЧНІ ДЕФЕКТИ (INSTANT REJECT — approved: false):
+- **DUPLICATE_FRAMES:** Зображення містить 2+ окремих картинки склеєних вертикально або горизонтально. Видно лінію-розділювач. Це глюк генератора — ЗАВЖДИ відхиляй!
+- **WRONG_ORIENTATION:** Зображення повернуте на 90° (горизонтальне замість вертикального 9:16)
 
 ## ФОРМАТ ВІДПОВІДІ (тільки JSON):
 {{

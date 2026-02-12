@@ -638,7 +638,7 @@
                 <span x-text="(lightboxIndex + 1) + ' / ' + candidateImages.length"></span>
             </div>
             <div x-show="selectedImage === lightboxIndex" class="lightbox-selected-badge">SELECTED</div>
-            <button @click="selectImage(lightboxIndex); closeLightbox();" class="lightbox-select-btn">
+            <button @click="selectImage(lightboxIndex); closeLightbox();" @touchstart.stop @touchend.stop class="lightbox-select-btn">
                 SELECT #<span x-text="lightboxIndex + 1"></span>
             </button>
             <div class="lightbox-hint">

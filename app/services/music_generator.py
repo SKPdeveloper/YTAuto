@@ -1,19 +1,21 @@
 """
-Music Generator - Replicate Stable Audio Open 1.0 Integration
+Music Generator - Replicate Meta MusicGen Integration
 
-Generates background music for Glaze City videos using Stable Audio Open 1.0.
-Replaces SUNO for music generation in the 5-layer audio system.
+Generates background music for Glaze City videos using Meta's MusicGen.
+Trained on 30-second music chunks — produces full-length music without
+the trailing silence issues of Stable Audio Open.
 
 Features:
-- Prompt-based music generation
-- Up to 47 seconds of audio
+- Prompt-based music generation (up to 30 seconds)
 - Various styles (cinematic, epic, ambient, etc.)
 - Automatic download and save
+- Post-download silence trimming safety net
 
-API: https://replicate.com/stackadoc/stable-audio-open-1.0
+API: https://replicate.com/meta/musicgen
 """
 
 import asyncio
+import subprocess
 import httpx
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -35,7 +37,7 @@ class MusicGenerationResult:
 
 class MusicGenerator:
     """
-    Replicate Stable Audio Open 1.0 Music Generator
+    Replicate Meta MusicGen Music Generator
 
     Generates background music for Glaze City video pipeline.
     Part of the 5-layer audio system (MUSIC layer).
@@ -67,6 +69,7 @@ class MusicGenerator:
         self.model = settings.REPLICATE_MUSIC_MODEL
         self.default_duration = settings.REPLICATE_MUSIC_DURATION
         self.sample_rate = settings.REPLICATE_MUSIC_SAMPLE_RATE
+        self.output_format = settings.REPLICATE_MUSIC_FORMAT
 
         # API endpoints
         self.base_url = "https://api.replicate.com/v1"
@@ -79,7 +82,7 @@ class MusicGenerator:
         logger.info("MusicGenerator initialized:")
         logger.info(f"  Model: {self.model}")
         logger.info(f"  Default duration: {self.default_duration}s")
-        logger.info(f"  Sample rate: {self.sample_rate}")
+        logger.info(f"  Output format: {self.output_format}")
 
     async def generate(
         self,
@@ -94,18 +97,11 @@ class MusicGenerator:
         Args:
             prompt: Text description of the desired music
             output_path: Path to save the generated audio
-            duration: Duration in seconds (default: 30, max: 47)
-            negative_prompt: What to avoid in the generation
+            duration: Duration in seconds (default: 30, max: 30)
+            negative_prompt: Ignored (kept for API compatibility)
 
         Returns:
             MusicGenerationResult with success status and file path
-
-        Example:
-            >>> result = await generator.generate(
-            ...     prompt="epic cinematic orchestral music",
-            ...     output_path=Path("music.mp3"),
-            ...     duration=25.0
-            ... )
         """
         if not self.api_token:
             return MusicGenerationResult(
@@ -115,7 +111,7 @@ class MusicGenerator:
             )
 
         duration = duration or self.default_duration
-        duration = min(duration, 47.0)  # Max 47 seconds
+        duration = min(duration, 30.0)  # MusicGen max: 30 seconds
 
         logger.info(f"Generating music ({duration}s)...")
         logger.info(f"  Prompt: {prompt[:100]}...")
@@ -125,7 +121,6 @@ class MusicGenerator:
             prediction = await self._create_prediction(
                 prompt=prompt,
                 duration=duration,
-                negative_prompt=negative_prompt,
             )
 
             if not prediction:
@@ -158,6 +153,9 @@ class MusicGenerator:
                 )
 
             await self._download_audio(output_url, output_path)
+
+            # Trim trailing silence as safety net
+            await self._trim_trailing_silence(output_path, duration)
 
             logger.success(f"Music generated: {output_path}")
 
@@ -232,39 +230,33 @@ class MusicGenerator:
             prompt=prompt,
             output_path=output_path,
             duration=duration,
-            negative_prompt="loud, drums, vocals, speech",
         )
 
-    # Model version hash for stable-audio-open-1.0
-    MODEL_VERSION = "9aff84a639f96d0f7e6081cdea002d15133d0043727f849c40abdd166b7c75a8"
+    # MusicGen stereo-melody-large version hash
+    MODEL_VERSION = "671ac645ce5e552cc63a54a2bbff63fcf798043055d2dac5fc9e36a837eedcfb"
 
     async def _create_prediction(
         self,
         prompt: str,
         duration: float,
-        negative_prompt: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Create a prediction on Replicate."""
+        """Create a prediction on Replicate using MusicGen."""
         headers = {
             "Authorization": f"Token {self.api_token}",
             "Content-Type": "application/json",
         }
 
-        # Build input according to Stable Audio Open 1.0 API
-        # Note: seconds_total must be an integer, sampler_type not sampler
         input_data = {
             "prompt": prompt,
-            "seconds_total": int(duration),
-            "sampler_type": "dpmpp-3m-sde",  # Recommended sampler
-            "cfg_scale": 6,  # Guidance scale (default)
-            "steps": 100,  # Number of steps
-            "seed": -1,  # Random seed
+            "duration": int(min(duration, 30)),
+            "model_version": "stereo-melody-large",
+            "output_format": self.output_format,
+            "normalization_strategy": "loudness",
+            "classifier_free_guidance": 3,
+            "temperature": 1,
+            "top_k": 250,
         }
 
-        if negative_prompt:
-            input_data["negative_prompt"] = negative_prompt
-
-        # Use /predictions endpoint with version hash (not /models/{model}/predictions)
         payload = {
             "version": self.MODEL_VERSION,
             "input": input_data,
@@ -272,7 +264,7 @@ class MusicGenerator:
 
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
-                self.predictions_url,  # Use /v1/predictions
+                self.predictions_url,
                 headers=headers,
                 json=payload,
             )
@@ -345,6 +337,93 @@ class MusicGenerator:
                 logger.info(f"  Downloaded: {len(response.content) / 1024:.1f} KB")
             else:
                 raise Exception(f"Failed to download audio: {response.status_code}")
+
+    async def _trim_trailing_silence(
+        self,
+        audio_path: Path,
+        expected_duration: float,
+    ) -> None:
+        """
+        Trim trailing silence from generated audio as a safety net.
+
+        Uses ffmpeg silencedetect to find silence at the end of the file.
+        If silence starts before 80% of expected duration, trims it off.
+        """
+        try:
+            # Detect silence regions (-30dB threshold, minimum 2s of silence)
+            detect_cmd = [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(audio_path),
+            ]
+            probe_result = await asyncio.to_thread(
+                subprocess.run, detect_cmd,
+                capture_output=True, text=True, timeout=30,
+            )
+            actual_duration = float(probe_result.stdout.strip())
+
+            # Run silencedetect
+            silence_cmd = [
+                "ffmpeg", "-i", str(audio_path),
+                "-af", "silencedetect=noise=-30dB:d=2",
+                "-f", "null", "-",
+            ]
+            silence_result = await asyncio.to_thread(
+                subprocess.run, silence_cmd,
+                capture_output=True, text=True, timeout=30,
+            )
+
+            # Parse silence_start from stderr
+            silence_start = None
+            for line in silence_result.stderr.split("\n"):
+                if "silence_start:" in line:
+                    try:
+                        val = line.split("silence_start:")[1].strip().split()[0]
+                        silence_start = float(val)
+                    except (IndexError, ValueError):
+                        pass
+
+            if silence_start is None:
+                logger.debug("  No trailing silence detected")
+                return
+
+            # Only trim if silence starts before 80% of expected duration
+            threshold = expected_duration * 0.8
+            if silence_start >= threshold:
+                logger.debug(f"  Silence at {silence_start:.1f}s — within acceptable range")
+                return
+
+            logger.warning(
+                f"  Trailing silence detected at {silence_start:.1f}s "
+                f"(expected {expected_duration}s) — trimming"
+            )
+
+            # Trim: keep audio up to silence_start + small fade
+            trimmed_path = audio_path.with_suffix(".trimmed.mp3")
+            trim_cmd = [
+                "ffmpeg", "-y", "-i", str(audio_path),
+                "-t", str(silence_start + 0.5),
+                "-af", f"afade=t=out:st={silence_start - 0.5}:d=1.0",
+                "-c:a", "libmp3lame", "-b:a", "192k",
+                str(trimmed_path),
+            ]
+            await asyncio.to_thread(
+                subprocess.run, trim_cmd,
+                capture_output=True, text=True, timeout=30,
+            )
+
+            if trimmed_path.exists() and trimmed_path.stat().st_size > 0:
+                # Replace original with trimmed version
+                trimmed_path.replace(audio_path)
+                logger.info(f"  Trimmed to {silence_start + 0.5:.1f}s")
+            else:
+                logger.warning("  Trim failed — keeping original")
+                if trimmed_path.exists():
+                    trimmed_path.unlink()
+
+        except Exception as e:
+            logger.warning(f"  Silence trimming skipped: {e}")
 
     def get_style_prompt(self, style: str) -> str:
         """Get the prompt for a predefined style."""
