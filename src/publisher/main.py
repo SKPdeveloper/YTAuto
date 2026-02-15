@@ -35,6 +35,9 @@ from src.publisher.models import (
     ProxyConfig,
     PrivacyStatus,
 )
+from src.publisher.ab_models import ABStatus, VariantData, VideoABRecord, parse_metadata_variants
+from src.publisher.ab_store import ABStore
+from src.publisher.ab_monitor import ABMonitor
 
 
 # Create Typer app
@@ -47,6 +50,10 @@ app = typer.Typer(
 # Sub-commands for channel management
 channel_app = typer.Typer(help="Channel management commands")
 app.add_typer(channel_app, name="channel")
+
+# Sub-commands for A/B metadata rotation
+ab_app = typer.Typer(help="A/B metadata rotation commands")
+app.add_typer(ab_app, name="ab")
 
 # Rich console for pretty output
 console = Console()
@@ -596,18 +603,28 @@ def test_pin_comment(
 
     console.print("[yellow]AdsPower browser will open to add and pin comment...[/yellow]\n")
 
-    # Use full browser automation for add + pin
-    success, comment_id, error = youtube.add_and_pin_comment(
-        video_id=video_id,
-        comment_text=comment,
-        adspower_profile_id=channel_config.adspower_profile_id,
+    # Use HumanCommenter for browser automation
+    try:
+        import asyncio
+        from src.human_commenter import HumanCommenter, CommenterConfig
+    except ImportError:
+        console.print("[red]HumanCommenter not available. Install playwright dependencies.[/red]")
+        raise typer.Exit(1)
+
+    commenter = HumanCommenter(CommenterConfig())
+    result = asyncio.get_event_loop().run_until_complete(
+        commenter.add_and_pin_comment(
+            video_id=video_id,
+            comment_text=comment,
+            profile_id=channel_config.adspower_profile_id,
+        )
     )
 
-    if success:
+    if result.success:
         console.print(f"\n[bold green]Comment added and pinned successfully![/bold green]")
         console.print(f"Video: https://youtube.com/shorts/{video_id}")
     else:
-        console.print(f"\n[bold red]Failed:[/bold red] {error}")
+        console.print(f"\n[bold red]Failed:[/bold red] {result.error}")
         raise typer.Exit(1)
 
 
@@ -638,16 +655,248 @@ def pin_existing_comment(
     console.print(f"\n[bold]Pinning comment on video:[/bold] {video_id}")
     console.print("[yellow]AdsPower browser will open...[/yellow]\n")
 
-    success, error = youtube.pin_comment_via_adspower(
-        video_id=video_id,
-        adspower_profile_id=channel_config.adspower_profile_id,
+    # Use HumanCommenter for browser automation
+    try:
+        import asyncio
+        from src.human_commenter import HumanCommenter, CommenterConfig
+    except ImportError:
+        console.print("[red]HumanCommenter not available. Install playwright dependencies.[/red]")
+        raise typer.Exit(1)
+
+    commenter = HumanCommenter(CommenterConfig())
+    result = asyncio.get_event_loop().run_until_complete(
+        commenter.add_and_pin_comment(
+            video_id=video_id,
+            comment_text="",  # empty = just pin existing
+            profile_id=channel_config.adspower_profile_id,
+        )
     )
 
-    if success:
+    if result.success:
         console.print(f"\n[bold green]Comment pinned![/bold green]")
     else:
-        console.print(f"\n[bold red]Pin failed:[/bold red] {error}")
+        console.print(f"\n[bold red]Pin failed:[/bold red] {result.error}")
         raise typer.Exit(1)
+
+
+# ============================================================================
+# A/B ROTATION COMMANDS
+# ============================================================================
+
+@ab_app.command("status")
+def ab_status():
+    """Show status of all A/B monitored videos."""
+    config = get_config_manager()
+    store = ABStore(config_dir=config.config_dir)
+    videos = store.get_all_videos()
+
+    if not videos:
+        console.print("[dim]No videos in A/B rotation.[/dim]")
+        console.print("Videos are registered automatically on upload if gen1_output.json has metadata_variants.")
+        return
+
+    table = Table(title="A/B Metadata Rotation")
+    table.add_column("Video ID", style="cyan")
+    table.add_column("Variant", style="bold")
+    table.add_column("Views")
+    table.add_column("Hours")
+    table.add_column("Swaps")
+    table.add_column("Status")
+    table.add_column("Next Check")
+
+    from datetime import datetime as dt, timezone as tz
+
+    for v in videos:
+        now = dt.now(tz.utc)
+        hours = (now - v.variant_start_time).total_seconds() / 3600
+        latest_views = v.metrics_log[-1].views if v.metrics_log else 0
+
+        status_color = {
+            ABStatus.MONITORING: "yellow",
+            ABStatus.SUCCESS: "green",
+            ABStatus.EXHAUSTED: "red",
+            ABStatus.MANUAL: "red",
+            ABStatus.ERROR: "red",
+            ABStatus.STOPPED: "dim",
+        }.get(v.status, "white")
+
+        # Determine next check
+        next_check = "—"
+        if v.status == ABStatus.MONITORING:
+            from src.publisher.ab_config import THRESHOLDS
+            for check_name in ["check_1", "check_2", "check_3"]:
+                if check_name not in v.checks_completed:
+                    check_hours = THRESHOLDS[check_name]["hours"]
+                    remaining = check_hours - hours
+                    if remaining > 0:
+                        next_check = f"{check_name} in {remaining:.1f}h"
+                    else:
+                        next_check = f"{check_name} (due)"
+                    break
+
+        table.add_row(
+            v.video_id,
+            v.current_variant,
+            str(latest_views),
+            f"{hours:.1f}",
+            str(len(v.swap_history)),
+            f"[{status_color}]{v.status.value}[/{status_color}]",
+            next_check,
+        )
+
+    console.print(table)
+
+
+@ab_app.command("start")
+def ab_start():
+    """Start the A/B monitor daemon (runs every 30 min)."""
+    console.print("[bold blue]Starting A/B Monitor Daemon...[/bold blue]")
+    console.print("[dim]Press Ctrl+C to stop[/dim]\n")
+
+    from src.publisher.ab_daemon import run_daemon
+    run_daemon()
+
+
+@ab_app.command("check")
+def ab_check(
+    video_id: str = typer.Argument(..., help="YouTube video ID to check"),
+):
+    """Run a single evaluation cycle for one video."""
+    console.print(f"\n[bold]Checking video:[/bold] {video_id}\n")
+
+    config = get_config_manager()
+    monitor = ABMonitor(store=ABStore(config_dir=config.config_dir))
+    result = monitor.check_single(video_id)
+
+    console.print(f"Result: [bold]{result}[/bold]")
+
+
+@ab_app.command("history")
+def ab_history(
+    video_id: Optional[str] = typer.Argument(None, help="Video ID (omit for all)"),
+):
+    """Show swap history and metrics for monitored videos."""
+    config = get_config_manager()
+    store = ABStore(config_dir=config.config_dir)
+
+    if video_id:
+        videos = [store.get_video(video_id)]
+        if not videos[0]:
+            console.print(f"[red]Video not found:[/red] {video_id}")
+            raise typer.Exit(1)
+    else:
+        videos = store.get_all_videos()
+
+    if not videos:
+        console.print("[dim]No videos in A/B rotation.[/dim]")
+        return
+
+    for v in videos:
+        console.print(f"\n[bold cyan]Video:[/bold cyan] {v.video_id}")
+        console.print(f"  Project: {v.project_id} | Channel: {v.channel_id}")
+        console.print(f"  Status: {v.status.value} | Current: variant {v.current_variant}")
+
+        if v.swap_history:
+            swap_table = Table(title="Swap History", show_header=True)
+            swap_table.add_column("From")
+            swap_table.add_column("To")
+            swap_table.add_column("Views")
+            swap_table.add_column("Reason")
+            swap_table.add_column("Time")
+
+            for swap in v.swap_history:
+                swap_table.add_row(
+                    swap.from_variant,
+                    swap.to_variant,
+                    str(swap.views_at_swap),
+                    swap.reason,
+                    swap.timestamp.strftime("%m-%d %H:%M"),
+                )
+
+            console.print(swap_table)
+        else:
+            console.print("  [dim]No swaps yet[/dim]")
+
+        if v.metrics_log:
+            console.print(f"  Metrics: {len(v.metrics_log)} snapshots, latest: {v.metrics_log[-1].views} views")
+
+
+@ab_app.command("stop")
+def ab_stop(
+    video_id: str = typer.Argument(..., help="YouTube video ID to stop monitoring"),
+):
+    """Stop monitoring a specific video."""
+    config = get_config_manager()
+    store = ABStore(config_dir=config.config_dir)
+    success = store.stop_video(video_id)
+
+    if success:
+        console.print(f"[green]Stopped monitoring:[/green] {video_id}")
+    else:
+        console.print(f"[red]Video not found:[/red] {video_id}")
+        raise typer.Exit(1)
+
+
+@ab_app.command("register")
+def ab_register(
+    video_id: str = typer.Argument(..., help="YouTube video ID"),
+    project_id: str = typer.Argument(..., help="YTAuto project ID"),
+    channel_id: str = typer.Argument(..., help="Internal channel ID"),
+):
+    """Manually register an already-uploaded video for A/B monitoring."""
+    import json
+
+    config = get_config_manager()
+
+    # Try to load gen1_output.json
+    project_dir = config.get_project_dir(project_id)
+    gen1_path = project_dir / "gen1_output.json"
+
+    if not gen1_path.exists():
+        console.print(f"[red]gen1_output.json not found:[/red] {gen1_path}")
+        console.print("[dim]Ensure the project directory has gen1_output.json with metadata_variants[/dim]")
+        raise typer.Exit(1)
+
+    with open(gen1_path, "r", encoding="utf-8") as f:
+        gen1_data = json.load(f)
+
+    # Parse variants via shared utility
+    variants, warnings = parse_metadata_variants(gen1_data)
+    for w in warnings:
+        console.print(f"[yellow]{w}[/yellow]")
+
+    if len(variants) < 2:
+        console.print(f"[red]Only {len(variants)} valid variants found, need at least 2[/red]")
+        raise typer.Exit(1)
+
+    # Use first available variant (usually "A")
+    first_variant = sorted(variants.keys())[0]
+
+    record = VideoABRecord(
+        video_id=video_id,
+        project_id=project_id,
+        channel_id=channel_id,
+        current_variant=first_variant,
+        variants=variants,
+        gen1_output_path=str(gen1_path),
+    )
+
+    store = ABStore(config_dir=config.config_dir)
+    store.register_video(record)
+
+    console.print(f"[green]Registered {video_id} for A/B monitoring ({len(variants)} variants)[/green]")
+
+    # Show variants summary
+    table = Table(title="Registered Variants")
+    table.add_column("Variant", style="bold")
+    table.add_column("Trigger")
+    table.add_column("Title")
+
+    for letter, vd in sorted(variants.items()):
+        title_preview = vd.title[:50] + "..." if len(vd.title) > 50 else vd.title
+        table.add_row(letter, vd.trigger, title_preview)
+
+    console.print(table)
 
 
 # ============================================================================

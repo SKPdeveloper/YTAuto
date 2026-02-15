@@ -28,6 +28,8 @@ from .config_manager import ConfigManager, get_config_manager
 from .metadata_cleaner import MetadataCleaner, get_metadata_cleaner
 from .youtube_api import YouTubeAPI
 from .scheduler import PublicationScheduler, create_scheduler, PublishStatus as QueueStatus
+from .ab_models import ABStatus, VariantData, VideoABRecord, parse_metadata_variants
+from .ab_store import ABStore
 
 # Import HumanCommenter for comment automation
 try:
@@ -244,6 +246,13 @@ class Publisher:
                 video_id=video_id,
             ))
 
+            # Register for A/B monitoring (non-fatal)
+            self._register_for_ab_monitoring(
+                project_id=project_id,
+                video_id=video_id,
+                channel_id=target_channel,
+            )
+
             # Update scheduler queue if scheduled
             if scheduled_datetime:
                 entry = self.scheduler.schedule_project(
@@ -349,6 +358,63 @@ class Publisher:
         if total > 0:
             pct = int(uploaded / total * 100)
             logger.info(f"Upload progress: {pct}% ({uploaded / 1024 / 1024:.1f} MB / {total / 1024 / 1024:.1f} MB)")
+
+    def _register_for_ab_monitoring(
+        self,
+        project_id: str,
+        video_id: str,
+        channel_id: str,
+    ) -> None:
+        """
+        Register a freshly uploaded video for A/B metadata rotation.
+
+        Loads gen1_output.json from the project directory, extracts
+        metadata_variants, and registers if all 4 variants present.
+
+        Non-fatal: if anything fails, just log a warning. Upload already succeeded.
+        """
+        try:
+            import json
+
+            # Find gen1_output.json
+            project_dir = self.config.get_project_dir(project_id)
+            gen1_path = project_dir / "gen1_output.json"
+
+            if not gen1_path.exists():
+                logger.debug(f"No gen1_output.json found for {project_id}, skipping AB registration")
+                return
+
+            with open(gen1_path, "r", encoding="utf-8") as f:
+                gen1_data = json.load(f)
+
+            # Extract metadata_variants via shared parser
+            variants, warnings = parse_metadata_variants(gen1_data)
+            for w in warnings:
+                logger.debug(f"{project_id}: {w}")
+
+            if len(variants) < 2:
+                logger.debug(f"Only {len(variants)} valid variants found, need at least 2 for AB rotation")
+                return
+
+            # Use first available variant (usually "A")
+            first_variant = sorted(variants.keys())[0]
+
+            # Create and register record
+            record = VideoABRecord(
+                video_id=video_id,
+                project_id=project_id,
+                channel_id=channel_id,
+                current_variant=first_variant,
+                variants=variants,
+                gen1_output_path=str(gen1_path),
+            )
+
+            store = ABStore(config_dir=self.config.config_dir)
+            store.register_video(record)
+            logger.info(f"Registered {video_id} for AB monitoring ({len(variants)} variants)")
+
+        except Exception as e:
+            logger.warning(f"Failed to register for AB monitoring: {e}")
 
     # ========================================================================
     # PUBLISH ALL PENDING

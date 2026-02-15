@@ -924,6 +924,226 @@ class YouTubeAPI:
     # CONNECTION TEST
     # ========================================================================
 
+    # ========================================================================
+    # VIDEO STATS & METADATA UPDATE (for A/B rotation)
+    # ========================================================================
+
+    def get_video_stats(self, video_id: str) -> Optional[dict]:
+        """
+        Get video statistics (views, likes, comments).
+
+        Uses videos.list(part="statistics") — 1 quota unit.
+
+        Args:
+            video_id: YouTube video ID
+
+        Returns:
+            Dict with views/likes/comments counts or None on error
+        """
+        try:
+            with self._proxy_env():
+                youtube = self.get_youtube_client()
+
+                response = youtube.videos().list(
+                    part="statistics",
+                    id=video_id,
+                ).execute()
+
+                items = response.get("items", [])
+                if not items:
+                    logger.warning(f"Video not found: {video_id}")
+                    return None
+
+                stats = items[0]["statistics"]
+                return {
+                    "views": int(stats.get("viewCount", 0)),
+                    "likes": int(stats.get("likeCount", 0)),
+                    "comments": int(stats.get("commentCount", 0)),
+                }
+
+        except HttpError as e:
+            logger.error(f"Failed to get video stats: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error getting video stats: {e}")
+            return None
+
+    def update_video(
+        self,
+        video_id: str,
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+        tags: Optional[list] = None,
+    ) -> Tuple[bool, Optional[str]]:
+        """
+        Update video metadata (title, description, tags).
+
+        First GETs current snippet, merges changes, then PUTs.
+        Uses videos.list + videos.update — 51 quota units.
+
+        Args:
+            video_id: YouTube video ID
+            title: New title (or None to keep current)
+            description: New description (or None to keep current)
+            tags: New tags list (or None to keep current)
+
+        Returns:
+            Tuple of (success, error_message)
+        """
+        try:
+            with self._proxy_env():
+                youtube = self.get_youtube_client()
+
+                # GET current snippet
+                response = youtube.videos().list(
+                    part="snippet",
+                    id=video_id,
+                ).execute()
+
+                items = response.get("items", [])
+                if not items:
+                    return False, f"Video not found: {video_id}"
+
+                raw_snippet = items[0]["snippet"]
+
+                # Build clean snippet with only mutable fields
+                # (YouTube API returns read-only fields like channelId,
+                #  publishedAt, thumbnails that must not be sent back)
+                clean_snippet = {
+                    "title": raw_snippet.get("title", ""),
+                    "description": raw_snippet.get("description", ""),
+                    "categoryId": raw_snippet.get("categoryId", "24"),
+                }
+                if "tags" in raw_snippet:
+                    clean_snippet["tags"] = raw_snippet["tags"]
+                if "defaultLanguage" in raw_snippet:
+                    clean_snippet["defaultLanguage"] = raw_snippet["defaultLanguage"]
+                if "defaultAudioLanguage" in raw_snippet:
+                    clean_snippet["defaultAudioLanguage"] = raw_snippet["defaultAudioLanguage"]
+
+                # Merge caller changes
+                if title is not None:
+                    clean_snippet["title"] = title[:100]
+                if description is not None:
+                    clean_snippet["description"] = description[:5000]
+                if tags is not None:
+                    clean_snippet["tags"] = tags[:500]
+
+                # PUT updated snippet
+                youtube.videos().update(
+                    part="snippet",
+                    body={
+                        "id": video_id,
+                        "snippet": clean_snippet,
+                    },
+                ).execute()
+
+                logger.info(f"Updated video metadata: {video_id}")
+                return True, None
+
+        except HttpError as e:
+            error_msg = str(e)
+            if e.resp.status == 404:
+                error_msg = f"Video not found: {video_id}"
+            elif e.resp.status == 403:
+                error_msg = "Quota exceeded or permission denied"
+            logger.error(f"Failed to update video: {error_msg}")
+            return False, error_msg
+        except Exception as e:
+            logger.error(f"Unexpected error updating video: {e}")
+            return False, str(e)
+
+    def insert_comment_thread(
+        self,
+        video_id: str,
+        text: str,
+    ) -> Tuple[bool, Optional[str], Optional[str]]:
+        """
+        Post a top-level comment on a video.
+
+        Uses commentThreads.insert — 50 quota units.
+
+        Args:
+            video_id: YouTube video ID
+            text: Comment text
+
+        Returns:
+            Tuple of (success, comment_id, error_message)
+        """
+        if not text or not text.strip():
+            return False, None, "Comment text is empty"
+
+        try:
+            with self._proxy_env():
+                youtube = self.get_youtube_client()
+
+                response = youtube.commentThreads().insert(
+                    part="snippet",
+                    body={
+                        "snippet": {
+                            "videoId": video_id,
+                            "topLevelComment": {
+                                "snippet": {
+                                    "textOriginal": text,
+                                }
+                            },
+                        }
+                    },
+                ).execute()
+
+                comment_id = response["snippet"]["topLevelComment"]["id"]
+                logger.info(f"Posted comment on {video_id}: {comment_id}")
+                return True, comment_id, None
+
+        except HttpError as e:
+            error_msg = str(e)
+            if e.resp.status == 400:
+                error_msg = f"Bad request (invalid video_id or comment content): {e}"
+            elif e.resp.status == 403:
+                error_msg = "Comments disabled or quota exceeded"
+            logger.error(f"Failed to post comment: {error_msg}")
+            return False, None, error_msg
+        except Exception as e:
+            logger.error(f"Unexpected error posting comment: {e}")
+            return False, None, str(e)
+
+    def delete_comment(self, comment_id: str) -> Tuple[bool, Optional[str]]:
+        """
+        Delete a comment by ID.
+
+        Uses comments.delete — 50 quota units.
+
+        Args:
+            comment_id: YouTube comment ID
+
+        Returns:
+            Tuple of (success, error_message)
+        """
+        try:
+            with self._proxy_env():
+                youtube = self.get_youtube_client()
+
+                youtube.comments().delete(id=comment_id).execute()
+
+                logger.info(f"Deleted comment: {comment_id}")
+                return True, None
+
+        except HttpError as e:
+            error_msg = str(e)
+            if e.resp.status == 404:
+                error_msg = f"Comment not found: {comment_id}"
+            elif e.resp.status == 403:
+                error_msg = "Permission denied (not comment owner?)"
+            logger.error(f"Failed to delete comment: {error_msg}")
+            return False, error_msg
+        except Exception as e:
+            logger.error(f"Unexpected error deleting comment: {e}")
+            return False, str(e)
+
+    # ========================================================================
+    # CONNECTION TEST
+    # ========================================================================
+
     def test_connection(self) -> Tuple[bool, dict]:
         """
         Test API connection and authentication.

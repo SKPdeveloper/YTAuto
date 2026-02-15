@@ -53,6 +53,20 @@ def extract_youtube_metadata(gen1_data: Dict[str, Any]) -> Dict[str, str]:
     if isinstance(title_variants_list, list) and title_variants_list:
         title_variants = "\n".join(title_variants_list)
 
+    # Metadata variants for A/B rotation (GEN1 v8.2.0)
+    metadata_variants = {}
+    variants_data = gen1_data.get("metadata_variants")
+    if isinstance(variants_data, dict):
+        for key in ["variant_a", "variant_b", "variant_c", "variant_d"]:
+            vdata = variants_data.get(key)
+            if isinstance(vdata, dict):
+                metadata_variants[key] = {
+                    "trigger": vdata.get("trigger", ""),
+                    "title": vdata.get("title", ""),
+                    "description": vdata.get("description", ""),
+                    "pinned_comment": vdata.get("pinned_comment"),
+                }
+
     return {
         "title": title,
         "description": description,
@@ -60,6 +74,7 @@ def extract_youtube_metadata(gen1_data: Dict[str, Any]) -> Dict[str, str]:
         "hashtags": hashtags,
         "pinned_comment": pinned_comment,
         "title_variants": title_variants,
+        "metadata_variants": metadata_variants,
     }
 
 
@@ -103,6 +118,22 @@ def format_yt_metadata(metadata: Dict[str, str]) -> str:
     if title_variants:
         lines.append("TITLE VARIANTS")
         lines.append(title_variants)
+        lines.append("")
+
+    # A/B metadata variants (GEN1 v8.2.0)
+    ab_variants = metadata.get("metadata_variants", {})
+    if ab_variants:
+        lines.append("A/B METADATA VARIANTS")
+        for key in ["variant_a", "variant_b", "variant_c", "variant_d"]:
+            vdata = ab_variants.get(key)
+            if vdata:
+                letter = key[-1].upper()
+                lines.append(f"  [{letter}] ({vdata.get('trigger', '')})")
+                lines.append(f"  Title: {vdata.get('title', '')}")
+                lines.append(f"  Description: {vdata.get('description', '')[:80]}...")
+                if vdata.get("pinned_comment"):
+                    lines.append(f"  Comment: {vdata['pinned_comment'][:60]}...")
+                lines.append("")
 
     return "\n".join(lines)
 
