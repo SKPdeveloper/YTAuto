@@ -947,7 +947,7 @@ class Gen1Validator:
 
             # Перевірка на AI маркери (КРИТИЧНО — YouTube детектить)
             ai_markers = get_ai_markers()
-            found_ai_markers = [m for m in ai_markers if m in script_lower]
+            found_ai_markers = [m for m in ai_markers if re.search(r'\b' + re.escape(m) + r'\b', script_lower)]
             if found_ai_markers:
                 self._add_error(
                     "voiceover.full_script",
@@ -1193,7 +1193,7 @@ class Gen1Validator:
 
             # Description hashtag validation (v8.3.0)
             if desc:
-                hashtags_in_desc = re.findall(r'#\w+', desc.lower())
+                hashtags_in_desc = re.findall(r'#[\w\-]+', desc.lower())
                 if len(hashtags_in_desc) < 6:
                     self._add_warning(
                         "youtube.description",
@@ -1241,10 +1241,14 @@ class Gen1Validator:
                 engagement = self._data.get("engagement", {})
                 egg = engagement.get("easter_egg") if isinstance(engagement, dict) else None
 
+                is_audio_only = egg and isinstance(egg, dict) and egg.get("format") == "AUDIO_ONLY"
                 has_real_egg = (
-                    egg and isinstance(egg, dict)
-                    and egg.get("object") and egg.get("object") != "none"
-                    and egg.get("scene_number", 0) > 0
+                    is_audio_only
+                    or (
+                        egg and isinstance(egg, dict)
+                        and egg.get("object") and egg.get("object") != "none"
+                        and egg.get("scene_number", 0) > 0
+                    )
                 )
 
                 # Check if pinned references an object ("spotted the X", "find the X", etc.)
@@ -1645,10 +1649,10 @@ class Gen1Validator:
                 )
             else:
                 words = on_screen.strip().split()
-                if len(words) > 8:
+                if len(words) > 6:
                     self._add_warning(
                         f"{prefix}.on_screen_text",
-                        f"Too long ({len(words)} words) — max 6 recommended",
+                        f"Too long ({len(words)} words) — max 6 recommended for Shorts",
                         suggestion="Shorten to 3-6 word headline"
                     )
                 # Scene 1: must contain food name (critical for mute Shorts viewers)
@@ -1699,10 +1703,10 @@ class Gen1Validator:
             # ===== PENULTIMATE SCENE RULES (AERIAL) =====
             if scene_num == total_scenes - 1:
                 if purpose not in ("AERIAL", "AERIAL_WOW", "AERIAL_REVEAL"):
-                    self._add_warning(
+                    self._add_error(
                         f"{prefix}.narrative_purpose",
-                        f"Scene {total_scenes - 1} is typically AERIAL, got '{purpose}'",
-                        suggestion="Consider using AERIAL/AERIAL_WOW/AERIAL_REVEAL for penultimate scene"
+                        f"Scene {total_scenes - 1} MUST be AERIAL/AERIAL_WOW/AERIAL_REVEAL, got '{purpose}'",
+                        code="INVALID_PENULTIMATE_PURPOSE"
                     )
 
                 # Cross-validate: warning_line should appear in Scene N-1 voiceover_segment
