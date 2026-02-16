@@ -1647,6 +1647,8 @@ class HiggsFieldImageGenerator:
         logger.info(f"  Unlimited: ON (free generation)")
         logger.info("=" * 50)
 
+        await self._navigate_to_image()
+
         # Загрузить референс если нужен и его нет на странице
         if reference_image and reference_type != 'INDEPENDENT':
             has_ref = await asyncio.to_thread(self._check_reference_exists)
@@ -1694,7 +1696,8 @@ class HiggsFieldImageGenerator:
         scene_num: int,
         reference_image: Optional[Path] = None
     ) -> None:
-        """РџРѕСЃС‚Р°РІРёС‚Рё РѕРґРЅРµ Р·РѕР±СЂР°Р¶РµРЅРЅСЏ РІ С‡РµСЂРіСѓ РіРµРЅРµСЂР°С†С–С— (РЅРµ С‡РµРєР°С” Р·Р°РІРµСЂС€РµРЅРЅСЏ)"""
+        """РџРѕСЃС‚Р°РІРёС‚Рё РѕРґРЅРµ Р·РѕР±СЂР°Р¶РµРЅРЅСЏ РІ С‡РµСЂРіСѓ РіРµРЅРµСЂР°С†С–С— (РЅРµ С‡РµРєР°С" Р·Р°РІРµСЂС€РµРЅРЅСЏ)"""
+        await self._navigate_to_image()
         logger.info(f"[Scene {scene_num}] Queueing image generation...")
         logger.info(f"  Reference: {'Yes' if reference_image else 'No'}")
         logger.info(f"  Prompt: {prompt[:50]}...")
