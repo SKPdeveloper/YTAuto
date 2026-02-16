@@ -1216,7 +1216,7 @@ class Gen2SceneOutput(BaseModel):
         Per GEN2_SCHEMA: reference_type REQUIRES_REF with inheritance=null is invalid.
         Auto-create default inheritance if missing.
         """
-        if self.reference_type == "REQUIRES_REF" and self.inheritance is None:
+        if self.reference_type in ("REQUIRES_REF", "LOOP_CLOSE") and self.inheritance is None:
             # Auto-fix: create default inheritance from Scene 1
             self.inheritance = Gen2Inheritance(
                 parent_scene=1,

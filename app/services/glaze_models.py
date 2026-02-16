@@ -237,8 +237,7 @@ class PropertyBrief(BaseModel):
     food_material: Union[FoodMaterial, str] = Field(default="", description="Харчові матеріали")
     specs: Union[PropertySpecs, str] = Field(default="", description="Характеристики")
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 # ============================================================================

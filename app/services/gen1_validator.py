@@ -1217,7 +1217,7 @@ class Gen1Validator:
             if isinstance(desc_variants, list):
                 for vi, variant_desc in enumerate(desc_variants):
                     if isinstance(variant_desc, str) and variant_desc:
-                        variant_hashtags = re.findall(r'#\w+', variant_desc.lower())
+                        variant_hashtags = re.findall(r'#[\w\-]+', variant_desc.lower())
                         if '#glazecity' in variant_hashtags:
                             self._add_error(
                                 f"description_variant[{vi}]",

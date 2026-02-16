@@ -67,6 +67,7 @@ from app.services.gen_models import (
     Gen2VisualSummary,
     Gen2FirstFrameComposition,
     Gen2PostProductionNotes,
+    Gen2GlobalSettings,
     # Delivery
     DeliveryPayload,
     # Enums
@@ -320,6 +321,8 @@ class PromptRouter:
 
         Args:
             topic: The topic/theme for the video. If None, AI will auto-generate.
+
+        Note: Resets state from previous runs to prevent leak between retries.
             num_scenes: Number of scenes (6-10, GEN1 v6 dynamic scene engine decides)
             style: Visual style
             target_audience: Target audience
@@ -330,6 +333,9 @@ class PromptRouter:
         Returns:
             Gen1Output with script, concepts, voiceover, audio config
         """
+        # Reset state from previous runs to prevent leak between retries
+        self._last_gen1_parse_error = None
+
         if not self.gen1_prompt:
             logger.error("GEN1 prompt not loaded!")
             return None
@@ -1956,7 +1962,7 @@ CRITICAL REQUIREMENTS:
                 scene_count=gen1.metadata.scene_count,
             ),
             # GEN2 Global Settings - negative_prompt CRITICAL for image generation
-            negative_prompt=gen2.global_settings.negative_prompt if gen2.global_settings else "tilt-shift, miniature, diorama, toy, cartoon, anime, illustration, drawing, painting, sketch",
+            negative_prompt=gen2.global_settings.negative_prompt if gen2.global_settings else Gen2GlobalSettings().negative_prompt,
         )
 
         # Log merge summary

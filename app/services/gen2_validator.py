@@ -872,13 +872,19 @@ class Gen2Validator:
                     code="MISSING_INHERITANCE"
                 )
                 check.inheritance = "FAIL"
-            elif not inheritance.get("parent_scene"):
+            elif not isinstance(inheritance.get("parent_scene"), int) or inheritance.get("parent_scene") < 1:
                 self._add_error(
                     f"{prefix}.inheritance.parent_scene",
-                    "Required field is missing",
-                    code="MISSING_PARENT_SCENE"
+                    f"Must be a positive integer, got {inheritance.get('parent_scene')}",
+                    code="INVALID_PARENT_SCENE"
                 )
                 check.inheritance = "FAIL"
+            elif ref_type == ReferenceType.LOOP_CLOSE.value and inheritance.get("parent_scene") != 1:
+                self._add_warning(
+                    f"{prefix}.inheritance.parent_scene",
+                    f"LOOP_CLOSE should inherit from Scene 1, got Scene {inheritance.get('parent_scene')}",
+                    suggestion="Set parent_scene to 1 for seamless loop"
+                )
 
         # Scene 1 specific
         if scene_num == 1:
