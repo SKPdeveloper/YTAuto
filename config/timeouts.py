@@ -110,8 +110,8 @@ class VideoTimeouts:
 @dataclass(frozen=True)
 class GeminiTimeouts:
     """Gemini API call timeouts (seconds)"""
-    GEN1_CALL: int = 120             # GEN1 creative generation (complex prompt)
-    GEN2_CALL: int = 180             # GEN2 visual generation (larger output)
+    GEN1_CALL: int = 300             # GEN1 creative generation (complex prompt, up to 16K tokens)
+    GEN2_CALL: int = 300             # GEN2 visual generation (larger output, up to 16K tokens)
 
 
 # ============================================================================

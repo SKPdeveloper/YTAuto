@@ -57,6 +57,18 @@ except ImportError:
         HUMAN_COMMENTER_AVAILABLE = False
 
 
+def _set_error(video: VideoABRecord) -> str:
+    """Helper: mark video as error (used inside locked_update)."""
+    video.status = ABStatus.ERROR
+    return "error"
+
+
+def _set_manual(video: VideoABRecord) -> str:
+    """Helper: mark video as manual (used inside locked_update)."""
+    video.status = ABStatus.MANUAL
+    return "manual"
+
+
 class ABMonitor:
     """
     Core A/B rotation monitor.
@@ -81,29 +93,24 @@ class ABMonitor:
         Returns:
             Dict mapping video_id -> action taken (e.g., "swap_B", "keep", "success")
         """
+        # Locked reload to get a consistent snapshot of active video IDs
         self.store.reload()
-        active = self.store.get_active_videos()
+        active_ids = [v.video_id for v in self.store.get_active_videos()]
 
-        if not active:
+        if not active_ids:
             logger.debug("No active videos to monitor")
             return {}
 
-        logger.info(f"Monitor cycle: {len(active)} active videos")
+        logger.info(f"Monitor cycle: {len(active_ids)} active videos")
         results = {}
 
-        for video in active:
+        for video_id in active_ids:
             try:
-                # Reload before each video to avoid overwriting concurrent changes
-                self.store.reload()
-                fresh = self.store.get_video(video.video_id)
-                if not fresh or fresh.status != ABStatus.MONITORING:
-                    results[video.video_id] = "skipped_stale"
-                    continue
-                action = self._evaluate_video(fresh)
-                results[fresh.video_id] = action
+                action = self._evaluate_video(video_id)
+                results[video_id] = action
             except Exception as e:
-                logger.error(f"Error evaluating {video.video_id}: {e}")
-                results[video.video_id] = f"error: {e}"
+                logger.error(f"Error evaluating {video_id}: {e}")
+                results[video_id] = f"error: {e}"
 
         logger.info(f"Cycle complete: {results}")
         return results
@@ -112,99 +119,108 @@ class ABMonitor:
     # SINGLE VIDEO EVALUATION
     # ========================================================================
 
-    def _evaluate_video(self, video: VideoABRecord) -> str:
+    def _evaluate_video(self, video_id: str) -> str:
         """
         Evaluate a single video: fetch stats, log, check thresholds.
 
+        Uses locked_update() for atomic read-modify-write to prevent
+        lost-update races with concurrent CLI/pipeline operations.
+
         Returns action string: "keep", "swap_X", "success", "exhausted", etc.
         """
-        youtube = self._get_youtube_api(video.channel_id)
+        # --- Phase 1: Read video state (no lock needed — just reading channel_id) ---
+        # reload() is safe without lock because save() uses atomic os.replace.
+        self.store.reload()
+        video_snapshot = self.store.get_video(video_id)
+        if not video_snapshot or video_snapshot.status != ABStatus.MONITORING:
+            return "skipped_stale"
+
+        youtube = self._get_youtube_api(video_snapshot.channel_id)
         if not youtube:
-            logger.warning(f"Cannot get YouTube API for channel {video.channel_id}")
+            logger.warning(f"Cannot get YouTube API for channel {video_snapshot.channel_id}")
             return "no_api"
 
-        # Fetch stats with retry
-        stats = self._fetch_stats_with_retry(youtube, video.video_id)
+        # --- Phase 2: Fetch stats (NO lock held — slow network I/O) ---
+        stats = self._fetch_stats_with_retry(youtube, video_id)
         if stats is None:
             # Video might be deleted/blocked
-            video.status = ABStatus.ERROR
-            self.store.update_video(video)
+            self.store.locked_update(video_id, _set_error, require_monitoring=False)
             return "error_not_found"
 
         views = stats["views"]
-
-        # Log metrics
         snapshot = MetricsSnapshot(
             views=views,
             likes=stats["likes"],
             comments=stats["comments"],
         )
-        video.metrics_log.append(snapshot)
-        self.store.append_metrics(video.video_id, snapshot)
 
-        # Calculate hours since variant started
-        now = datetime.now(timezone.utc)
-        hours_elapsed = (now - video.variant_start_time).total_seconds() / 3600
+        # --- Phase 3: Evaluate checkpoint under lock (atomic read-modify-write) ---
+        def _evaluate_and_decide(video: VideoABRecord) -> str:
+            """Mutate video in-place under lock, return decision string."""
+            video.metrics_log.append(snapshot)
 
-        # Guard: negative hours means clock skew or corrupted data
-        if hours_elapsed < 0:
-            logger.warning(
-                f"{video.video_id}: variant_start_time is in the future "
-                f"({video.variant_start_time}), resetting to now"
-            )
-            video.variant_start_time = now
-            hours_elapsed = 0.0
+            now = datetime.now(timezone.utc)
+            hours_elapsed = (now - video.variant_start_time).total_seconds() / 3600
 
-        # Evaluate checkpoint
-        decision = self._evaluate_checkpoint(video, views, hours_elapsed)
+            if hours_elapsed < 0:
+                logger.warning(
+                    f"{video.video_id}: variant_start_time is in the future "
+                    f"({video.variant_start_time}), resetting to now"
+                )
+                video.variant_start_time = now
+                hours_elapsed = 0.0
 
-        if decision == "alive":
-            video.status = ABStatus.SUCCESS
-            video.final_variant = video.current_variant
-            video.final_views_48h = views
-            self.store.update_video(video)
-            logger.info(f"{video.video_id}: ALIVE with {views} views on variant {video.current_variant}")
-            return "success"
+            decision = self._evaluate_checkpoint(video, views, hours_elapsed)
 
-        elif decision.startswith("swap"):
-            # Check if we can still swap
-            if not self._can_swap(video):
-                video.status = ABStatus.EXHAUSTED
+            if decision == "alive":
+                video.status = ABStatus.SUCCESS
                 video.final_variant = video.current_variant
                 video.final_views_48h = views
-                self.store.update_video(video)
-                logger.warning(f"{video.video_id}: EXHAUSTED all {len(ROTATION_ORDER)} variants")
-                return "exhausted"
+                logger.info(f"{video.video_id}: ALIVE with {views} views on variant {video.current_variant}")
+                return "alive"
 
-            # CHECK #1 (dead) swaps immediately; others respect swap window
-            is_immediate = decision == "swap_immediate"
-            if not is_immediate and not self._is_swap_window():
-                self.store.update_video(video)
-                logger.info(f"{video.video_id}: Swap deferred (outside window), {views} views")
-                return "swap_deferred"
+            elif decision.startswith("swap"):
+                if not self._can_swap(video):
+                    video.status = ABStatus.EXHAUSTED
+                    video.final_variant = video.current_variant
+                    video.final_views_48h = views
+                    logger.warning(f"{video.video_id}: EXHAUSTED all {len(ROTATION_ORDER)} variants")
+                    return "exhausted"
 
-            # Execute swap
-            action = self._execute_swap(video, youtube, views, decision)
-            return action
+                is_immediate = decision == "swap_immediate"
+                if not is_immediate and not self._is_swap_window():
+                    logger.info(f"{video.video_id}: Swap deferred (outside window), {views} views")
+                    return "swap_deferred"
 
-        elif decision == "final_dead":
-            # 48h passed and still dead — try last-chance swap if variants remain (TZ spec)
-            if self._can_swap(video):
-                # Last-chance swap: immediate regardless of window
-                action = self._execute_swap(video, youtube, views, "last_chance_48h")
-                return action
-            else:
-                video.status = ABStatus.EXHAUSTED
-                video.final_variant = video.current_variant
-                video.final_views_48h = views
-                self.store.update_video(video)
-                logger.warning(f"{video.video_id}: EXHAUSTED at {views} views after 48h")
-                return "exhausted"
+                return f"need_swap:{decision}"
 
-        else:
-            # "wait" — not enough time elapsed for next checkpoint
-            self.store.update_video(video)
+            elif decision == "final_dead":
+                if self._can_swap(video):
+                    return "need_swap:last_chance_48h"
+                else:
+                    video.status = ABStatus.EXHAUSTED
+                    video.final_variant = video.current_variant
+                    video.final_views_48h = views
+                    logger.warning(f"{video.video_id}: EXHAUSTED at {views} views after 48h")
+                    return "exhausted"
+
             return "keep"
+
+        decision = self.store.locked_update(video_id, _evaluate_and_decide)
+        if decision is None:
+            return "skipped_stale"
+
+        # Append metrics to JSONL after main store is saved (keeps them in sync)
+        self.store.append_metrics(video_id, snapshot)
+
+        # If no swap needed, we're done
+        if not decision.startswith("need_swap:"):
+            return decision if decision != "alive" else "success"
+
+        # --- Phase 4: Execute swap (YouTube API call WITHOUT lock, then save under lock) ---
+        swap_reason = decision.split(":", 1)[1]
+        action = self._execute_swap(video_id, youtube, views, swap_reason)
+        return action
 
     # ========================================================================
     # CHECKPOINT EVALUATION
@@ -280,7 +296,7 @@ class ABMonitor:
 
     def _execute_swap(
         self,
-        video: VideoABRecord,
+        video_id: str,
         youtube: YouTubeAPI,
         views_at_swap: int,
         decision: str,
@@ -288,71 +304,98 @@ class ABMonitor:
         """
         Execute a metadata swap to the next variant.
 
+        Phase A: Read current state under lock → determine next variant
+        Phase B: YouTube API call (no lock)
+        Phase C: Record swap result under lock
+
         Returns action string like "swap_B".
         """
-        # Determine next variant (safe — _can_swap already validated)
-        try:
-            current_idx = ROTATION_ORDER.index(video.current_variant)
-        except ValueError:
-            logger.error(f"{video.video_id}: Invalid current_variant '{video.current_variant}'")
-            video.status = ABStatus.MANUAL
-            self.store.update_video(video)
-            return "error_invalid_variant"
+        # --- Phase A: determine next variant under lock ---
+        swap_info: Optional[dict] = None
 
-        if current_idx + 1 >= len(ROTATION_ORDER):
-            logger.error(f"{video.video_id}: No next variant after '{video.current_variant}'")
-            video.status = ABStatus.EXHAUSTED
-            video.final_variant = video.current_variant
-            self.store.update_video(video)
-            return "exhausted"
+        def _resolve_next(video: VideoABRecord) -> Optional[dict]:
+            try:
+                current_idx = ROTATION_ORDER.index(video.current_variant)
+            except ValueError:
+                logger.error(f"{video.video_id}: Invalid current_variant '{video.current_variant}'")
+                video.status = ABStatus.MANUAL
+                return None
 
-        next_variant_letter = ROTATION_ORDER[current_idx + 1]
+            if current_idx + 1 >= len(ROTATION_ORDER):
+                logger.error(f"{video.video_id}: No next variant after '{video.current_variant}'")
+                video.status = ABStatus.EXHAUSTED
+                video.final_variant = video.current_variant
+                return None
 
-        if next_variant_letter not in video.variants:
-            logger.error(f"{video.video_id}: Variant {next_variant_letter} not available")
-            video.status = ABStatus.MANUAL
-            self.store.update_video(video)
-            return "error_no_variant"
+            next_letter = ROTATION_ORDER[current_idx + 1]
+            if next_letter not in video.variants:
+                logger.error(f"{video.video_id}: Variant {next_letter} not available")
+                video.status = ABStatus.MANUAL
+                return None
 
-        next_variant = video.variants[next_variant_letter]
+            nv = video.variants[next_letter]
+            return {
+                "from": video.current_variant,
+                "to": next_letter,
+                "title": nv.title,
+                "description": nv.description,
+                "pinned_comment": nv.pinned_comment,
+            }
 
-        # Update video metadata on YouTube
+        swap_info = self.store.locked_update(video_id, _resolve_next)
+        if swap_info is None:
+            return "error_resolve_variant"
+
+        next_letter = swap_info["to"]
+
+        # --- Phase B: YouTube API calls (NO lock held) ---
         success, error = youtube.update_video(
-            video_id=video.video_id,
-            title=next_variant.title,
-            description=next_variant.description,
+            video_id=video_id,
+            title=swap_info["title"],
+            description=swap_info["description"],
         )
 
         if not success:
-            logger.error(f"{video.video_id}: Failed to update metadata: {error}")
-            video.status = ABStatus.MANUAL
-            self.store.update_video(video)
+            logger.error(f"{video_id}: Failed to update metadata: {error}")
+            self.store.locked_update(video_id, _set_manual, require_monitoring=False)
             return f"error_update: {error}"
 
-        # Rotate pinned comment (non-fatal: log but continue)
-        comment_ok = self._rotate_pinned_comment(video, youtube, next_variant.pinned_comment)
-        if not comment_ok:
-            logger.warning(f"{video.video_id}: Pinned comment rotation had issues (swap still committed)")
+        # Rotate pinned comment (non-fatal, outside lock — does YouTube API calls).
+        # We read a snapshot, let _rotate_pinned_comment mutate it, then capture
+        # the resulting comment_id to save in Phase C.
+        self.store.reload()
+        comment_snapshot = self.store.get_video(video_id)
+        new_comment_id = None
+        if comment_snapshot:
+            self._rotate_pinned_comment(comment_snapshot, youtube, swap_info["pinned_comment"])
+            new_comment_id = comment_snapshot.current_comment_id
 
-        # Record swap
-        video.swap_history.append(SwapRecord(
-            from_variant=video.current_variant,
-            to_variant=next_variant_letter,
-            views_at_swap=views_at_swap,
-            reason=decision,
-        ))
+        # --- Phase C: Record swap + comment_id under lock (single atomic write) ---
+        def _commit_swap(video: VideoABRecord) -> str:
+            video.swap_history.append(SwapRecord(
+                from_variant=swap_info["from"],
+                to_variant=next_letter,
+                views_at_swap=views_at_swap,
+                reason=decision,
+            ))
+            video.current_variant = next_letter
+            video.variant_start_time = datetime.now(timezone.utc)
+            video.checks_completed = []
+            if new_comment_id is not None:
+                video.current_comment_id = new_comment_id
+            return f"swap_{next_letter}"
 
-        # Reset timer for new variant
-        video.current_variant = next_variant_letter
-        video.variant_start_time = datetime.now(timezone.utc)
-        video.checks_completed = []
-
-        self.store.update_video(video)
-        logger.info(
-            f"{video.video_id}: SWAPPED {video.swap_history[-1].from_variant}->"
-            f"{next_variant_letter} at {views_at_swap} views"
+        # require_monitoring=False: swap already happened on YouTube, must record it
+        result = self.store.locked_update(
+            video_id, _commit_swap, require_monitoring=False
         )
-        return f"swap_{next_variant_letter}"
+        if result:
+            logger.info(
+                f"{video_id}: SWAPPED {swap_info['from']}->"
+                f"{next_letter} at {views_at_swap} views"
+            )
+            return result
+        return "error_commit_swap"
 
     def _rotate_pinned_comment(
         self,
@@ -503,4 +546,4 @@ class ABMonitor:
         if video.status != ABStatus.MONITORING:
             return f"Video {video_id} is not being monitored (status: {video.status.value})"
 
-        return self._evaluate_video(video)
+        return self._evaluate_video(video_id)

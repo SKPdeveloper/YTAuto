@@ -1932,7 +1932,9 @@ class ControlPipeline:
         try:
             # Import YouTube API
             import sys
-            sys.path.insert(0, str(settings.BASE_DIR / "src"))
+            _src = str(settings.BASE_DIR / "src")
+            if _src not in sys.path:
+                sys.path.insert(0, _src)
             from publisher.youtube_api import YouTubeAPI
             from publisher.models import ChannelConfig, PrivacyStatus
 
@@ -2008,8 +2010,19 @@ class ControlPipeline:
                 with open(status_path, 'w', encoding='utf-8') as f:
                     json.dump(publish_status, f, indent=2, ensure_ascii=False)
 
-                # Notify UI
+                # Notify UI immediately — don't block on A/B registration
                 await broadcast_youtube_success(video_url)
+
+                # Register for A/B metadata monitoring (non-blocking for UI)
+                if target_channel:
+                    await self._register_for_ab_monitoring(
+                        project_id=self.project.project_id,
+                        video_id=video_id,
+                        channel_id=target_channel,
+                        project_dir=project_dir,
+                    )
+                else:
+                    logger.info("[PIPELINE] No target_channel set, AB metadata rotation unavailable for this upload")
             else:
                 logger.error(f"[PIPELINE] YouTube upload failed: {error}")
 
@@ -2018,6 +2031,67 @@ class ControlPipeline:
         except Exception as e:
             logger.error(f"[PIPELINE] YouTube upload error: {e}")
             # Don't raise - pipeline is essentially complete
+
+    async def _register_for_ab_monitoring(
+        self,
+        project_id: str,
+        video_id: str,
+        channel_id: str,
+        project_dir: Path,
+    ) -> None:
+        """
+        Register a freshly uploaded video for A/B metadata rotation.
+
+        Reads gen1_output.json from project_dir, extracts metadata_variants,
+        and registers with ABStore. Non-fatal: logs warning on failure.
+        """
+        def _do_register():
+            """Synchronous AB registration (runs in thread to avoid blocking event loop)."""
+            import sys
+            _src = str(settings.BASE_DIR / "src")
+            if _src not in sys.path:
+                sys.path.insert(0, _src)
+            from publisher.ab_models import VideoABRecord, parse_metadata_variants
+            from publisher.ab_store import ABStore
+
+            gen1_path = project_dir / "gen1_output.json"
+            if not gen1_path.exists():
+                logger.debug(f"[PIPELINE] No gen1_output.json for {project_id}, skipping AB registration")
+                return
+
+            with open(gen1_path, "r", encoding="utf-8") as f:
+                gen1_data = json.load(f)
+
+            variants, warnings = parse_metadata_variants(gen1_data)
+            for w in warnings:
+                logger.debug(f"[PIPELINE] AB: {project_id}: {w}")
+
+            if len(variants) < 2:
+                logger.info(f"[PIPELINE] Only {len(variants)} variants, need >= 2 for AB rotation")
+                return
+
+            first_variant = sorted(variants.keys())[0]
+
+            record = VideoABRecord(
+                video_id=video_id,
+                project_id=project_id,
+                channel_id=channel_id,
+                current_variant=first_variant,
+                variants=variants,
+                gen1_output_path=str(gen1_path),
+            )
+
+            config_dir = settings.BASE_DIR / "config"
+            store = ABStore(config_dir=config_dir)
+            store.register_video(record)
+
+            logger.info(f"[PIPELINE] Registered {video_id} for AB monitoring ({len(variants)} variants)")
+
+        try:
+            # Run entire registration in thread (file I/O + lock may block)
+            await asyncio.to_thread(_do_register)
+        except Exception as e:
+            logger.warning(f"[PIPELINE] Failed to register for AB monitoring: {e}")
 
 
 async def broadcast_youtube_success(video_url: str):

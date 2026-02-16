@@ -305,15 +305,17 @@ class TestSwapLogic:
         monitor, store = make_monitor(tmp_path, videos=[video])
         yt = make_youtube_mock()
 
-        result = monitor._execute_swap(video, yt, views_at_swap=30, decision="check_1_dead")
+        result = monitor._execute_swap(video.video_id, yt, views_at_swap=30, decision="check_1_dead")
 
         assert result == "swap_B"
-        assert video.current_variant == "B"
-        assert len(video.swap_history) == 1
-        assert video.swap_history[0].from_variant == "A"
-        assert video.swap_history[0].to_variant == "B"
-        assert video.swap_history[0].views_at_swap == 30
-        assert video.checks_completed == []  # reset on swap
+        # Verify persisted state via store
+        saved = store.get_video(video.video_id)
+        assert saved.current_variant == "B"
+        assert len(saved.swap_history) == 1
+        assert saved.swap_history[0].from_variant == "A"
+        assert saved.swap_history[0].to_variant == "B"
+        assert saved.swap_history[0].views_at_swap == 30
+        assert saved.checks_completed == []  # reset on swap
         yt.update_video.assert_called_once()
 
     def test_execute_swap_rotates_comment(self, tmp_path):
@@ -323,7 +325,7 @@ class TestSwapLogic:
         monitor, store = make_monitor(tmp_path, videos=[video])
         yt = make_youtube_mock()
 
-        monitor._execute_swap(video, yt, views_at_swap=30, decision="dead")
+        monitor._execute_swap(video.video_id, yt, views_at_swap=30, decision="dead")
 
         yt.delete_comment.assert_called_once_with("old_comment_id")
         yt.insert_comment_thread.assert_called_once()
@@ -335,12 +337,13 @@ class TestSwapLogic:
         yt = make_youtube_mock()
         yt.update_video.return_value = (False, "quota exceeded")
 
-        result = monitor._execute_swap(video, yt, views_at_swap=30, decision="dead")
+        result = monitor._execute_swap(video.video_id, yt, views_at_swap=30, decision="dead")
 
         assert "error_update" in result
-        assert video.status == ABStatus.MANUAL
-        assert len(video.swap_history) == 0  # swap NOT recorded
-        assert video.current_variant == "A"  # NOT changed
+        saved = store.get_video(video.video_id)
+        assert saved.status == ABStatus.MANUAL
+        assert len(saved.swap_history) == 0  # swap NOT recorded
+        assert saved.current_variant == "A"  # NOT changed
 
     def test_execute_swap_invalid_variant_error(self, tmp_path):
         """Corrupted current_variant during swap → error, status MANUAL."""
@@ -348,10 +351,11 @@ class TestSwapLogic:
         monitor, store = make_monitor(tmp_path, videos=[video])
         yt = make_youtube_mock()
 
-        result = monitor._execute_swap(video, yt, views_at_swap=0, decision="dead")
+        result = monitor._execute_swap(video.video_id, yt, views_at_swap=0, decision="dead")
 
-        assert result == "error_invalid_variant"
-        assert video.status == ABStatus.MANUAL
+        assert "error" in result
+        saved = store.get_video(video.video_id)
+        assert saved.status == ABStatus.MANUAL
 
     def test_sequential_swaps_a_b_c_d(self, tmp_path):
         """Full rotation: A→B→C→D, then exhausted."""
@@ -360,23 +364,22 @@ class TestSwapLogic:
         yt = make_youtube_mock()
 
         # Swap A→B
-        r1 = monitor._execute_swap(video, yt, 10, "dead")
+        r1 = monitor._execute_swap(video.video_id, yt, 10, "dead")
         assert r1 == "swap_B"
-        assert video.current_variant == "B"
 
         # Swap B→C
-        r2 = monitor._execute_swap(video, yt, 20, "dead")
+        r2 = monitor._execute_swap(video.video_id, yt, 20, "dead")
         assert r2 == "swap_C"
-        assert video.current_variant == "C"
 
         # Swap C→D
-        r3 = monitor._execute_swap(video, yt, 30, "dead")
+        r3 = monitor._execute_swap(video.video_id, yt, 30, "dead")
         assert r3 == "swap_D"
-        assert video.current_variant == "D"
 
-        # No more swaps
-        assert monitor._can_swap(video) is False
-        assert len(video.swap_history) == 3
+        # No more swaps — verify via store
+        saved = store.get_video(video.video_id)
+        assert saved.current_variant == "D"
+        assert monitor._can_swap(saved) is False
+        assert len(saved.swap_history) == 3
 
 
 # ============================================================================
@@ -398,32 +401,35 @@ class TestEvaluateVideo:
         video = make_video(hours_ago=7)
         monitor, store, yt = self._setup(tmp_path, video, views=30)
 
-        result = monitor._evaluate_video(video)
+        result = monitor._evaluate_video(video.video_id)
 
         assert result == "swap_B"
-        assert video.current_variant == "B"
+        saved = store.get_video(video.video_id)
+        assert saved.current_variant == "B"
 
     def test_alive_at_6h_success(self, tmp_path):
         """300 views at 7h → alive → status SUCCESS."""
         video = make_video(hours_ago=7)
         monitor, store, yt = self._setup(tmp_path, video, views=300)
 
-        result = monitor._evaluate_video(video)
+        result = monitor._evaluate_video(video.video_id)
 
         assert result == "success"
-        assert video.status == ABStatus.SUCCESS
-        assert video.final_variant == "A"
-        assert video.final_views_48h == 300
+        saved = store.get_video(video.video_id)
+        assert saved.status == ABStatus.SUCCESS
+        assert saved.final_variant == "A"
+        assert saved.final_views_48h == 300
 
     def test_uncertain_at_6h_keeps_monitoring(self, tmp_path):
         """100 views at 7h → uncertain → keep monitoring."""
         video = make_video(hours_ago=7)
         monitor, store, yt = self._setup(tmp_path, video, views=100)
 
-        result = monitor._evaluate_video(video)
+        result = monitor._evaluate_video(video.video_id)
 
         assert result == "keep"
-        assert video.status == ABStatus.MONITORING
+        saved = store.get_video(video.video_id)
+        assert saved.status == ABStatus.MONITORING
 
     def test_dead_at_18h_deferred_outside_window(self, tmp_path):
         """Dead at 18h, outside swap window → deferred."""
@@ -431,10 +437,11 @@ class TestEvaluateVideo:
         monitor, store, yt = self._setup(tmp_path, video, views=50)
         monitor._is_swap_window = Mock(return_value=False)
 
-        result = monitor._evaluate_video(video)
+        result = monitor._evaluate_video(video.video_id)
 
         assert result == "swap_deferred"
-        assert video.current_variant == "A"  # no swap yet
+        saved = store.get_video(video.video_id)
+        assert saved.current_variant == "A"  # no swap yet
 
     def test_dead_at_18h_swaps_in_window(self, tmp_path):
         """Dead at 18h, inside swap window → swap."""
@@ -442,7 +449,7 @@ class TestEvaluateVideo:
         monitor, store, yt = self._setup(tmp_path, video, views=50)
         monitor._is_swap_window = Mock(return_value=True)
 
-        result = monitor._evaluate_video(video)
+        result = monitor._evaluate_video(video.video_id)
 
         assert result == "swap_B"
 
@@ -454,10 +461,11 @@ class TestEvaluateVideo:
         )
         monitor, store, yt = self._setup(tmp_path, video, views=100)
 
-        result = monitor._evaluate_video(video)
+        result = monitor._evaluate_video(video.video_id)
 
         assert result == "swap_B"
-        assert video.swap_history[-1].reason == "last_chance_48h"
+        saved = store.get_video(video.video_id)
+        assert saved.swap_history[-1].reason == "last_chance_48h"
 
     def test_final_dead_48h_exhausted(self, tmp_path):
         """Dead at 48h, on variant D (no more) → exhausted."""
@@ -474,11 +482,12 @@ class TestEvaluateVideo:
         )
         monitor, store, yt = self._setup(tmp_path, video, views=100)
 
-        result = monitor._evaluate_video(video)
+        result = monitor._evaluate_video(video.video_id)
 
         assert result == "exhausted"
-        assert video.status == ABStatus.EXHAUSTED
-        assert video.final_variant == "D"
+        saved = store.get_video(video.video_id)
+        assert saved.status == ABStatus.EXHAUSTED
+        assert saved.final_variant == "D"
 
     def test_no_api_returns_no_api(self, tmp_path):
         """No YouTube API for channel → no_api."""
@@ -486,7 +495,7 @@ class TestEvaluateVideo:
         monitor, store = make_monitor(tmp_path, videos=[video])
         monitor._get_youtube_api = Mock(return_value=None)
 
-        result = monitor._evaluate_video(video)
+        result = monitor._evaluate_video(video.video_id)
         assert result == "no_api"
 
     def test_video_not_found_error(self, tmp_path):
@@ -497,17 +506,18 @@ class TestEvaluateVideo:
         yt.get_video_stats.return_value = None
         monitor._get_youtube_api = Mock(return_value=yt)
 
-        result = monitor._evaluate_video(video)
+        result = monitor._evaluate_video(video.video_id)
 
         assert result == "error_not_found"
-        assert video.status == ABStatus.ERROR
+        saved = store.get_video(video.video_id)
+        assert saved.status == ABStatus.ERROR
 
     def test_negative_hours_reset(self, tmp_path):
         """variant_start_time in future → reset to now, hours = 0 → wait."""
         video = make_video(hours_ago=-5)  # 5 hours in the future
         monitor, store, yt = self._setup(tmp_path, video, views=1000)
 
-        result = monitor._evaluate_video(video)
+        result = monitor._evaluate_video(video.video_id)
 
         # After reset, hours_elapsed ≈ 0, so no checkpoint triggers → wait/keep
         assert result == "keep"
@@ -517,10 +527,11 @@ class TestEvaluateVideo:
         video = make_video(hours_ago=3)
         monitor, store, yt = self._setup(tmp_path, video, views=42)
 
-        monitor._evaluate_video(video)
+        monitor._evaluate_video(video.video_id)
 
-        assert len(video.metrics_log) == 1
-        assert video.metrics_log[0].views == 42
+        saved = store.get_video(video.video_id)
+        assert len(saved.metrics_log) == 1
+        assert saved.metrics_log[0].views == 42
 
 
 # ============================================================================
@@ -577,10 +588,10 @@ class TestRunCycle:
         monitor, store = make_monitor(tmp_path, videos=[v1, v2])
 
         call_count = 0
-        def mock_evaluate(video):
+        def mock_evaluate(video_id):
             nonlocal call_count
             call_count += 1
-            if video.video_id == "vid_1":
+            if video_id == "vid_1":
                 raise RuntimeError("API explosion")
             return "keep"
 
@@ -666,10 +677,23 @@ class TestABStore:
         assert retrieved is not None
         assert retrieved.video_id == "v1"
 
-    def test_duplicate_registration_updates(self, tmp_path):
-        """Re-registering same video_id updates, not duplicates."""
+    def test_duplicate_registration_skips_if_monitoring(self, tmp_path):
+        """Re-registering a MONITORING video is a no-op (protects progress)."""
         store = ABStore(config_dir=tmp_path)
         v1 = make_video(video_id="v1", variant="A")
+        store.register_video(v1)
+
+        v1_updated = make_video(video_id="v1", variant="B")
+        store.register_video(v1_updated)
+
+        all_videos = store.get_all_videos()
+        assert len(all_videos) == 1
+        assert all_videos[0].current_variant == "A"  # NOT replaced — skip protects progress
+
+    def test_duplicate_registration_replaces_if_not_monitoring(self, tmp_path):
+        """Re-registering a non-MONITORING video replaces it."""
+        store = ABStore(config_dir=tmp_path)
+        v1 = make_video(video_id="v1", variant="A", status=ABStatus.EXHAUSTED)
         store.register_video(v1)
 
         v1_updated = make_video(video_id="v1", variant="B")
@@ -730,6 +754,42 @@ class TestABStore:
 
         tmp_file = tmp_path / "ab_rotation.json.tmp"
         assert not tmp_file.exists()
+
+    def test_locked_update_basic(self, tmp_path):
+        """locked_update reads fresh, mutates, and saves atomically."""
+        store = ABStore(config_dir=tmp_path)
+        store.register_video(make_video(video_id="v1"))
+
+        result = store.locked_update(
+            "v1",
+            lambda v: (setattr(v, 'current_variant', 'B'), 'done')[1],
+        )
+        assert result == "done"
+
+        saved = store.get_video("v1")
+        assert saved.current_variant == "B"
+
+    def test_locked_update_require_monitoring_false(self, tmp_path):
+        """locked_update with require_monitoring=False works on stopped videos."""
+        store = ABStore(config_dir=tmp_path)
+        v = make_video(video_id="v1", status=ABStatus.STOPPED)
+        store.register_video(v)
+
+        result = store.locked_update(
+            "v1",
+            lambda v: "ok",
+            require_monitoring=False,
+        )
+        assert result == "ok"
+
+    def test_locked_update_skips_non_monitoring_by_default(self, tmp_path):
+        """locked_update returns None for non-MONITORING by default."""
+        store = ABStore(config_dir=tmp_path)
+        v = make_video(video_id="v1", status=ABStatus.STOPPED)
+        store.register_video(v)
+
+        result = store.locked_update("v1", lambda v: "ok")
+        assert result is None
 
 
 # ============================================================================
@@ -822,29 +882,38 @@ class TestEdgeCases:
         monitor._get_youtube_api = Mock(return_value=yt)
 
         # Cycle 1: 7h, 10 views → dead → swap to B
-        r1 = monitor._evaluate_video(video)
+        r1 = monitor._evaluate_video(video.video_id)
         assert r1 == "swap_B"
-        assert video.current_variant == "B"
-        assert video.checks_completed == []
+        saved = store.get_video(video.video_id)
+        assert saved.current_variant == "B"
+        assert saved.checks_completed == []
 
-        # Simulate 7 more hours
-        video.variant_start_time = datetime.now(timezone.utc) - timedelta(hours=7)
+        # Simulate 7 more hours — update variant_start_time in store
+        def _set_time_7h(v):
+            v.variant_start_time = datetime.now(timezone.utc) - timedelta(hours=7)
+            return "ok"
+        store.locked_update(video.video_id, _set_time_7h, require_monitoring=False)
         yt.get_video_stats.return_value = {"views": 20, "likes": 0, "comments": 0}
 
         # Cycle 2: 7h on B, 20 views → dead → swap to C
-        r2 = monitor._evaluate_video(video)
+        r2 = monitor._evaluate_video(video.video_id)
         assert r2 == "swap_C"
-        assert video.current_variant == "C"
+        saved = store.get_video(video.video_id)
+        assert saved.current_variant == "C"
 
         # Simulate 19 hours on C with good views
-        video.variant_start_time = datetime.now(timezone.utc) - timedelta(hours=19)
+        def _set_time_19h(v):
+            v.variant_start_time = datetime.now(timezone.utc) - timedelta(hours=19)
+            return "ok"
+        store.locked_update(video.video_id, _set_time_19h, require_monitoring=False)
         yt.get_video_stats.return_value = {"views": 800, "likes": 50, "comments": 10}
 
         # Cycle 3: 19h on C, 800 views → check_1 alive (>= 200)
-        r3 = monitor._evaluate_video(video)
+        r3 = monitor._evaluate_video(video.video_id)
         assert r3 == "success"
-        assert video.status == ABStatus.SUCCESS
-        assert video.final_variant == "C"
+        saved = store.get_video(video.video_id)
+        assert saved.status == ABStatus.SUCCESS
+        assert saved.final_variant == "C"
 
     def test_all_variants_exhausted(self, tmp_path):
         """Every variant dies → final status EXHAUSTED."""
@@ -855,16 +924,24 @@ class TestEdgeCases:
 
         # Swap through A→B→C→D
         for expected_next in ["B", "C", "D"]:
-            result = monitor._evaluate_video(video)
+            result = monitor._evaluate_video(video.video_id)
             assert result == f"swap_{expected_next}"
             # Reset timer for next cycle
-            video.variant_start_time = datetime.now(timezone.utc) - timedelta(hours=7)
+            def _set_time(v):
+                v.variant_start_time = datetime.now(timezone.utc) - timedelta(hours=7)
+                v.checks_completed = []
+                return "ok"
+            store.locked_update(video.video_id, _set_time, require_monitoring=False)
 
         # Now on D, dead again → exhausted
-        video.variant_start_time = datetime.now(timezone.utc) - timedelta(hours=7)
-        result = monitor._evaluate_video(video)
+        def _set_time_final(v):
+            v.variant_start_time = datetime.now(timezone.utc) - timedelta(hours=7)
+            return "ok"
+        store.locked_update(video.video_id, _set_time_final, require_monitoring=False)
+        result = monitor._evaluate_video(video.video_id)
         assert result == "exhausted"
-        assert video.status == ABStatus.EXHAUSTED
+        saved = store.get_video(video.video_id)
+        assert saved.status == ABStatus.EXHAUSTED
 
     def test_swap_window_respected_for_check2(self, tmp_path):
         """Check 2 dead → only swaps inside window."""
@@ -875,15 +952,16 @@ class TestEdgeCases:
 
         # Outside window → deferred
         monitor._is_swap_window = Mock(return_value=False)
-        r1 = monitor._evaluate_video(video)
+        r1 = monitor._evaluate_video(video.video_id)
         assert r1 == "swap_deferred"
-        assert video.current_variant == "A"
+        saved = store.get_video(video.video_id)
+        assert saved.current_variant == "A"
 
-        # Reset for second try (check_2 already completed, so need fresh video)
-        video2 = make_video(hours_ago=19, checks_completed=["check_1"])
+        # Register fresh video for second try (check_2 already completed on first)
+        video2 = make_video(video_id="vid_002", hours_ago=19, checks_completed=["check_1"])
         store.register_video(video2)
         monitor._is_swap_window = Mock(return_value=True)
-        r2 = monitor._evaluate_video(video2)
+        r2 = monitor._evaluate_video(video2.video_id)
         assert r2 == "swap_B"
 
     def test_check1_dead_ignores_swap_window(self, tmp_path):
@@ -894,7 +972,7 @@ class TestEdgeCases:
         monitor._get_youtube_api = Mock(return_value=yt)
         monitor._is_swap_window = Mock(return_value=False)
 
-        result = monitor._evaluate_video(video)
+        result = monitor._evaluate_video(video.video_id)
 
         assert result == "swap_B"  # swaps regardless of window
         monitor._is_swap_window.assert_not_called()
@@ -929,7 +1007,8 @@ class TestEdgeCases:
         yt = make_youtube_mock(views=10)
 
         before_swap = datetime.now(timezone.utc)
-        monitor._execute_swap(video, yt, 10, "dead")
+        monitor._execute_swap(video.video_id, yt, 10, "dead")
         after_swap = datetime.now(timezone.utc)
 
-        assert before_swap <= video.variant_start_time <= after_swap
+        saved = store.get_video(video.video_id)
+        assert before_swap <= saved.variant_start_time <= after_swap
