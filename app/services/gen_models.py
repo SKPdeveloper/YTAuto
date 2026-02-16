@@ -167,11 +167,11 @@ VALID_CAMERA_MOVEMENTS = [
     "ORBIT",
     "RISE",
     "DESCEND",
-    "DRIFT",
     "RUSH",
     "REVEAL",
     "TRACK",
     "PUNCH",
+    "PUSH",
 ]
 
 
@@ -266,11 +266,11 @@ class CameraMovement(str, Enum):
     ORBIT = "ORBIT"
     RISE = "RISE"
     DESCEND = "DESCEND"
-    DRIFT = "DRIFT"
     RUSH = "RUSH"
     REVEAL = "REVEAL"
     TRACK = "TRACK"
     PUNCH = "PUNCH"
+    PUSH = "PUSH"
 
 
 class NarrativePurpose(str, Enum):
@@ -913,6 +913,8 @@ class Gen1Output(BaseModel):
         # ===== ARCHITECTURAL IDENTITY VALIDATION =====
         if not self.architectural_identity.style_code:
             errors.append("Missing architectural_identity.style_code")
+        if not self.architectural_identity.style_description:
+            errors.append("Missing architectural_identity.style_description")
         if not self.architectural_identity.silhouette_description:
             errors.append("Missing architectural_identity.silhouette_description")
         if not self.architectural_identity.distinctive_features:
@@ -1258,7 +1260,7 @@ class Gen2LoopVerification(BaseModel):
 
 class Gen2VisualSummary(BaseModel):
     """Summary of GEN2 visual generation."""
-    total_scenes: int = Field(..., description="Total scenes - REQUIRED")
+    total_scenes: int = Field(..., ge=6, le=10, description="Total scenes (6-10) - REQUIRED")
     reference_breakdown: Dict[str, int] = Field(default_factory=dict, description="Count by reference type")
     lighting_continuity: str = Field(default="consistent", description="Lighting consistency note")
     foreground_scenes: List[int] = Field(default_factory=list, description="Scenes with foreground")
@@ -1361,9 +1363,9 @@ class Gen2BatchOutput(BaseModel):
             duplicates = [n for n in scene_numbers if scene_numbers.count(n) > 1]
             raise ValueError(f"GEN2 has duplicate scene_numbers: {duplicates}")
 
-        expected = set(range(1, num_scenes + 1))
-        if set(scene_numbers) != expected:
-            raise ValueError(f"GEN2 scene_numbers must be 1-{num_scenes}, got {sorted(scene_numbers)}")
+        expected = list(range(1, num_scenes + 1))
+        if scene_numbers != expected:
+            raise ValueError(f"GEN2 scene_numbers must be ordered 1-{num_scenes}, got {scene_numbers}")
 
         return self
 

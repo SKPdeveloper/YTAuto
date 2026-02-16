@@ -986,14 +986,29 @@ class Gen1Validator:
         """Validate warning_line — catchy warning for AERIAL (N-1) scene."""
         warning = self._data.get("warning_line")
 
+        # Check if Scene N-1 is actually AERIAL
+        scenes = self._data.get("scenes", [])
+        penultimate_is_aerial = True  # assume true by default
+        if len(scenes) >= 2:
+            penultimate = scenes[-2]
+            purpose = self._get_nested(penultimate, "narrative_purpose", "")
+            penultimate_is_aerial = purpose in ("AERIAL", "AERIAL_WOW", "AERIAL_REVEAL")
+
         # Must exist and be a non-empty string
         if not warning or not isinstance(warning, str) or not warning.strip():
-            self._add_error(
-                "warning_line",
-                "Missing or empty warning_line",
-                code="MISSING_WARNING_LINE",
-                suggestion="Add a 3-8 word catchy warning for the AERIAL scene"
-            )
+            if penultimate_is_aerial:
+                self._add_error(
+                    "warning_line",
+                    "Missing or empty warning_line",
+                    code="MISSING_WARNING_LINE",
+                    suggestion="Add a 3-8 word catchy warning for the AERIAL scene"
+                )
+            else:
+                self._add_warning(
+                    "warning_line",
+                    "Missing warning_line (Scene N-1 is not AERIAL, so warning is optional)",
+                    suggestion="Consider adding a warning_line if Scene N-1 has a dramatic reveal"
+                )
             return
 
         warning = warning.strip()
@@ -1095,7 +1110,8 @@ class Gen1Validator:
 
                 # scene_number (must be 2 to N-1)
                 scene_num = self._get_nested(egg, "scene_number")
-                total_scenes = len(self._data.get("scenes", [])) or self._data.get("metadata", {}).get("scene_count", 8)
+                scenes_list = self._data.get("scenes", [])
+                total_scenes = len(scenes_list) if scenes_list else self._data.get("metadata", {}).get("scene_count", 8)
                 if scene_num is None:
                     self._add_error(
                         "engagement.easter_egg.scene_number",
@@ -1125,7 +1141,7 @@ class Gen1Validator:
         # hashtags — optional in v6 (may be embedded in youtube.description instead)
         # v8.2.0: hashtags increased from 3 to 6-8 for algorithm discovery
         hashtags = self._get_nested(engagement, "hashtags", [])
-        if isinstance(hashtags, list) and len(hashtags) > 0 and (len(hashtags) < 3 or len(hashtags) > 10):
+        if isinstance(hashtags, list) and hashtags and not (3 <= len(hashtags) <= 10):
             self._add_warning(
                 "engagement.hashtags",
                 f"Expected 3-10 items, got {len(hashtags)}",
@@ -1497,6 +1513,12 @@ class Gen1Validator:
             self._validate_enum_field(energy, EnergyLevel, f"{prefix}.energy_level")
             if energy == "LOW":
                 low_energy_count += 1
+                if scene_num <= 3:
+                    self._add_error(
+                        f"{prefix}.energy_level",
+                        f"Scene {scene_num} cannot have LOW energy — Scenes 1-3 must be HIGH or MEDIUM",
+                        code="FORBIDDEN_EARLY_LOW_ENERGY"
+                    )
 
             # visual_concept
             visual = self._get_nested(scene, "visual_concept", {})
@@ -1629,14 +1651,15 @@ class Gen1Validator:
                         f"Too long ({len(words)} words) — max 6 recommended",
                         suggestion="Shorten to 3-6 word headline"
                     )
-                # Scene 1: must contain food name
+                # Scene 1: must contain food name (critical for mute Shorts viewers)
                 if scene_num == 1:
                     food = self._get_food_name()
                     if food and food.lower() not in on_screen.lower():
-                        self._add_warning(
+                        self._add_error(
                             f"{prefix}.on_screen_text",
-                            f"Scene 1 should contain food name '{food}' for mute recognition",
-                            suggestion=f"Include '{food}' in on_screen_text"
+                            f"Scene 1 MUST contain food name '{food}' for mute recognition — "
+                            f"Shorts viewers see text before audio loads",
+                            code="SCENE1_MISSING_FOOD_NAME"
                         )
 
             # ===== SCENE 1 SPECIFIC RULES =====

@@ -126,6 +126,12 @@ class Gen3aPreprocessor:
 
                 if scene_num == len(video_paths):
                     # Reverse last scene (LOOP_CLOSE) for seamless loop
+                    # Invariant: Scene N must always be LOOP_CLOSE (caller's responsibility)
+                    if "loop" not in src_path.parent.name.lower() and "scene_" in src_path.parent.name.lower():
+                        logger.warning(
+                            f"  Scene {scene_num} path '{src_path.parent.name}' doesn't suggest LOOP_CLOSE — "
+                            f"verify video order is correct before reversal"
+                        )
                     logger.info(f"  Reversing scene {scene_num} (LOOP_CLOSE) -> {dst_path.name}")
                     await self._reverse_video(src_path, dst_path)
                 else:

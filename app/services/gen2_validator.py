@@ -1025,7 +1025,7 @@ class Gen2Validator:
             )
 
         # Check for --ar 9:16 (should NOT be present)
-        if "--ar 9:16" in prompt or "--ar 9\\:16" in prompt:
+        if "--ar 9:16" in prompt_lower or "--ar 9\\:16" in prompt_lower:
             self._add_warning(
                 f"{prefix}.image_prompt",
                 "Contains --ar 9:16 which is hardcoded in software",
@@ -1090,10 +1090,10 @@ class Gen2Validator:
         for banned in BANNED_CAMERA_MOVEMENTS:
             pattern = r'\b' + re.escape(banned) + r'\b'
             for match in re.finditer(pattern, prompt_lower):
-                # Extract ~40 chars before AND ~20 chars after the match for context window
-                # This handles both "clouds drifting" and "drifting clouds" word orders
-                start = max(0, match.start() - 40)
-                end = min(len(prompt_lower), match.end() + 20)
+                # Extract context window around the match for allowed-context check
+                # 100 chars before handles multi-word subjects like "magnificent white clouds"
+                start = max(0, match.start() - 100)
+                end = min(len(prompt_lower), match.end() + 50)
                 context_window = prompt_lower[start:end]
                 # Check if THIS occurrence is in an allowed context
                 is_allowed = any(ctx in context_window for ctx in ALLOWED_DRIFTING_CONTEXTS)
