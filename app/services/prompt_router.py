@@ -13,8 +13,10 @@ Flow:
 5. PromptRouter merges results into final GlazeCityProject
 """
 
+import asyncio
 import json
 import re
+import traceback
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime
@@ -24,6 +26,7 @@ from google.genai import types
 
 from app.core.config import settings
 from app.core.paths import get_project_path
+from config.timeouts import GEMINI
 from app.utils.logger import logger
 from app.utils.yt_metadata_parser import parse_gen1_to_yt_file
 from app.services.gen_models import (
@@ -256,6 +259,8 @@ class PromptRouter:
 
         # Track if last GEN2 call was truncated (for retry guidance)
         self._last_gen2_truncated: bool = False
+        # Track last GEN1 parse error for retry guidance
+        self._last_gen1_parse_error: Optional[str] = None
 
         # Initialize Gemini client
         self.client = genai.Client(api_key=settings.GOOGLE_GEMINI_API_KEY)
@@ -358,8 +363,8 @@ class PromptRouter:
         try:
             filepath.write_text(response_text, encoding="utf-8")
             logger.info(f"[{gen_type}] Raw response saved: {filename}")
-        except Exception as e:
-            logger.warning(f"Failed to save raw response: {e}")
+        except OSError as e:
+            logger.warning(f"Failed to save raw response to {filepath}: {e}")
 
         return filepath
 
@@ -418,15 +423,18 @@ class PromptRouter:
         )
 
         try:
-            # Call Gemini with GEN1 system prompt
-            response = await self.client.aio.models.generate_content(
-                model=self.model,
-                contents=user_prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=self.gen1_prompt,
-                    temperature=0.7,  # Creative for concept generation
-                    max_output_tokens=16384,  # Reduced - some models have lower limits
+            # Call Gemini with GEN1 system prompt (with timeout)
+            response = await asyncio.wait_for(
+                self.client.aio.models.generate_content(
+                    model=self.model,
+                    contents=user_prompt,
+                    config=types.GenerateContentConfig(
+                        system_instruction=self.gen1_prompt,
+                        temperature=0.7,  # Creative for concept generation
+                        max_output_tokens=16384,  # Reduced - some models have lower limits
+                    ),
                 ),
+                timeout=GEMINI.GEN1_CALL,
             )
 
             # Log response metadata for debugging
@@ -438,8 +446,12 @@ class PromptRouter:
                 usage = response.usage_metadata
                 logger.info(f"[GEN1] Tokens - prompt: {getattr(usage, 'prompt_token_count', 'N/A')}, output: {getattr(usage, 'candidates_token_count', 'N/A')}")
 
-            # Extract JSON from response
-            raw_output = response.text
+            # Extract JSON from response (safety-blocked responses raise ValueError on .text)
+            try:
+                raw_output = response.text
+            except ValueError as e:
+                logger.error(f"[GEN1] Response blocked by safety filters: {e}")
+                return None
             if not raw_output:
                 logger.error("[GEN1] Empty response from API")
                 return None
@@ -500,14 +512,16 @@ class PromptRouter:
                     yt_path = project_dir / "YT.txt"
                     parse_gen1_to_yt_file(gen1_output.model_dump(), yt_path)
                     logger.info(f"[GEN1] Saved YT.txt to {yt_path}")
-                except Exception as yt_err:
-                    logger.warning(f"[GEN1] Failed to save YT.txt: {yt_err}")
+                except (OSError, ValueError, KeyError) as yt_err:
+                    logger.warning(f"[GEN1] Failed to save YT.txt: {type(yt_err).__name__}: {yt_err}")
 
             return gen1_output
 
+        except asyncio.TimeoutError:
+            logger.error(f"[GEN1] Gemini API call timed out after {GEMINI.GEN1_CALL}s")
+            return None
         except Exception as e:
             logger.error(f"[GEN1] Error: {e}")
-            import traceback
             logger.error(f"[GEN1] Full traceback:\n{traceback.format_exc()}")
             return None
 
@@ -914,35 +928,44 @@ You MUST fix ALL the issues listed above. Pay special attention to:
         user_prompt = self._build_gen2_user_prompt(payload, retry_guidance)
 
         try:
-            # Call Gemini with GEN2 system prompt
+            # Call Gemini with GEN2 system prompt (with timeout)
             # NOTE: response_mime_type removed - it may cause token limit issues
-            response = await self.client.aio.models.generate_content(
-                model=self.model,
-                contents=user_prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=self.gen2_prompt,
-                    temperature=0.3,  # Precise for prompt generation
-                    max_output_tokens=16384,  # Reduced - some models have lower limits
+            response = await asyncio.wait_for(
+                self.client.aio.models.generate_content(
+                    model=self.model,
+                    contents=user_prompt,
+                    config=types.GenerateContentConfig(
+                        system_instruction=self.gen2_prompt,
+                        temperature=0.3,  # Precise for prompt generation
+                        max_output_tokens=16384,  # Reduced - some models have lower limits
+                    ),
                 ),
+                timeout=GEMINI.GEN2_CALL,
             )
 
-            # Extract JSON from response
-            raw_output = response.text
+            # Extract JSON from response (safety-blocked responses raise ValueError on .text)
+            try:
+                raw_output = response.text
+            except ValueError as e:
+                logger.error(f"[GEN2] Response blocked by safety filters: {e}")
+                return None
 
             # Log response metadata for debugging truncation issues
             finish_reason = None
             if hasattr(response, 'candidates') and response.candidates:
                 candidate = response.candidates[0]
                 finish_reason = getattr(candidate, 'finish_reason', None)
-                logger.info(f"[GEN2] Response finish_reason: {finish_reason}")
-                if finish_reason and finish_reason != 1:  # 1 = STOP (normal completion)
-                    logger.warning(f"[GEN2] Abnormal finish_reason: {finish_reason} (1=STOP, 2=MAX_TOKENS, 3=SAFETY, 4=RECITATION, 5=OTHER)")
+                finish_reason_str = str(finish_reason) if finish_reason is not None else ""
+                logger.info(f"[GEN2] Response finish_reason: {finish_reason_str}")
+                if finish_reason is not None and "STOP" not in finish_reason_str and finish_reason_str != "1":
+                    logger.warning(f"[GEN2] Abnormal finish_reason: {finish_reason_str} (STOP=normal, MAX_TOKENS=truncated, SAFETY=blocked)")
             if hasattr(response, 'usage_metadata'):
                 usage = response.usage_metadata
                 logger.info(f"[GEN2] Tokens - prompt: {getattr(usage, 'prompt_token_count', 'N/A')}, output: {getattr(usage, 'candidates_token_count', 'N/A')}")
 
             # Check for truncation - if MAX_TOKENS, the response is incomplete
-            if finish_reason and (finish_reason == 2 or str(finish_reason) == "FinishReason.MAX_TOKENS"):
+            finish_reason_str = str(finish_reason) if finish_reason is not None else ""
+            if finish_reason is not None and ("MAX_TOKENS" in finish_reason_str or finish_reason_str == "2"):
                 logger.error(f"[GEN2] Response TRUNCATED (MAX_TOKENS) - output will be incomplete!")
                 logger.error(f"[GEN2] Raw output ends with: ...{raw_output[-200:] if raw_output else 'EMPTY'}")
                 # Set truncation flag for retry guidance
@@ -970,6 +993,17 @@ You MUST fix ALL the issues listed above. Pay special attention to:
 
             logger.success(f"[GEN2] Generated prompts for {len(gen2_output.scenes)} scenes")
 
+            # Validate scene count matches input payload
+            expected_count = len(payload.scenes)
+            actual_count = len(gen2_output.scenes)
+            if actual_count != expected_count:
+                logger.error(
+                    f"[GEN2] Scene count MISMATCH: payload has {expected_count} scenes, "
+                    f"GEN2 returned {actual_count}. Likely truncated output."
+                )
+                self._last_gen2_truncated = True
+                return None
+
             # Post-process: Auto-fix last scene reference_type to LOOP_CLOSE
             # This is a deterministic fix since the last scene MUST always be LOOP_CLOSE
             gen2_output = self._fix_last_scene_reference_type(gen2_output)
@@ -986,10 +1020,12 @@ You MUST fix ALL the issues listed above. Pay special attention to:
 
             return gen2_output
 
+        except asyncio.TimeoutError:
+            logger.error(f"[GEN2] Gemini API call timed out after {GEMINI.GEN2_CALL}s")
+            return None
         except Exception as e:
             logger.error(f"[GEN2] Error: {e}")
-            import traceback
-            logger.debug(traceback.format_exc())
+            logger.error(traceback.format_exc())
             return None
 
     def _build_gen2_user_prompt(
@@ -1145,8 +1181,7 @@ CRITICAL REQUIREMENTS:
 
         except Exception as e:
             logger.error(f"[VAL_GEN1_PYTHON] Error: {e}")
-            import traceback
-            logger.debug(traceback.format_exc())
+            logger.error(traceback.format_exc())
             return None
 
     async def validate_gen2(
@@ -1245,8 +1280,7 @@ CRITICAL REQUIREMENTS:
 
         except Exception as e:
             logger.error(f"[VAL_GEN2_PYTHON] Error: {e}")
-            import traceback
-            logger.debug(traceback.format_exc())
+            logger.error(traceback.format_exc())
             return None
 
     # =========================================================================
@@ -1404,8 +1438,9 @@ CRITICAL REQUIREMENTS:
 
         # Check for duplicates
         if len(gen2_scene_numbers) != len(set(gen2_scene_numbers)):
-            duplicates = [n for n in gen2_scene_numbers if gen2_scene_numbers.count(n) > 1]
+            duplicates = sorted(set(n for n in gen2_scene_numbers if gen2_scene_numbers.count(n) > 1))
             logger.error(f"[MERGE] CRITICAL: GEN2 has duplicate scene_numbers: {duplicates}")
+            raise RuntimeError(f"GEN2 output has duplicate scene_numbers: {duplicates}. Cannot merge.")
 
         # Check for missing scenes
         gen1_scene_numbers = {s.scene_number for s in gen1.scenes}
@@ -1581,7 +1616,7 @@ CRITICAL REQUIREMENTS:
                 'narrative_purpose', 'energy_level', 'visual_description',
                 'camera_movement', 'motion_elements', 'broker_script',
                 'visual_concept', 'camera_intent', 'audio_sfx', 'audio_moment',
-                'image_prompt', 'video_prompt', 'reference_type', 'video_tool',
+                'image_prompt', 'video_prompt', 'reference_type', 'visual_tier', 'motion_intensity', 'video_tool',
                 'status', 'inheritance', 'post_production_notes',
                 'first_frame_composition', 'scale_techniques',
                 'visual_punctuation', 'easter_egg_integration',
@@ -1600,7 +1635,7 @@ CRITICAL REQUIREMENTS:
                 # Script & Text
                 voiceover=gen1_scene.voiceover_segment,
                 voiceover_segment=gen1_scene.voiceover_segment,
-                on_screen_text="",
+                on_screen_text=getattr(gen1_scene, 'on_screen_text', ''),
                 narrative_purpose=gen1_scene.narrative_purpose,
                 energy_level=gen1_scene.energy_level,
                 # Visual (summary fields for quick access)
@@ -1618,6 +1653,8 @@ CRITICAL REQUIREMENTS:
                 image_prompt=gen2_scene.image_prompt if gen2_scene else "",
                 video_prompt=gen2_scene.video_prompt if gen2_scene else "",
                 reference_type=gen2_scene.reference_type if gen2_scene else "INDEPENDENT",
+                visual_tier=gen2_scene.visual_tier if gen2_scene else None,
+                motion_intensity=gen2_scene.motion_intensity if gen2_scene else None,
                 video_tool="KLING",
                 # Status
                 status="pending",
@@ -1768,6 +1805,7 @@ CRITICAL REQUIREMENTS:
                 opening_line=gen1.hook.first_words,  # legacy alias
                 visual_hook=gen1.hook.first_frame_visual,  # legacy alias
                 audio_hook=gen1.hook.complete_hook_vo,  # legacy alias
+                scene_1_entry_type=getattr(gen1.hook, 'scene_1_entry_type', 'MACRO_ENTRY'),
             ),
             psychology=Psychology(
                 triggers=[gen1.hook.psychological_trigger],
@@ -1833,6 +1871,8 @@ CRITICAL REQUIREMENTS:
                 visibility=gen1.engagement.easter_egg.visibility if gen1.engagement.easter_egg else "FINDABLE",
                 comment_bait=gen1.engagement.easter_egg.comment_bait if gen1.engagement.easter_egg else "",
                 validation_check=gen1.engagement.easter_egg.validation_check if gen1.engagement.easter_egg else "",
+                format=(gen1.engagement.easter_egg.format if gen1.engagement.easter_egg else "VISUAL") or "VISUAL",
+                audio_hint=(gen1.engagement.easter_egg.audio_hint if gen1.engagement.easter_egg else "") or "",
                 safe_zone_position=self._parse_safe_zone_from_placement(
                     gen1.engagement.easter_egg.placement if gen1.engagement.easter_egg else "",
                     gen1.engagement.easter_egg.validation_check if gen1.engagement.easter_egg else "",
@@ -1847,11 +1887,12 @@ CRITICAL REQUIREMENTS:
                     voice_id=gen1.voiceover.voice_id,
                     stability=gen1.voiceover.stability,
                     similarity_boost=gen1.voiceover.similarity_boost,
-                    style=gen1.voiceover.style if hasattr(gen1.voiceover, 'style') else 0.0,
+                    style=gen1.voiceover.style if hasattr(gen1.voiceover, 'style') else 0.30,
+                    speaker_boost=gen1.voiceover.speaker_boost if hasattr(gen1.voiceover, 'speaker_boost') else True,
                 ),
                 full_script=gen1.voiceover.full_script,
-                character=gen1.voiceover.character if hasattr(gen1.voiceover, 'character') else "broker",
-                model=gen1.voiceover.model if hasattr(gen1.voiceover, 'model') else "eleven_multilingual_v2",
+                character=gen1.voiceover.character if hasattr(gen1.voiceover, 'character') else "sensory_witness",
+                model=gen1.voiceover.model if hasattr(gen1.voiceover, 'model') else "eleven_v3",
                 total_duration_seconds=gen1.metadata.target_duration_seconds,
             ),
             # Audio with all required fields (including full GEN1 audio data)
@@ -1876,7 +1917,7 @@ CRITICAL REQUIREMENTS:
             youtube=ViralMetadata(
                 title=(gen1.youtube.title if gen1.youtube else None) or gen1.youtube_title or gen1.metadata.title or "Glaze City Property",
                 description=(gen1.youtube.description if gen1.youtube else None) or gen1.youtube_description or gen1.metadata.title or "Glaze City",
-                pinned_comment=(gen1.youtube.pinned_comment if gen1.youtube else None) or gen1.youtube_pinned_comment or (gen1.engagement.easter_egg.comment_bait if gen1.engagement.easter_egg else "") or "",
+                pinned_comment=(gen1.youtube.pinned_comment if gen1.youtube and gen1.youtube.pinned_comment is not None else None) if gen1.youtube else gen1.youtube_pinned_comment if gen1.youtube_pinned_comment is not None else (gen1.engagement.easter_egg.comment_bait if gen1.engagement.easter_egg else ""),
                 hashtags=gen1.youtube_hashtags or gen1.engagement.hashtags or [],
                 tags=(gen1.youtube.tags if gen1.youtube else None) or gen1.youtube_tags or [],
             ),
@@ -1907,9 +1948,23 @@ CRITICAL REQUIREMENTS:
                         score=self._convert_viral_score(gen1.viral_assessment.overall_score),
                         reason="Matches Glaze City style"
                     ),
+                    # v8.3.0 qualitative verdicts → AuditScore (verdict string as reason)
+                    mute_test=AuditScore(
+                        score=8, reason=gen1.viral_assessment.mute_test_verdict
+                    ) if gen1.viral_assessment.mute_test_verdict else None,
+                    categorization_clarity=AuditScore(
+                        score=8, reason=gen1.viral_assessment.categorization_verdict
+                    ) if gen1.viral_assessment.categorization_verdict else None,
+                    niche_alignment=AuditScore(
+                        score=8, reason=gen1.viral_assessment.niche_alignment_verdict
+                    ) if gen1.viral_assessment.niche_alignment_verdict else None,
                 ),
-                total_score=int(gen1.viral_assessment.overall_score * 60),
-                max_score=60,
+                total_score=int(gen1.viral_assessment.overall_score * 60) + (
+                    24 if gen1.viral_assessment.mute_test_verdict else 0  # 3×8 for qualitative verdicts
+                ),
+                max_score=60 + (
+                    30 if gen1.viral_assessment.mute_test_verdict else 0  # 3×10
+                ),
                 viral_probability=self._get_viral_probability(gen1.viral_assessment.overall_score),
                 viral_reasoning="; ".join(gen1.viral_assessment.strength_points[:2]) if gen1.viral_assessment.strength_points else "Strong hook combined with engaging visuals",
                 weak_points=gen1.viral_assessment.weak_points or [],
@@ -1926,6 +1981,12 @@ CRITICAL REQUIREMENTS:
                 total_duration_seconds=sum(s.duration_seconds for s in glaze_scenes),
                 generated_at=datetime.now().isoformat(),
             ),
+            # Warning line for AERIAL (N-1) scene
+            warning_line=gen1.warning_line or "",
+            # Replay hooks (v8.0.0+)
+            replay_hooks=[rh.model_dump() for rh in gen1.engagement.replay_hooks] if gen1.engagement.replay_hooks else [],
+            # Metadata variants A/B/C/D (v8.2.0+)
+            metadata_variants=gen1.metadata_variants.model_dump() if gen1.metadata_variants else None,
             project_id=project_id,
             created_at=datetime.now(),
             # RAW PRESERVATION - Повні GEN1/GEN2 без втрат
@@ -2158,7 +2219,7 @@ CRITICAL REQUIREMENTS:
             if not gen1_output:
                 logger.error(f"[GEN1] Generation failed (attempt {attempt})")
                 # Capture parse error for retry guidance so Gemini knows what to fix
-                parse_err = getattr(self, '_last_gen1_parse_error', None)
+                parse_err = self._last_gen1_parse_error
                 if parse_err:
                     last_retry_guidance = [f"JSON PARSE ERROR: {parse_err}", "Ensure ALL required fields are present and valid"]
                     self._last_gen1_parse_error = None
@@ -2227,10 +2288,11 @@ CRITICAL REQUIREMENTS:
                 logger.error(f"[GEN2] Generation failed (attempt {attempt})")
                 # If truncation was detected, add it to retry guidance
                 if self._last_gen2_truncated:
-                    logger.warning("[GEN2] Previous attempt was TRUNCATED - adding to retry guidance")
+                    expected = len(payload.scenes)
+                    logger.warning(f"[GEN2] Previous attempt was TRUNCATED or had scene count mismatch (expected {expected} scenes)")
                     truncation_guidance = [
-                        "CRITICAL: Your previous response was TRUNCATED (cut off mid-JSON)",
-                        "You MUST output complete JSON with ALL scenes (match the scene count from GEN1)",
+                        "CRITICAL: Your previous response was TRUNCATED or had WRONG scene count",
+                        f"You MUST output EXACTLY {expected} scenes (matching GEN1 scene_count)",
                         "Be MORE CONCISE - shorter image_prompt and video_prompt",
                         "Do NOT add extra fields or verbose descriptions"
                     ]
@@ -2322,17 +2384,88 @@ CRITICAL REQUIREMENTS:
         try:
             return json.loads(json_str)
         except json.JSONDecodeError as e:
-            logger.error(f"JSON parse error: {e}")
-            # Show context around the error position
+            logger.warning(f"JSON parse error: {e} — attempting repair")
+            # Try to repair truncated JSON by closing unclosed brackets/braces
+            repaired = self._repair_truncated_json(json_str)
+            if repaired is not None:
+                try:
+                    result = json.loads(repaired)
+                    logger.info(f"JSON repair succeeded (added closing delimiters)")
+                    return result
+                except json.JSONDecodeError:
+                    pass
+            # Repair failed — log diagnostics
+            logger.error(f"JSON parse error (repair failed): {e}")
             error_pos = e.pos if hasattr(e, 'pos') else 0
             start_ctx = max(0, error_pos - 100)
             end_ctx = min(len(json_str), error_pos + 100)
             context = json_str[start_ctx:end_ctx]
             logger.error(f"Error context (chars {start_ctx}-{end_ctx}):\n{context}")
             logger.error(f"Full JSON length: {len(json_str)} chars")
-            # Also log first 500 chars to see structure
             logger.warning(f"JSON start: {json_str[:500]}...")
             return None
+
+    @staticmethod
+    def _repair_truncated_json(json_str: str) -> Optional[str]:
+        """Attempt to repair truncated JSON by closing unclosed brackets/braces.
+
+        Handles Gemini responses that get cut off mid-output due to
+        max_output_tokens or safety filters.
+        """
+        # Strip trailing whitespace and incomplete tokens
+        s = json_str.rstrip()
+        # Remove trailing comma (common at truncation point)
+        if s.endswith(','):
+            s = s[:-1]
+        # Remove truncated string value (unclosed quote)
+        # Count quotes — if odd, truncation happened inside a string
+        if s.count('"') % 2 == 1:
+            # Find last quote and trim everything after it
+            last_quote = s.rfind('"')
+            # Check if it's a key or value by looking for preceding colon
+            before = s[:last_quote].rstrip()
+            if before.endswith(':'):
+                # Truncated at start of value — add placeholder and close
+                s = s[:last_quote + 1] + '...'  + '"'
+            else:
+                # Truncated inside a value — close the string
+                s = s[:last_quote + 1]
+            # Remove trailing comma after our fix
+            s = s.rstrip().rstrip(',')
+
+        # Count unclosed delimiters
+        stack = []
+        in_string = False
+        escape_next = False
+        for ch in s:
+            if escape_next:
+                escape_next = False
+                continue
+            if ch == '\\' and in_string:
+                escape_next = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch in ('{', '['):
+                stack.append(ch)
+            elif ch == '}':
+                if stack and stack[-1] == '{':
+                    stack.pop()
+            elif ch == ']':
+                if stack and stack[-1] == '[':
+                    stack.pop()
+
+        if not stack:
+            return s if s != json_str else None  # Nothing to repair
+
+        # Close unclosed delimiters in reverse order
+        for opener in reversed(stack):
+            s += '}' if opener == '{' else ']'
+
+        return s
 
     def get_prompt_status(self) -> Dict[str, Any]:
         """Get status of loaded prompts."""

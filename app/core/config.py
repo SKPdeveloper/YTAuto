@@ -135,13 +135,13 @@ class Settings(BaseSettings):
     # ========================================================================
 
     ELEVENLABS_MODEL: str = Field(
-        default="eleven_multilingual_v2",
-        description="Модель ElevenLabs (eleven_multilingual_v2, eleven_flash_v2_5, eleven_turbo_v2_5)"
+        default="eleven_v3",
+        description="Модель ElevenLabs (eleven_v3, eleven_multilingual_v2, eleven_flash_v2_5)"
     )
 
     ELEVENLABS_DEFAULT_VOICE_ID: str = Field(
-        default="pNInz6obpgDQGcFmaJgB",
-        description="Voice ID за замовчуванням (Adam)"
+        default="fdph4PvCSJPBv95E9UZF",
+        description="Voice ID за замовчуванням (Sensory Witness)"
     )
 
     ELEVENLABS_OUTPUT_FORMAT: str = Field(
@@ -344,8 +344,8 @@ class Settings(BaseSettings):
 
     # Encoding Settings
     TOPAZ_CODEC: str = Field(
-        default="hevc_nvenc",
-        description="Кодек для вихідного відео (hevc_nvenc/h264_nvenc для NVIDIA, hevc_amf/h264_amf для AMD)"
+        default="hevc_amf",
+        description="Кодек для вихідного відео (hevc_amf/h264_amf для AMD, hevc_nvenc/h264_nvenc для NVIDIA)"
     )
 
     TOPAZ_BITRATE: str = Field(

@@ -81,13 +81,15 @@ Per OUTPUT CONTRACT, every field must have a value. `null` and empty strings are
 
   "voiceover": {
     "full_script": "Complete script with [tags] - REQUIRED",
-    "character": "broker | announcer | guide | narrator - REQUIRED",
-    "voice_id": "Adam - REQUIRED",
+    "character": "sensory_witness - REQUIRED",
+    "voice_id": "fdph4PvCSJPBv95E9UZF - REQUIRED",
     "model": "eleven_v3 - REQUIRED",
     "stability": 0.60,
     "similarity_boost": 0.75,
     "style": 0.30
   },
+
+  "warning_line": "3-8 word catchy warning for AERIAL scene - REQUIRED",
 
   "audio": {
     "sonic_hook": {

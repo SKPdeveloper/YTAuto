@@ -1400,17 +1400,18 @@ class HiggsFieldImageGenerator:
         downloaded: List[GeneratedImage] = []
         max_retries = 3
         retry_delay = 3
-        exclude_urls = exclude_urls or []
+        exclude_set = set(exclude_urls or [])
 
         for attempt in range(1, max_retries + 1):
+            # Scan ALL images on page (high limit) to avoid missing new ones
             all_image_urls = await asyncio.to_thread(
                 self._get_generated_image_urls,
-                count + len(exclude_urls)
+                100
             )
 
-            image_urls = [url for url in all_image_urls if url not in exclude_urls]
+            image_urls = [url for url in all_image_urls if url not in exclude_set]
 
-            logger.debug(f"Found {len(all_image_urls)} total, {len(image_urls)} new (excluding {len(exclude_urls)} old)")
+            logger.debug(f"Found {len(all_image_urls)} total, {len(image_urls)} new (excluding {len(exclude_set)} old)")
 
             if image_urls:
                 logger.debug(f"Found {len(image_urls)} NEW image URLs on attempt {attempt}")
@@ -1419,9 +1420,16 @@ class HiggsFieldImageGenerator:
             if attempt < max_retries:
                 logger.debug(f"No NEW images found (attempt {attempt}/{max_retries}), retrying in {retry_delay}s...")
                 await asyncio.sleep(retry_delay)
+                # Re-snapshot BEFORE refresh to catch any gallery images that appeared
+                pre_refresh_urls = await asyncio.to_thread(self._get_generated_image_urls, 100)
+                exclude_set.update(pre_refresh_urls)
                 await self.browser.refresh()
                 await asyncio.sleep(3)
                 await self.browser.wait_for_page_ready()
+                # After refresh, snapshot again to exclude gallery images that reloaded
+                post_refresh_urls = await asyncio.to_thread(self._get_generated_image_urls, 100)
+                exclude_set.update(post_refresh_urls)
+                logger.debug(f"Post-refresh exclude set: {len(exclude_set)} URLs")
             else:
                 logger.warning("No NEW generated images found in DOM after all retries")
                 return downloaded

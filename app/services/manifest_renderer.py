@@ -218,6 +218,7 @@ class ManifestRenderer:
         hook_path = None
         concat_path = None
         effects_path = None
+        on_screen_path = None
         subtitled_path = None
 
         try:
@@ -241,10 +242,15 @@ class ManifestRenderer:
                 concat_path, manifest.global_effects, project_dir
             )
 
-            # Step 5: Add subtitles (shifted by actual hook duration)
+            # Step 4.5: Add on-screen text overlays (v8.3.0 — mute-friendly headlines)
             hook_dur = manifest.hook.duration if manifest.hook else 0.0
+            on_screen_path = await self._add_on_screen_text(
+                effects_path, manifest.scenes, project_dir, hook_dur
+            )
+
+            # Step 5: Add subtitles (shifted by actual hook duration)
             subtitled_path = await self._add_subtitles(
-                effects_path, manifest.subtitles, project_dir, hook_dur
+                on_screen_path, manifest.subtitles, project_dir, hook_dur
             )
 
             # Step 6: Mix 5-layer audio
@@ -255,7 +261,7 @@ class ManifestRenderer:
             # Step 7: Cleanup intermediate files
             self._cleanup_intermediate_files(
                 project_dir, processed_scenes, hook_path,
-                concat_path, effects_path, subtitled_path
+                concat_path, effects_path, on_screen_path, subtitled_path
             )
 
             logger.success("=" * 60)
@@ -271,7 +277,7 @@ class ManifestRenderer:
             try:
                 self._cleanup_intermediate_files(
                     project_dir, processed_scenes, hook_path,
-                    concat_path, effects_path, subtitled_path,
+                    concat_path, effects_path, on_screen_path, subtitled_path,
                 )
             except Exception as cleanup_err:
                 logger.warning(f"Cleanup after render failure also failed: {cleanup_err}")
@@ -284,7 +290,8 @@ class ManifestRenderer:
         hook_path: Optional[Path],
         concat_path: Optional[Path],
         effects_path: Optional[Path],
-        subtitled_path: Optional[Path],
+        on_screen_path: Optional[Path] = None,
+        subtitled_path: Optional[Path] = None,
     ) -> None:
         """Remove intermediate render files to save disk space."""
         cleaned = 0
@@ -294,9 +301,9 @@ class ManifestRenderer:
                 path.unlink(missing_ok=True)
                 cleaned += 1
 
-        for path in [hook_path, concat_path, effects_path, subtitled_path]:
+        for path in [hook_path, concat_path, effects_path, on_screen_path, subtitled_path]:
             if path and path.exists() and path.name in (
-                "hook.mp4", "concatenated.mp4", "global_effects.mp4", "subtitled.mp4"
+                "hook.mp4", "concatenated.mp4", "global_effects.mp4", "on_screen_text.mp4", "subtitled.mp4"
             ):
                 path.unlink(missing_ok=True)
                 cleaned += 1
@@ -1053,6 +1060,91 @@ class ManifestRenderer:
         output_path = project_dir / "global_effects.mp4"
         await self._apply_effects(input_path, effects, output_path)
         logger.info(f"  Applied {len(effects)} global effects")
+
+        return output_path
+
+    async def _add_on_screen_text(
+        self,
+        input_path: Path,
+        scenes: List[ManifestScene],
+        project_dir: Path,
+        hook_duration: float = 0.0,
+    ) -> Path:
+        """
+        Add on-screen text overlays (v8.3.0 — mute-friendly headlines).
+
+        Reads on_screen_text from project_brief.json and burns large headline
+        text onto each scene using FFmpeg drawtext filter.
+
+        The text is positioned upper-center (above subtitles) for mute viewers.
+        """
+        # Load on_screen_text from project brief
+        brief_path = project_dir / "project_brief.json"
+        scene_texts: Dict[int, str] = {}
+
+        if brief_path.exists():
+            try:
+                with open(brief_path, 'r', encoding='utf-8') as f:
+                    brief = json.load(f)
+                for s in brief.get("scenes", []):
+                    if isinstance(s, dict) and s.get("on_screen_text"):
+                        scene_texts[s.get("scene_number", 0)] = s["on_screen_text"]
+            except Exception as e:
+                logger.warning(f"  Could not load on_screen_text from brief: {e}")
+
+        if not scene_texts:
+            logger.info("  No on_screen_text found in project brief, skipping overlay")
+            return input_path
+
+        # Build drawtext filter chain — one drawtext per scene with enable=between()
+        drawtext_filters = []
+        for scene in scenes:
+            text = scene_texts.get(scene.scene_number, "")
+            if not text or not text.strip():
+                continue
+
+            # Escape special characters for FFmpeg drawtext
+            escaped = (
+                text.replace("\\", "\\\\")
+                .replace("'", "\u2019")  # curly apostrophe avoids FFmpeg quoting issues
+                .replace(":", "\\:")
+                .replace("%", "%%")
+            )
+
+            start_t = scene.timeline_start + hook_duration
+            end_t = scene.timeline_end + hook_duration
+
+            # Montserrat Bold preferred, Arial Bold fallback
+            drawtext_filters.append(
+                f"drawtext=text='{escaped}'"
+                f":fontfile='C\\:/Windows/Fonts/arialbd.ttf'"
+                f":fontsize=72"
+                f":fontcolor=white"
+                f":borderw=4"
+                f":bordercolor=black"
+                f":x=(w-text_w)/2"
+                f":y=h*0.35"
+                f":enable='between(t,{start_t:.2f},{end_t:.2f})'"
+            )
+
+        if not drawtext_filters:
+            return input_path
+
+        output_path = project_dir / "on_screen_text.mp4"
+        vf_string = ",".join(drawtext_filters)
+
+        cmd = [
+            self.ffmpeg_path, "-y",
+            "-i", str(input_path),
+            "-vf", vf_string,
+            "-c:v", self.config.video_codec,
+            *self._get_encoder_params(),
+            "-c:a", "copy",
+            str(output_path)
+        ]
+
+        await self._run_ffmpeg(cmd, cwd=project_dir)
+        logger.info(f"  Added on-screen text to {len(drawtext_filters)} scenes")
 
         return output_path
 

@@ -817,7 +817,7 @@ echo -------------------------------------------
     -hide_banner -nostdin -y ^
     -hwaccel auto ^
     -i "%INPUT%" ^
-    -vf "tvai_fi=model={fps_model}:fps={target_fps}/1:device=0" ^
+    -vf "tvai_fi=model={fps_model}:fps={target_fps}:device=0" ^
     -c:v {codec} ^
     -b:v {bitrate} ^
     -pix_fmt yuv420p ^
@@ -1060,6 +1060,8 @@ async def on_approval_required(approval_type: str, data: dict):
 
     await broadcast_event("approval_required", {
         "type": approval_type,
+        "context": data.get("context", "primary"),
+        "scene_number": data.get("scene_number", 1),
         **data
     })
 

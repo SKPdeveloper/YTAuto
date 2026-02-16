@@ -278,6 +278,9 @@ class ProjectData(BaseModel):
     # Legacy error tracking (kept for compatibility)
     error_message: Optional[str] = Field(None, description="Повідомлення про помилку")
 
+    # Architecture reference mechanism
+    scene_1_entry_type: Optional[str] = Field(default=None, description="MACRO_ENTRY | SCALE_SHOCK — None = legacy flow")
+
     # Settings
     concurrent_limit: int = Field(default=5, description="Макс. паралельних сцен")
 

@@ -341,6 +341,12 @@ def get_generic_luxury() -> Set[str]:
 # Legacy alias for backwards compatibility
 BANNED_FIRST_WORDS: Set[str] = BANNED_FIRST_WORDS_FALLBACK
 
+# Дозволені camera movements
+VALID_CAMERA_MOVEMENTS: Set[str] = {
+    "APPROACH", "RETREAT", "ORBIT", "RISE", "DESCEND",
+    "RUSH", "REVEAL", "TRACK", "PUNCH", "PUSH",
+}
+
 # Заборонені camera movements (VAL_GEN1 рядок 239-244)
 BANNED_CAMERA_MOVEMENTS: Set[str] = {"DRIFT", "FLOAT", "GLIDE"}
 
@@ -559,8 +565,10 @@ class Gen1Validator:
         # Виконуємо всі перевірки
         self._run_all_validations()
 
-        # Визначаємо результат
+        # Визначаємо результат (strict_mode: warnings also block)
         passed = len(self._errors) == 0
+        if self.strict_mode and self._warnings:
+            passed = False
 
         # Будуємо handoff для GEN2
         gen2_handoff = {}
@@ -625,6 +633,9 @@ class Gen1Validator:
 
         # 9. Voiceover
         self._validate_voiceover()
+
+        # 9b. Warning Line (AERIAL scene signature)
+        self._validate_warning_line()
 
         # 10. Audio
         self._validate_audio()
@@ -971,6 +982,44 @@ class Gen1Validator:
         # voice_id
         self._require_non_empty(vo, "voice_id", "voiceover.voice_id")
 
+    def _validate_warning_line(self) -> None:
+        """Validate warning_line — catchy warning for AERIAL (N-1) scene."""
+        warning = self._data.get("warning_line")
+
+        # Must exist and be a non-empty string
+        if not warning or not isinstance(warning, str) or not warning.strip():
+            self._add_error(
+                "warning_line",
+                "Missing or empty warning_line",
+                code="MISSING_WARNING_LINE",
+                suggestion="Add a 3-8 word catchy warning for the AERIAL scene"
+            )
+            return
+
+        warning = warning.strip()
+        # Strip ElevenLabs SSML-like tags before counting words (e.g. [excited], [whispers], [pause])
+        warning_clean = re.sub(r'\[[\w\s]+\]', '', warning).strip()
+        word_count = len(warning_clean.split()) if warning_clean else 0
+
+        if word_count < 2 or word_count > 10:
+            self._add_error(
+                "warning_line",
+                f"warning_line has {word_count} words (expected 2-10)",
+                code="WARNING_LINE_LENGTH",
+                suggestion="Keep warning_line punchy: 3-8 words ideal"
+            )
+
+        # Cross-check: warning_line should appear in voiceover.full_script
+        vo = self._data.get("voiceover")
+        if isinstance(vo, dict):
+            full_script = vo.get("full_script", "")
+            if isinstance(full_script, str) and warning.lower() not in full_script.lower():
+                self._add_warning(
+                    "warning_line",
+                    f"warning_line '{warning}' not found in voiceover.full_script",
+                    suggestion="The warning should appear in the AERIAL scene voiceover"
+                )
+
     def _validate_audio(self) -> None:
         """Валідація audio об'єкту."""
         audio = self._get_field("audio")
@@ -1029,7 +1078,7 @@ class Gen1Validator:
                 self._add_warning(
                     "engagement",
                     "Neither easter_egg nor replay_hooks found — engagement may be weak",
-                    code="MISSING_ENGAGEMENT_HOOKS"
+                    suggestion="Add replay_hooks (v8.0.0+) or easter_egg for viewer engagement"
                 )
         else:
             # GEN1 v6: AUDIO_ONLY easter eggs don't require visual fields
@@ -1074,12 +1123,13 @@ class Gen1Validator:
                 self._require_non_empty(egg, "comment_bait", "engagement.easter_egg.comment_bait")
 
         # hashtags — optional in v6 (may be embedded in youtube.description instead)
+        # v8.2.0: hashtags increased from 3 to 6-8 for algorithm discovery
         hashtags = self._get_nested(engagement, "hashtags", [])
-        if isinstance(hashtags, list) and len(hashtags) > 0 and len(hashtags) != 3:
+        if isinstance(hashtags, list) and len(hashtags) > 0 and (len(hashtags) < 3 or len(hashtags) > 10):
             self._add_warning(
                 "engagement.hashtags",
-                f"Expected 3 items, got {len(hashtags)}",
-                suggestion="Provide exactly 3 hashtags or omit"
+                f"Expected 3-10 items, got {len(hashtags)}",
+                suggestion="Provide 6-8 hashtags for optimal discovery (min 3, max 10)"
             )
 
     def _validate_youtube(self) -> None:
@@ -1125,6 +1175,41 @@ class Gen1Validator:
                     code="DESC_TOO_SHORT"
                 )
 
+            # Description hashtag validation (v8.3.0)
+            if desc:
+                hashtags_in_desc = re.findall(r'#\w+', desc.lower())
+                if len(hashtags_in_desc) < 6:
+                    self._add_warning(
+                        "youtube.description",
+                        f"Only {len(hashtags_in_desc)} hashtags — minimum 6 recommended",
+                        suggestion="Add more discovery hashtags"
+                    )
+                if '#glazecity' in hashtags_in_desc:
+                    self._add_error(
+                        "youtube.description",
+                        "Contains #glazecity — banned brand hashtag (0 search volume for <10k sub channel)",
+                        code="BANNED_HASHTAG_GLAZECITY",
+                        suggestion="Replace with #shorts or #dreamcore"
+                    )
+
+            # Validate description_variants for same hashtag rules
+            desc_variants = self._data.get("youtube", {}).get("description_variants") if isinstance(self._data.get("youtube"), dict) else None
+            if not desc_variants:
+                desc_variants = self._data.get("metadata_variants", {})
+                if isinstance(desc_variants, dict):
+                    desc_variants = [v.get("description", "") for v in desc_variants.values() if isinstance(v, dict) and v.get("description")]
+            if isinstance(desc_variants, list):
+                for vi, variant_desc in enumerate(desc_variants):
+                    if isinstance(variant_desc, str) and variant_desc:
+                        variant_hashtags = re.findall(r'#\w+', variant_desc.lower())
+                        if '#glazecity' in variant_hashtags:
+                            self._add_error(
+                                f"description_variant[{vi}]",
+                                "Contains #glazecity — banned brand hashtag",
+                                code="BANNED_HASHTAG_GLAZECITY",
+                                suggestion="Replace with #shorts or #dreamcore"
+                            )
+
             # pinned_comment
             # pinned_comment — optional in v6 (can be null)
             pinned = self._get_nested(youtube, "pinned_comment")
@@ -1135,14 +1220,58 @@ class Gen1Validator:
                     suggestion="Provide a string value or null"
                 )
 
-            # tags (at least 3)
+            # Pinned comment ↔ easter egg consistency (v8.3.0)
+            if pinned and isinstance(pinned, str):
+                engagement = self._data.get("engagement", {})
+                egg = engagement.get("easter_egg") if isinstance(engagement, dict) else None
+
+                has_real_egg = (
+                    egg and isinstance(egg, dict)
+                    and egg.get("object") and egg.get("object") != "none"
+                    and egg.get("scene_number", 0) > 0
+                )
+
+                # Check if pinned references an object ("spotted the X", "find the X", etc.)
+                reference_patterns = ["spot", "find", "hidden", "spotted", "hiding", "secret"]
+                looks_like_egg_hunt = any(p in pinned.lower() for p in reference_patterns)
+
+                if looks_like_egg_hunt and not has_real_egg:
+                    self._add_error(
+                        "youtube.pinned_comment",
+                        "References easter egg hunt but no real easter egg exists (object='none' or scene_number=0)",
+                        code="FAKE_EASTER_EGG_REFERENCE",
+                        suggestion="Use generic CTA instead, or add a real easter egg to engagement.easter_egg"
+                    )
+
+            # tags (5-8 per-video, expanded from 3 in v8.3.0)
             tags = self._get_nested(youtube, "tags", [])
             if not isinstance(tags, list) or len(tags) < 3:
                 self._add_error(
                     "youtube.tags",
-                    "Must have at least 3 items",
+                    "Must have at least 3 items (5-8 recommended)",
                     code="INSUFFICIENT_TAGS"
                 )
+            elif len(tags) < 5:
+                self._add_warning(
+                    "youtube.tags",
+                    f"Only {len(tags)} tags — 5-8 recommended for better discovery",
+                    suggestion="Add more specific tags"
+                )
+
+            # Banned tags check (v8.3.0)
+            _BANNED_TAGS = {
+                "glaze city", "ai art", "blender 3d", "midjourney", "kling",
+                "yumestate", "edible architecture", "weirdcore", "visual asmr",
+                "food art", "satisfying", "shorts",
+            }
+            if isinstance(tags, list):
+                for tag in tags:
+                    if isinstance(tag, str) and tag.lower().strip() in _BANNED_TAGS:
+                        self._add_warning(
+                            "youtube.tags",
+                            f"Tag '{tag}' is banned or a channel default (merged at upload)",
+                            suggestion="Replace with a video-specific search term"
+                        )
 
         # ===== FLAT YOUTUBE FIELDS (backwards compatibility — now OPTIONAL) =====
         # GEN1 v6 only requires nested youtube object; flat fields are optional fallbacks
@@ -1166,12 +1295,13 @@ class Gen1Validator:
                 )
 
         # Validate flat fields only if they are present
+        # v8.2.0: hashtags increased from 3 to 6-8 for algorithm discovery
         yt_hashtags = self._data.get("youtube_hashtags", [])
-        if yt_hashtags and isinstance(yt_hashtags, list) and len(yt_hashtags) != 3:
+        if yt_hashtags and isinstance(yt_hashtags, list) and (len(yt_hashtags) < 3 or len(yt_hashtags) > 10):
             self._add_warning(
                 "youtube_hashtags",
-                f"Expected 3 items, got {len(yt_hashtags)}",
-                suggestion="Provide exactly 3 hashtags"
+                f"Expected 3-10 items, got {len(yt_hashtags)}",
+                suggestion="Provide 6-8 hashtags for optimal discovery (min 3, max 10)"
             )
 
         yt_tags = self._data.get("youtube_tags", [])
@@ -1233,7 +1363,7 @@ class Gen1Validator:
         elif has_scores:
             # GEN1 v5 format: validate numeric scores
             overall = self._get_nested(viral, "overall_score")
-            if overall < MIN_VIRAL_SCORE:
+            if isinstance(overall, (int, float)) and overall < MIN_VIRAL_SCORE:
                 self._add_error(
                     "viral_assessment.overall_score",
                     f"Must be >= {MIN_VIRAL_SCORE}, got {overall}. AUTOMATIC FAIL.",
@@ -1266,6 +1396,16 @@ class Gen1Validator:
                 "Must contain either verdict strings (v6) or numeric scores (v5)",
                 code="MISSING_VIRAL_DATA"
             )
+
+        # v8.3.0 verdict fields (optional — validate type if present)
+        for v83_field in ("mute_test_verdict", "categorization_verdict", "niche_alignment_verdict"):
+            v83_val = self._get_nested(viral, v83_field)
+            if v83_val is not None and not isinstance(v83_val, str):
+                self._add_warning(
+                    f"viral_assessment.{v83_field}",
+                    "Should be a string",
+                    suggestion="Provide a verdict string"
+                )
 
         # strength_points (at least 1) — common to both formats
         strengths = self._get_nested(viral, "strength_points", [])
@@ -1303,6 +1443,31 @@ class Gen1Validator:
 
         total_scenes = len(scenes)
 
+        # Cross-validate metadata.scene_count vs actual scenes
+        metadata = self._data.get("metadata")
+        if isinstance(metadata, dict):
+            declared_count = metadata.get("scene_count")
+            if declared_count is not None and declared_count != total_scenes:
+                self._add_warning(
+                    "metadata.scene_count",
+                    f"metadata.scene_count={declared_count} but actual scenes={total_scenes}",
+                    suggestion="Ensure metadata.scene_count matches the number of scenes in the array"
+                )
+
+        # Check for duplicate scene_numbers upfront
+        seen_scene_nums: set = set()
+        for i, scene in enumerate(scenes):
+            sn = scene.get("scene_number")
+            if sn is not None:
+                if sn in seen_scene_nums:
+                    self._add_error(
+                        f"scenes[{i}].scene_number",
+                        f"Duplicate scene_number {sn}",
+                        code="DUPLICATE_SCENE_NUMBER",
+                        suggestion="Each scene must have a unique scene_number"
+                    )
+                seen_scene_nums.add(sn)
+
         # Зберігаємо Scene 1 movement для перевірки loop
         scene1_movement: str = ""
         low_energy_count: int = 0
@@ -1311,7 +1476,7 @@ class Gen1Validator:
             scene_num = scene.get("scene_number", i + 1)
             prefix = f"scenes[{i}]"
 
-            # scene_number validation
+            # scene_number validation — must be sequential
             if scene_num != i + 1:
                 self._add_warning(
                     f"{prefix}.scene_number",
@@ -1389,6 +1554,14 @@ class Gen1Validator:
                                 suggestion="Use PUSH, TRACK, ORBIT, APPROACH, RISE instead"
                             )
 
+                    # Validate movement against valid list
+                    if movement_upper not in VALID_CAMERA_MOVEMENTS:
+                        self._add_warning(
+                            f"{prefix}.camera_intent.movement",
+                            f"Non-standard movement '{movement_upper}'",
+                            suggestion=f"Standard: {', '.join(sorted(VALID_CAMERA_MOVEMENTS))}"
+                        )
+
                 # Зберігаємо Scene 1 movement
                 if scene_num == 1:
                     scene1_movement = movement
@@ -1407,7 +1580,7 @@ class Gen1Validator:
                         self._add_warning(
                             f"{prefix}.voiceover_segment",
                             "No VO text for early scene (1-4) — may reduce retention",
-                            code="MISSING_VO_EARLY_SCENE"
+                            suggestion="Add voiceover to early scenes for better viewer retention"
                         )
                 else:
                     # Check for AI markers
@@ -1422,19 +1595,49 @@ class Gen1Validator:
                             suggestion="Remove AI-sounding words"
                         )
 
-            # voiceover_segment - check for AI markers
-            vo_segment = self._get_nested(scene, "voiceover_segment", "")
-            if vo_segment:
-                vo_lower = vo_segment.lower()
-                ai_markers = get_ai_markers()
-                found_ai = [m for m in ai_markers if m in vo_lower]
-                if found_ai:
-                    self._add_error(
-                        f"{prefix}.voiceover_segment",
-                        f"Contains AI markers: {', '.join(found_ai[:3])}",
-                        code="AI_MARKERS_IN_SCENE",
-                        suggestion="Remove AI-sounding words"
+            # voiceover_segment - check for AI markers (skip scenes 1-4, already checked above)
+            if scene_num > 4:
+                vo_segment = self._get_nested(scene, "voiceover_segment", "")
+                if vo_segment:
+                    vo_lower = vo_segment.lower()
+                    ai_markers = get_ai_markers()
+                    found_ai = [m for m in ai_markers if m in vo_lower]
+                    if found_ai:
+                        self._add_error(
+                            f"{prefix}.voiceover_segment",
+                            f"Contains AI markers: {', '.join(found_ai[:3])}",
+                            code="AI_MARKERS_IN_SCENE",
+                            suggestion="Remove AI-sounding words"
+                        )
+
+            # ===== ON-SCREEN TEXT VALIDATION (v8.3.0) =====
+            on_screen = self._get_nested(scene, "on_screen_text", "")
+            if scene_num == total_scenes:
+                # LOOP_CLOSE — empty is acceptable (warning only)
+                pass
+            elif not on_screen or not on_screen.strip():
+                self._add_error(
+                    f"{prefix}.on_screen_text",
+                    "REQUIRED — mute viewers need headline text",
+                    code="MISSING_ON_SCREEN_TEXT"
+                )
+            else:
+                words = on_screen.strip().split()
+                if len(words) > 8:
+                    self._add_warning(
+                        f"{prefix}.on_screen_text",
+                        f"Too long ({len(words)} words) — max 6 recommended",
+                        suggestion="Shorten to 3-6 word headline"
                     )
+                # Scene 1: must contain food name
+                if scene_num == 1:
+                    food = self._get_food_name()
+                    if food and food.lower() not in on_screen.lower():
+                        self._add_warning(
+                            f"{prefix}.on_screen_text",
+                            f"Scene 1 should contain food name '{food}' for mute recognition",
+                            suggestion=f"Include '{food}' in on_screen_text"
+                        )
 
             # ===== SCENE 1 SPECIFIC RULES =====
             if scene_num == 1:
@@ -1479,6 +1682,17 @@ class Gen1Validator:
                         suggestion="Consider using AERIAL/AERIAL_WOW/AERIAL_REVEAL for penultimate scene"
                     )
 
+                # Cross-validate: warning_line should appear in Scene N-1 voiceover_segment
+                warning = self._data.get("warning_line")
+                if warning and isinstance(warning, str):
+                    vo_segment = self._get_nested(scene, "voiceover_segment", "")
+                    if isinstance(vo_segment, str) and warning.strip().lower() not in vo_segment.lower():
+                        self._add_warning(
+                            f"{prefix}.voiceover_segment",
+                            f"warning_line '{warning.strip()}' not found in Scene {scene_num} voiceover_segment",
+                            suggestion="AERIAL scene should deliver the warning_line"
+                        )
+
         # Energy pattern check
         if low_energy_count > 1:
             self._add_warning(
@@ -1490,6 +1704,15 @@ class Gen1Validator:
     # ========================================================================
     # HELPER METHODS — Утиліти
     # ========================================================================
+
+    def _get_food_name(self) -> Optional[str]:
+        """Extract primary food name from food_identity.primary_food."""
+        food_identity = self._data.get("food_identity")
+        if isinstance(food_identity, dict):
+            primary = food_identity.get("primary_food", "")
+            if isinstance(primary, str) and primary.strip():
+                return primary.strip()
+        return None
 
     def _get_field(self, field_name: str) -> Optional[Any]:
         """

@@ -104,6 +104,17 @@ class VideoTimeouts:
 
 
 # ============================================================================
+# GEMINI API TIMEOUTS
+# ============================================================================
+
+@dataclass(frozen=True)
+class GeminiTimeouts:
+    """Gemini API call timeouts (seconds)"""
+    GEN1_CALL: int = 120             # GEN1 creative generation (complex prompt)
+    GEN2_CALL: int = 180             # GEN2 visual generation (larger output)
+
+
+# ============================================================================
 # COOLDOWNS
 # ============================================================================
 
@@ -164,6 +175,7 @@ class RetryConfig:
 BROWSER = BrowserTimeouts()
 IMAGE = ImageTimeouts()
 VIDEO = VideoTimeouts()
+GEMINI = GeminiTimeouts()
 COOLDOWN = CooldownTimes()
 USER = UserTimeouts()
 RETRY = RetryConfig()
@@ -181,6 +193,7 @@ __all__ = [
     "BrowserTimeouts",
     "ImageTimeouts",
     "VideoTimeouts",
+    "GeminiTimeouts",
     "CooldownTimes",
     "UserTimeouts",
     "RetryConfig",
@@ -189,6 +202,7 @@ __all__ = [
     "BROWSER",
     "IMAGE",
     "VIDEO",
+    "GEMINI",
     "COOLDOWN",
     "USER",
     "RETRY",

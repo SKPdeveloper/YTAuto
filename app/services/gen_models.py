@@ -10,6 +10,9 @@ The delivery module (prompt_router.py) handles the data flow between stages.
 VALIDATION: All required fields are validated per GEN1/GEN2 contracts.
 """
 
+import re
+import warnings
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing import List, Optional, Dict, Any, Tuple, Union
 from enum import Enum
@@ -30,6 +33,10 @@ def _coerce_to_str_list(v: Any) -> List[str]:
 # ============================================================================
 # REQUIRED FIELDS CONTRACTS
 # ============================================================================
+
+# Scene count bounds (dynamic 6-10, shared with gen1_validator / gen2_validator)
+MIN_SCENES: int = 6
+MAX_SCENES: int = 10
 
 # Обов'язкові поля GEN1 output
 REQUIRED_GEN1_FIELDS = [
@@ -199,19 +206,25 @@ class ContentCategory(str, Enum):
 
 
 class HookType(str, Enum):
-    """Hook types for scroll-stopping."""
+    """Hook types for scroll-stopping (synced with GEN1.txt v8.0.0 HOOK MATRIX)."""
     THE_IMPOSSIBLE = "THE_IMPOSSIBLE"
     THE_ABSURD_LOGIC = "THE_ABSURD_LOGIC"
     THE_SCALE_SHOCK = "THE_SCALE_SHOCK"
     THE_SENSORY_ATTACK = "THE_SENSORY_ATTACK"
+    THE_WHISPER = "THE_WHISPER"
+    THE_SOUND_FIRST = "THE_SOUND_FIRST"
+    THE_TEXTURE_ZOOM = "THE_TEXTURE_ZOOM"
 
 
 class PsychologicalTrigger(str, Enum):
-    """Psychological triggers for hooks."""
+    """Psychological triggers for hooks (synced with GEN1.txt v8.0.0)."""
     DISBELIEF = "DISBELIEF"
     PATTERN_BREAK = "PATTERN_BREAK"
     AWE = "AWE"
     SENSORY = "SENSORY"
+    CONTRAST_HOOK = "CONTRAST_HOOK"
+    AUDIO_PRIME = "AUDIO_PRIME"
+    CURIOSITY_GAP = "CURIOSITY_GAP"
 
 
 class ArchitecturalStyle(str, Enum):
@@ -287,12 +300,15 @@ class EnergyLevel(str, Enum):
 
 
 class SonicHookType(str, Enum):
-    """Sonic hook types."""
+    """Sonic hook types (synced with GEN1.txt v8.0.0 AUDIO SYSTEM)."""
     THE_BOOM = "THE_BOOM"
     THE_SIZZLE = "THE_SIZZLE"
     THE_WHOOSH = "THE_WHOOSH"
     THE_CHIME = "THE_CHIME"
     THE_DROP = "THE_DROP"
+    THE_CRUNCH = "THE_CRUNCH"
+    THE_GLITCH = "THE_GLITCH"
+    THE_SILENCE = "THE_SILENCE"
 
 
 # ============================================================================
@@ -301,6 +317,8 @@ class SonicHookType(str, Enum):
 
 class Gen1Concept(BaseModel):
     """Concept metadata for the video."""
+    model_config = ConfigDict(extra='allow')
+
     category: str = Field(..., description="LUXURY_LISTINGS | VEHICLES | TRANSIT | etc.")
     subject: str = Field(..., description="Main subject of the video")
     food_material: str = Field(..., description="Primary food material")
@@ -310,11 +328,15 @@ class Gen1Concept(BaseModel):
 
 class Gen1PublishConfig(BaseModel):
     """Publish configuration for multi-channel support."""
+    model_config = ConfigDict(extra='allow')
+
     target_channel: str = Field(default="glaze_city", description="Target YouTube channel ID")
 
 
 class Gen1Metadata(BaseModel):
     """Project metadata from GEN1."""
+    model_config = ConfigDict(extra='allow')
+
     version: str = Field(default="3.0", description="Schema version")
     status: str = Field(default="PRODUCTION_READY", description="Output status")
     title: str = Field(..., description="Short descriptive title")
@@ -325,16 +347,18 @@ class Gen1Metadata(BaseModel):
     @field_validator('scene_count')
     @classmethod
     def validate_scene_count(cls, v: int) -> int:
-        """Enforce 6-10 scenes per GEN1/GEN2 contract."""
-        if v < 6:
-            return 6
-        if v > 10:
-            return 10
+        """Enforce MIN_SCENES-MAX_SCENES per GEN1/GEN2 contract."""
+        if v < MIN_SCENES:
+            return MIN_SCENES
+        if v > MAX_SCENES:
+            return MAX_SCENES
         return v
 
 
 class Gen1Property(BaseModel):
     """Property/subject information."""
+    model_config = ConfigDict(extra='allow')
+
     name: str = Field(..., description="Creative name for the subject")
     location: str = Field(..., description="Location in Glaze City")
     price: Optional[str] = Field(default=None, description="Price for listings or null")
@@ -351,16 +375,14 @@ class Gen1Hook(BaseModel):
     first_words: str = Field(..., description="Opening VO with emotion tag")
     complete_hook_vo: str = Field(..., description="Full hook voiceover segment")
     scroll_stop_element: str = Field(..., description="The impossible thing that stops scroll")
+    scene_1_entry_type: str = Field(default="MACRO_ENTRY", description="MACRO_ENTRY | SCALE_SHOCK")
+    body_trigger: Optional[str] = Field(default=None, description="SKIN | MOUTH | NOSE | EARS | STOMACH")
 
     @field_validator('type')
     @classmethod
     def validate_hook_type(cls, v: str) -> str:
-        """Validate hook type is one of allowed values."""
-        v_upper = v.upper().strip()
-        if v_upper not in VALID_HOOK_TYPES:
-            # Default to THE_IMPOSSIBLE if invalid
-            return "THE_IMPOSSIBLE"
-        return v_upper
+        """Normalize hook type — deterministic validator catches invalid values."""
+        return v.upper().strip()
 
     @field_validator('psychological_trigger')
     @classmethod
@@ -369,11 +391,14 @@ class Gen1Hook(BaseModel):
         return v.upper().strip()
 
 
+_DEFAULT_STORIES: int = 10
+
+
 class Gen1ArchitecturalIdentity(BaseModel):
     """Architectural identity for visual consistency - ALL FIELDS REQUIRED."""
     style_code: str = Field(..., description="MODERN_MIN | MID_CENTURY | BRUTALIST | etc. - REQUIRED")
     style_description: str = Field(..., description="2-3 sentence description - REQUIRED")
-    stories: int = Field(default=10, description="Number of stories - REQUIRED")
+    stories: int = Field(default=_DEFAULT_STORIES, description="Number of stories - REQUIRED")
     distinctive_features: List[str] = Field(default_factory=list, description="Key features")
     silhouette_description: str = Field(default="", description="One sentence describing shape")
     interior_style: str = Field(default="", description="How interiors should feel")
@@ -390,13 +415,10 @@ class Gen1ArchitecturalIdentity(BaseModel):
         if isinstance(v, int):
             return v
         if isinstance(v, str):
-            # Try to extract digits
-            import re
             digits = re.findall(r'\d+', v)
             if digits:
                 return int(digits[0])
-            return 10  # default fallback
-        return 10
+        return _DEFAULT_STORIES
 
 
 class Gen1FoodDNA(BaseModel):
@@ -426,6 +448,8 @@ class Gen1FoodIdentity(BaseModel):
 
 class Gen1LightingMaster(BaseModel):
     """Lighting configuration for consistency."""
+    model_config = ConfigDict(extra='allow')
+
     preset: str = Field(..., description="MORNING_GOLDEN | SUNSET_DRAMATIC | etc.")
     mood_reason: str = Field(..., description="Why this lighting fits")
     prompt_snippet: str = Field(..., description="Full lighting description for prompts")
@@ -433,6 +457,8 @@ class Gen1LightingMaster(BaseModel):
 
 class Gen1ForegroundElement(BaseModel):
     """Foreground element for depth."""
+    model_config = ConfigDict(extra='allow')
+
     type: str = Field(..., description="Type of foreground element")
     prompt_snippet: str = Field(..., description="Prompt snippet for foreground")
 
@@ -491,12 +517,8 @@ class Gen1CameraIntent(BaseModel):
     @field_validator('movement')
     @classmethod
     def validate_movement(cls, v: str) -> str:
-        """Validate camera movement is one of allowed values."""
-        v_upper = v.upper().strip()
-        if v_upper not in VALID_CAMERA_MOVEMENTS:
-            # Default to APPROACH if invalid
-            return "APPROACH"
-        return v_upper
+        """Normalize camera movement — deterministic validator catches invalid values."""
+        return v.upper().strip()
 
 
 class Gen2VisualParams(BaseModel):
@@ -534,6 +556,7 @@ class Gen1SceneConcept(BaseModel):
     audio_moment: str = Field(default="", description="Key audio event - can be empty")
     gen2_visual_params: Optional[Gen2VisualParams] = Field(default=None, description="Visual params for GEN2")
     scene_tricks: Optional[List[SceneTrick]] = Field(default=None, description="Scene tricks from dynamic engine")
+    on_screen_text: str = Field(default="", description="Mute-friendly headline text (3-6 words)")
 
     @model_validator(mode='before')
     @classmethod
@@ -551,29 +574,20 @@ class Gen1SceneConcept(BaseModel):
     @field_validator('narrative_purpose')
     @classmethod
     def validate_narrative_purpose(cls, v: str) -> str:
-        """Validate narrative purpose is one of allowed values."""
-        v_upper = v.upper().strip()
-        if v_upper not in VALID_NARRATIVE_PURPOSES:
-            return "ESTABLISHING"
-        return v_upper
+        """Normalize narrative purpose — deterministic validator catches invalid values."""
+        return v.upper().strip()
 
     @field_validator('reference_hint')
     @classmethod
     def validate_reference_hint(cls, v: str) -> str:
-        """Validate reference hint is one of allowed values."""
-        v_upper = v.upper().strip()
-        if v_upper not in VALID_REFERENCE_HINTS:
-            return "INDEPENDENT"
-        return v_upper
+        """Normalize reference hint — deterministic validator catches invalid values."""
+        return v.upper().strip()
 
     @field_validator('energy_level')
     @classmethod
     def validate_energy_level(cls, v: str) -> str:
-        """Validate energy level is one of allowed values."""
-        v_upper = v.upper().strip()
-        if v_upper not in VALID_ENERGY_LEVELS:
-            return "HIGH"
-        return v_upper
+        """Normalize energy level — deterministic validator catches invalid values."""
+        return v.upper().strip()
 
     @model_validator(mode='after')
     def validate_scene_fields(self) -> 'Gen1SceneConcept':
@@ -613,12 +627,13 @@ class Gen1SceneConcept(BaseModel):
 class Gen1VoiceoverConfig(BaseModel):
     """Voiceover configuration from GEN1."""
     full_script: str = Field(..., description="Full voiceover script with markers")
-    character: str = Field(default="Smug broker", description="Voice character")
-    voice_id: str = Field(default="Adam", description="ElevenLabs voice ID")
+    character: str = Field(default="sensory_witness", description="Voice character")
+    voice_id: str = Field(default="fdph4PvCSJPBv95E9UZF", description="ElevenLabs voice ID")
     model: str = Field(default="eleven_v3", description="ElevenLabs model")
     stability: float = Field(default=0.60, ge=0.0, le=1.0)
     similarity_boost: float = Field(default=0.75, ge=0.0, le=1.0)
     style: float = Field(default=0.30, ge=0.0, le=1.0)
+    speaker_boost: bool = Field(default=True, description="ElevenLabs speaker boost for voice clarity")
 
 
 class Gen1SonicHook(BaseModel):
@@ -752,6 +767,10 @@ class Gen1ViralAssessment(BaseModel):
     retention_verdict: Optional[str] = Field(default=None, description="GEN1 v6 retention verdict")
     share_verdict: Optional[str] = Field(default=None, description="GEN1 v6 share verdict")
     improvement_if_regenerated: Optional[str] = Field(default=None, description="GEN1 v6 improvement note")
+    # v8.3.0 verdicts
+    mute_test_verdict: Optional[str] = Field(default=None, description="Can the video be understood without sound?")
+    categorization_verdict: Optional[str] = Field(default=None, description="Can YouTube NLP classify this into a niche?")
+    niche_alignment_verdict: Optional[str] = Field(default=None, description="Does this fit existing large niches?")
 
 
 class Gen1ReplayHook(BaseModel):
@@ -806,6 +825,7 @@ class Gen1Output(BaseModel):
     foreground_element: Gen1ForegroundElement = Field(..., description="Foreground element")
     scenes: List[Gen1SceneConcept] = Field(default_factory=list, description="Scene concepts")
     voiceover: Gen1VoiceoverConfig = Field(..., description="Voiceover config")
+    warning_line: str = Field(default="", description="Memorable warning for AERIAL (N-1) scene, 3-8 words")
     audio: Gen1AudioConfig = Field(..., description="Audio config")
     engagement: Gen1Engagement = Field(..., description="Engagement elements")
 
@@ -887,6 +907,8 @@ class Gen1Output(BaseModel):
             errors.append("Missing hook.psychological_trigger")
         if not self.hook.first_words:
             errors.append("Missing hook.first_words")
+        if self.hook.scene_1_entry_type not in ("MACRO_ENTRY", "SCALE_SHOCK"):
+            errors.append(f"Invalid hook.scene_1_entry_type: '{self.hook.scene_1_entry_type}' — expected MACRO_ENTRY or SCALE_SHOCK")
 
         # ===== ARCHITECTURAL IDENTITY VALIDATION =====
         if not self.architectural_identity.style_code:
@@ -1127,6 +1149,11 @@ class Gen2SceneOutput(BaseModel):
             for key in ('visual_punctuation', 'image_prompt', 'video_prompt', 'reference_type'):
                 if key in data and data[key] is None:
                     data[key] = ""
+                    if key in ('image_prompt', 'video_prompt'):
+                        warnings.warn(
+                            f"GEN2 scene has {key}=None (Gemini generation gap) — coerced to empty string",
+                            stacklevel=2,
+                        )
             # Coerce motion_elements: None→[], string→list
             me = data.get('motion_elements')
             if me is None:
@@ -1275,16 +1302,16 @@ class Gen2VisualSummary(BaseModel):
                 data['loop_verification'] = {
                     'scene1_camera_movement': '',
                     'sceneN_camera_movement': '',
-                    'movements_are_different': True,
+                    'movements_are_different': False,
                     'sceneN_after_reverse': '',
                     'scene1_foreground': '',
                     'sceneN_foreground': '',
-                    'foreground_match': True,
+                    'foreground_match': False,
                     'scene1_lighting': '',
                     'sceneN_lighting': '',
-                    'lighting_match': True,
-                    'same_reference_image': True,
-                    'loop_ready': True
+                    'lighting_match': False,
+                    'same_reference_image': False,
+                    'loop_ready': False
                 }
         return data
 
@@ -2350,6 +2377,9 @@ class Gen2BatchInput(BaseModel):
 # ============================================================================
 
 __all__ = [
+    # Scene count bounds
+    "MIN_SCENES",
+    "MAX_SCENES",
     # Contract Constants
     "REQUIRED_GEN1_FIELDS",
     "REQUIRED_SCENE_FIELDS",

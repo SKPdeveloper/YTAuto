@@ -99,6 +99,7 @@ BANNED_CAMERA_MOVEMENTS: Set[str] = {
 
 # Patterns where drifting/floating is OK (object motion, not camera)
 ALLOWED_DRIFTING_CONTEXTS: Set[str] = {
+    # "subject drifting/floating" patterns
     "clouds drifting",
     "cloud drifting",
     "smoke drifting",
@@ -121,6 +122,29 @@ ALLOWED_DRIFTING_CONTEXTS: Set[str] = {
     "pollen floating",
     "embers floating",
     "snowflakes floating",
+    # reversed word order: "drifting/floating subject"
+    "drifting clouds",
+    "drifting cloud",
+    "drifting smoke",
+    "drifting mist",
+    "drifting particles",
+    "drifting leaves",
+    "drifting petals",
+    "drifting plankton",
+    "drifting dust",
+    "drifting snow",
+    "drifting fog",
+    "floating clouds",
+    "floating particles",
+    "floating debris",
+    "floating dust",
+    "floating motes",
+    "floating plankton",
+    "floating bubbles",
+    "floating jellyfish",
+    "floating pollen",
+    "floating embers",
+    "floating snowflakes",
 }
 
 # Allowed camera movements (gerunds) (VAL_GEN2 рядки 324-326)
@@ -330,6 +354,7 @@ class Gen2Validator:
         self._scene_checks: List[SceneCheckResult] = []
         self._data: Dict[str, Any] = {}
         self._gen1_data: Optional[Dict[str, Any]] = None
+        self._total_scenes: int = 0
 
         # Для loop verification
         self._scene1_movement: str = ""
@@ -489,13 +514,55 @@ class Gen2Validator:
                 code="INVALID_TOTAL_SCENES"
             )
 
-        # gigantism_protocol
-        if vs.get("gigantism_protocol") != "APPLIED":
+        # Cross-validate total_scenes vs actual scenes array length
+        actual_scenes = self._data.get("scenes", [])
+        actual_count = len(actual_scenes) if isinstance(actual_scenes, list) else 0
+        if total is not None and actual_count > 0 and total != actual_count:
             self._add_error(
-                "visual_summary.gigantism_protocol",
-                f"Must be 'APPLIED', got '{vs.get('gigantism_protocol')}'",
-                code="GIGANTISM_NOT_APPLIED"
+                "visual_summary.total_scenes",
+                f"total_scenes={total} but scenes array has {actual_count} items",
+                code="TOTAL_SCENES_MISMATCH"
             )
+
+        # Cross-validate against GEN1 delivery scene count (M5)
+        if self._gen1_data:
+            gen1_scenes = self._gen1_data.get("scenes", [])
+            gen1_count = len(gen1_scenes) if isinstance(gen1_scenes, list) else 0
+            if gen1_count > 0 and actual_count > 0 and gen1_count != actual_count:
+                self._add_warning(
+                    "visual_summary.total_scenes",
+                    f"GEN2 has {actual_count} scenes but GEN1 delivered {gen1_count}",
+                    suggestion="GEN2 scene count should match GEN1 delivery"
+                )
+
+        # gigantism_protocol — adaptive: depends on global_settings.gigantism_applied
+        gs = self._data.get("global_settings", {})
+        gigantism_applied = gs.get("gigantism_applied") if gs else None
+        gp = vs.get("gigantism_protocol")
+        if gigantism_applied is True:
+            # Architecture mode: protocol must be APPLIED
+            if gp != "APPLIED":
+                self._add_error(
+                    "visual_summary.gigantism_protocol",
+                    f"gigantism_applied=true but protocol is '{gp}' (expected 'APPLIED')",
+                    code="GIGANTISM_NOT_APPLIED"
+                )
+        elif gigantism_applied is False:
+            # Appetite/macro mode: protocol should be SKIPPED or N/A
+            if gp == "APPLIED":
+                self._add_warning(
+                    "visual_summary.gigantism_protocol",
+                    "gigantism_applied=false but protocol is 'APPLIED' — consider 'SKIPPED'",
+                    suggestion="Set gigantism_protocol to 'SKIPPED' for appetite/macro subjects"
+                )
+        else:
+            # gigantism_applied missing — accept APPLIED as default
+            if gp not in ("APPLIED", "SKIPPED", None):
+                self._add_warning(
+                    "visual_summary.gigantism_protocol",
+                    f"Unexpected gigantism_protocol value: '{gp}'",
+                    suggestion="Use 'APPLIED' or 'SKIPPED'"
+                )
 
         # loop_verified
         if vs.get("loop_verified") is not True:
@@ -560,13 +627,13 @@ class Gen2Validator:
         if lv.get("foreground_match") is not True:
             self._add_warning(
                 "visual_summary.loop_verification.foreground_match",
-                f"Should be true — Scene 1 and {getattr(self, '_total_scenes', len(self._data.get('scenes', [])))} foreground should match"
+                f"Should be true — Scene 1 and {self._total_scenes} foreground should match"
             )
 
         if lv.get("lighting_match") is not True:
             self._add_warning(
                 "visual_summary.loop_verification.lighting_match",
-                f"Should be true — Scene 1 and {getattr(self, '_total_scenes', len(self._data.get('scenes', [])))} lighting should match"
+                f"Should be true — Scene 1 and {self._total_scenes} lighting should match"
             )
 
         if lv.get("same_reference_image") is not True:
@@ -668,6 +735,48 @@ class Gen2Validator:
                 f"Invalid value '{ref_type}'",
                 code="INVALID_REF_TYPE",
                 suggestion=f"Must be one of: {', '.join(e.value for e in ReferenceType)}"
+            )
+
+        # visual_tier (GEN2 v6.1.0 — TIER SYSTEM)
+        VALID_VISUAL_TIERS = {
+            "TIER_1_MONEY_SHOT", "TIER_2_HIGH_APPETITE",
+            "TIER_3_BALANCED", "TIER_4_ARCHITECTURE"
+        }
+        visual_tier = scene.get("visual_tier")
+        if not visual_tier:
+            self._add_warning(
+                f"{prefix}.visual_tier",
+                "Missing visual_tier — should be assigned based on sensory_pressure",
+                suggestion=f"Must be one of: {', '.join(sorted(VALID_VISUAL_TIERS))}"
+            )
+        elif visual_tier == "LOOP_CLOSE":
+            self._add_error(
+                f"{prefix}.visual_tier",
+                "LOOP_CLOSE is NOT a tier — it belongs in reference_type",
+                code="LOOP_CLOSE_IN_TIER",
+                suggestion="Assign a real tier based on sensory_pressure, put LOOP_CLOSE in reference_type"
+            )
+        elif visual_tier not in VALID_VISUAL_TIERS:
+            self._add_error(
+                f"{prefix}.visual_tier",
+                f"Invalid visual_tier '{visual_tier}'",
+                code="INVALID_VISUAL_TIER",
+                suggestion=f"Must be one of: {', '.join(sorted(VALID_VISUAL_TIERS))}"
+            )
+
+        # motion_intensity (GEN2 v6.1.0 — 1-10 scale)
+        motion_intensity = scene.get("motion_intensity")
+        if motion_intensity is None:
+            self._add_warning(
+                f"{prefix}.motion_intensity",
+                "Missing motion_intensity — should be 1-10 based on energy_level",
+                suggestion="EXPLOSIVE=8-9, HIGH=6-7, MEDIUM=4-5, LOW=2-3"
+            )
+        elif not isinstance(motion_intensity, (int, float)) or (isinstance(motion_intensity, float) and (motion_intensity != motion_intensity)) or motion_intensity < 1 or motion_intensity > 10:
+            self._add_error(
+                f"{prefix}.motion_intensity",
+                f"Must be integer 1-10, got {motion_intensity}",
+                code="INVALID_MOTION_INTENSITY"
             )
 
         # image_prompt
@@ -858,7 +967,7 @@ class Gen2Validator:
     ) -> None:
         """Валідація специфічних правил для last scene (LOOP_CLOSE)."""
         if total_scenes is None:
-            total_scenes = getattr(self, '_total_scenes', len(self._data.get("scenes", [])))
+            total_scenes = self._total_scenes
         check.loop_complementary = "PASS"
 
         # reference_type must be LOOP_CLOSE
@@ -977,15 +1086,18 @@ class Gen2Validator:
                 )
                 valid = False
 
-        # Check for banned camera movements
+        # Check for banned camera movements (proximity-based context check)
         for banned in BANNED_CAMERA_MOVEMENTS:
             pattern = r'\b' + re.escape(banned) + r'\b'
-            if re.search(pattern, prompt_lower):
-                # Check if it's in an allowed context (e.g., "clouds drifting")
-                is_allowed_context = any(
-                    ctx in prompt_lower for ctx in ALLOWED_DRIFTING_CONTEXTS
-                )
-                if not is_allowed_context:
+            for match in re.finditer(pattern, prompt_lower):
+                # Extract ~40 chars before AND ~20 chars after the match for context window
+                # This handles both "clouds drifting" and "drifting clouds" word orders
+                start = max(0, match.start() - 40)
+                end = min(len(prompt_lower), match.end() + 20)
+                context_window = prompt_lower[start:end]
+                # Check if THIS occurrence is in an allowed context
+                is_allowed = any(ctx in context_window for ctx in ALLOWED_DRIFTING_CONTEXTS)
+                if not is_allowed:
                     self._add_error(
                         f"{prefix}.video_prompt",
                         f"Contains banned camera movement: '{banned}'",
@@ -993,6 +1105,7 @@ class Gen2Validator:
                         suggestion=self._get_banned_movement_replacement(banned)
                     )
                     valid = False
+                    break  # One error per banned word is enough
 
         # Check for at least one allowed camera movement (gerund)
         has_movement = any(mv in prompt_lower for mv in ALLOWED_CAMERA_MOVEMENTS)
@@ -1130,25 +1243,24 @@ class Gen2Validator:
                 )
 
     def _extract_movement_words(self, prompt: str) -> Set[str]:
-        """Витягнути movement слова з prompt."""
+        """Витягнути movement слова з prompt і нормалізувати до base form."""
         prompt_lower = prompt.lower()
         movements = set()
 
-        movement_keywords = {
-            "push", "pushing", "pull", "pulling",
-            "orbit", "orbiting", "rise", "rising",
-            "descend", "descending", "track", "tracking",
-            "crane", "craning", "ascend", "ascending",
-            "emerge", "emerging"
+        # Explicit gerund→base mapping (rstrip("ing") is unreliable)
+        _GERUND_TO_BASE = {
+            "pushing": "push", "pulling": "pull",
+            "orbiting": "orbit", "rising": "rise",
+            "descending": "descend", "tracking": "track",
+            "craning": "crane", "ascending": "ascend",
+            "emerging": "emerge",
         }
+        _BASE_FORMS = {"push", "pull", "orbit", "rise", "descend", "track", "crane", "ascend", "emerge"}
 
-        for word in movement_keywords:
+        for word in list(_GERUND_TO_BASE.keys()) + list(_BASE_FORMS):
             if word in prompt_lower:
-                # Normalize to base form
-                base = word.rstrip("ing")
-                if base.endswith("n"):
-                    base = base + "e"  # crane, rise
-                movements.add(base if len(base) > 3 else word)
+                base = _GERUND_TO_BASE.get(word, word)
+                movements.add(base)
 
         return movements
 

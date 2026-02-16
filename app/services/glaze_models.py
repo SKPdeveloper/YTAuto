@@ -256,6 +256,7 @@ class HookStrategy(BaseModel):
     opening_line: str = Field(default="", description="Початкова фраза (legacy)")
     visual_hook: str = Field(default="", description="Візуальний хук (legacy)")
     audio_hook: str = Field(default="", description="Аудіо хук (legacy)")
+    scene_1_entry_type: str = Field(default="MACRO_ENTRY", description="MACRO_ENTRY | SCALE_SHOCK")
 
     @model_validator(mode='before')
     @classmethod
@@ -513,6 +514,15 @@ class GlazeScene(BaseModel):
     video_path: Optional[Path] = Field(default=None, description="Шлях до відео")
     status: str = Field(default="PENDING", description="Статус обробки")
 
+    # GEN2 tier system fields
+    visual_tier: Optional[str] = Field(default=None, description="TIER_1_MONEY_SHOT | TIER_2_HIGH_APPETITE | TIER_3_BALANCED | TIER_4_ARCHITECTURE")
+    motion_intensity: Optional[int] = Field(default=None, description="Motion intensity 1-10")
+
+    # GEN1 sensory fields (preserved through pipeline)
+    sensory_pressure: Optional[int] = Field(default=None, ge=1, le=10, description="Sensory pressure 1-10")
+    money_shot: Optional[Dict[str, Any]] = Field(default=None, description="Money shot info {is_money_shot, still_image_description}")
+    temperature_contrast: Optional[Dict[str, str]] = Field(default=None, description="Color/mood {subject_temp, background_temp, contrast_method}")
+
     # GEN2 metadata fields
     inheritance: Optional[SceneInheritance] = Field(default=None, description="Наслідування від батьківської сцени")
     post_production_notes: Optional[PostProductionNotes] = Field(default=None, description="Нотатки для постпродакшну")
@@ -556,10 +566,10 @@ class GlazeScene(BaseModel):
 
 class VoiceoverSettings(BaseModel):
     """Налаштування ElevenLabs - voice_id required, others have defaults."""
-    voice_id: str = Field(..., description="Voice ID - REQUIRED")
-    stability: float = Field(default=0.5, description="Stability")
+    voice_id: str = Field(default="fdph4PvCSJPBv95E9UZF", description="Voice ID - defaults to Sensory Witness")
+    stability: float = Field(default=0.60, description="Stability")
     similarity_boost: float = Field(default=0.75, description="Similarity boost")
-    style: float = Field(default=0.0, description="Style")
+    style: float = Field(default=0.30, description="Style")
     speaker_boost: bool = Field(default=True, description="Speaker boost")
 
 
@@ -567,8 +577,8 @@ class VoiceoverConfig(BaseModel):
     """Повна конфігурація озвучки - settings and full_script required."""
     settings: VoiceoverSettings = Field(..., description="Налаштування - REQUIRED")
     full_script: str = Field(..., description="Повний текст з маркерами - REQUIRED")
-    character: str = Field(default="announcer", description="broker | announcer | guide")
-    model: str = Field(default="eleven_multilingual_v2", description="ElevenLabs model")
+    character: str = Field(default="sensory_witness", description="sensory_witness | announcer | guide")
+    model: str = Field(default="eleven_v3", description="ElevenLabs model")
     total_duration_seconds: float = Field(default=60.0, description="Загальна тривалість")
 
     @model_validator(mode='before')
@@ -724,6 +734,10 @@ class ViralAuditScores(BaseModel):
     psychological_triggers: AuditScore = Field(..., description="Психологічні тригери - REQUIRED")
     easter_egg_appeal: AuditScore = Field(..., description="Привабливість Easter Egg - REQUIRED")
     brand_fit: AuditScore = Field(..., description="Відповідність бренду - REQUIRED")
+    # v8.3.0 additional metrics
+    mute_test: Optional[AuditScore] = Field(default=None, description="Mute test score")
+    categorization_clarity: Optional[AuditScore] = Field(default=None, description="YouTube NLP classification clarity")
+    niche_alignment: Optional[AuditScore] = Field(default=None, description="Alignment with existing large niches")
 
 
 class ViralAudit(BaseModel):
@@ -843,9 +857,18 @@ class GlazeCityProject(BaseModel):
     hook: HookStrategy = Field(..., description="Стратегія хуку - REQUIRED")
     psychology: Psychology = Field(..., description="Психологія - REQUIRED")
 
+    # Warning Line — catchy warning for AERIAL (N-1) scene
+    warning_line: str = Field(default="", description="Memorable warning for AERIAL scene, 3-8 words")
+
     # Easter Egg & Loop - REQUIRED
     easter_egg: EasterEgg = Field(..., description="Easter Egg - REQUIRED")
     loop: LoopConfig = Field(..., description="Конфігурація циклу - REQUIRED")
+
+    # Replay Hooks (v8.0.0+) — alternative to easter_egg
+    replay_hooks: List[Dict[str, Any]] = Field(default_factory=list, description="Replay hooks for re-engagement (GEN1 v8.0.0+)")
+
+    # Metadata Variants (v8.2.0+) — A/B/C/D rotation for YouTube
+    metadata_variants: Optional[Dict[str, Any]] = Field(default=None, description="A/B/C/D metadata variants for YouTube rotation")
 
     # Share Trigger - from GEN1
     share_trigger: Optional[ShareTrigger] = Field(default=None, description="Тригер для шерингу з GEN1")

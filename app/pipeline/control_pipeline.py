@@ -43,6 +43,11 @@ class ControlPipeline:
         # URL выбранной референсной картинки (для поиска в галерее HiggsField)
         self.selected_reference_url: Optional[str] = None
 
+        # Architecture pivot mechanism (MACRO_ENTRY flow)
+        self.architecture_pivot_candidates: List[Path] = []
+        self.architecture_reference_path: Optional[Path] = None
+        self.architecture_reference_url: Optional[str] = None
+
         # Callbacks - set by control_routes.py
         self.on_stage_change: Optional[Callable] = None
         self.on_approval_required: Optional[Callable] = None
@@ -81,11 +86,18 @@ class ControlPipeline:
 
             logger.info(f"Script generated with {len(self.project.scenes)} scenes")
 
-            # Stage 3: Generate PRIMARY candidates
-            await self._process_primary_selection()
-
-            # Stage 4: Generate remaining scenes with validation
-            await self._process_remaining_scenes()
+            # Stage 3-4: Branch based on scene_1_entry_type
+            entry_type = getattr(self.project, 'scene_1_entry_type', None)
+            if entry_type == "MACRO_ENTRY":
+                await self._process_macro_entry_flow()
+            elif entry_type in ("SCALE_SHOCK", None):
+                # SCALE_SHOCK or legacy (None) → existing 4-candidate flow
+                await self._process_primary_selection()
+                await self._process_remaining_scenes()
+            else:
+                logger.warning(f"[PIPELINE] Unknown scene_1_entry_type: '{entry_type}', defaulting to legacy flow")
+                await self._process_primary_selection()
+                await self._process_remaining_scenes()
 
             # Stage 5: Wait for scenes confirmation
             await self._wait_for_scenes_confirmation()
@@ -446,8 +458,429 @@ class ControlPipeline:
 
         await self.orchestrator._save_project_state(self.project)
 
-    async def _validate_scenes(self):
-        """Run VAL_IMG validation on all scenes with regeneration on failure."""
+    # ========================================================================
+    # MACRO_ENTRY FLOW — Architecture Pivot Mechanism
+    # ========================================================================
+
+    async def _process_macro_entry_flow(self):
+        """
+        MACRO_ENTRY flow: Scene 1 is a macro close-up (auto-generated, no user choice).
+        The architecture reference is picked from the first REQUIRES_REF scene instead.
+
+        Steps:
+        1. Auto-generate Scene 1 (single image, no candidates)
+        2. Find architecture pivot (first REQUIRES_REF scene after Scene 1)
+        3. Generate 4 candidates for pivot → user picks → architecture reference
+        4. Generate remaining scenes with architecture reference
+        """
+        if not self.project or not self.project.scenes:
+            raise ValueError("No project or scenes")
+
+        # Step 1: Auto-generate Scene 1 (macro close-up)
+        await self._auto_generate_scene1()
+
+        # Step 2: Find architecture pivot
+        pivot_scene = self._find_architecture_pivot()
+
+        if pivot_scene:
+            # Step 3: 4 candidates for pivot → user picks
+            await self._process_architecture_pivot_selection(pivot_scene)
+
+            # Step 4: Generate remaining scenes with architecture reference
+            await self._process_remaining_scenes_macro(
+                arch_ref=self.architecture_reference_path,
+                arch_url=self.architecture_reference_url,
+                pivot_num=pivot_scene.scene_number,
+            )
+        else:
+            # Edge case: no REQUIRES_REF scenes — generate all as INDEPENDENT
+            logger.warning("[MACRO_ENTRY] No REQUIRES_REF scenes found — skipping pivot selection")
+            await self._process_remaining_scenes_macro(
+                arch_ref=None,
+                arch_url=None,
+                pivot_num=None,
+            )
+
+    async def _auto_generate_scene1(self):
+        """Auto-generate Scene 1 (macro close-up) — single image, no user choice."""
+
+        if not self.project:
+            return
+
+        primary_scene = self.project.scenes[0]
+        await self._notify_stage("GENERATING_MACRO_SCENE1", 20)
+        logger.info("[MACRO_ENTRY] Auto-generating Scene 1 (macro close-up)...")
+
+        image_path = await self.orchestrator.visual_engine.generate_scene_image(
+            prompt=primary_scene.image_prompt,
+            scene_number=1,
+            project_id=self.project.project_id,
+            reference_image=None,
+            reference_type="PRIMARY",
+        )
+
+        primary_scene.image_path = str(image_path)
+        primary_scene.status = SceneStatus.IMAGE_READY
+        primary_scene.validation_approved = False  # validated later in bulk
+
+        logger.success(f"[MACRO_ENTRY] Scene 1 auto-generated: {image_path}")
+
+        # Notify UI
+        cache_bust = int(time.time())
+        await self._notify_scene_update(1, {
+            "scene_num": 1,
+            "image_url": f"/projects/{self.project.project_id}/scene_1/image.png?t={cache_bust}",
+            "status": "image_ready"
+        })
+
+        await self.orchestrator._save_project_state(self.project)
+
+    def _find_architecture_pivot(self) -> Optional[SceneData]:
+        """Find the first REQUIRES_REF scene after Scene 1 — the architecture pivot."""
+        if not self.project:
+            return None
+
+        for scene in self.project.scenes[1:]:
+            if scene.reference_type == "REQUIRES_REF":
+                logger.info(f"[MACRO_ENTRY] Architecture pivot: Scene {scene.scene_number}")
+                return scene
+        return None
+
+    async def _process_architecture_pivot_selection(self, pivot_scene: SceneData):
+        """Generate 4 candidates for architecture pivot scene and wait for user selection."""
+
+        if not self.project:
+            return
+
+        while True:
+            # Generate 4 candidates
+            await self._notify_stage("GENERATING_ARCH_PIVOT", 25)
+            logger.info(f"[MACRO_ENTRY] Generating 4 candidates for architecture pivot (Scene {pivot_scene.scene_number})...")
+
+            self.architecture_pivot_candidates = await self.orchestrator._generate_primary_candidates(
+                self.project, pivot_scene
+            )
+
+            if not self.architecture_pivot_candidates:
+                raise ValueError(f"Failed to generate architecture pivot candidates for Scene {pivot_scene.scene_number}")
+
+            logger.info(f"[MACRO_ENTRY] Generated {len(self.architecture_pivot_candidates)} architecture pivot candidates")
+
+            # Prepare candidates data for UI
+            cache_bust = int(time.time() * 1000)
+            candidates_data = []
+            for i, path in enumerate(self.architecture_pivot_candidates):
+                rel_path = str(path).replace(str(settings.PROJECTS_DIR), "").replace("\\", "/")
+                if rel_path.startswith("/"):
+                    rel_path = rel_path[1:]
+
+                candidates_data.append({
+                    "index": i,
+                    "url": f"/projects/{rel_path}?t={cache_bust}",
+                    "score": 85 - i * 5,
+                    "grade": "A" if i == 0 else "B"
+                })
+
+            # Wait for user approval
+            await self._notify_stage("AWAITING_ARCH_PIVOT_SELECTION", 30)
+
+            result = await self._request_approval("primary", {
+                "images": candidates_data,
+                "context": "architecture_pivot",
+                "scene_number": pivot_scene.scene_number,
+            })
+
+            if result.get("action") == "abort":
+                logger.info("Pipeline aborted by user (new topic requested)")
+                raise Exception("Pipeline aborted - new topic requested")
+
+            if result.get("action") == "reject_all":
+                logger.info("[MACRO_ENTRY] User rejected all architecture pivot candidates, regenerating...")
+                continue
+
+            if result.get("action") == "approve":
+                selected_index = result.get("image_index", 0)
+                await self._select_architecture_pivot(pivot_scene, selected_index)
+                logger.success(f"[MACRO_ENTRY] Architecture pivot selected: Scene {pivot_scene.scene_number}, candidate {selected_index + 1}")
+                break
+
+    async def _select_architecture_pivot(self, pivot_scene: SceneData, index: int):
+        """Copy selected architecture pivot candidate as main image and save as reference."""
+
+        if not self.project or not self.architecture_pivot_candidates:
+            return
+
+        scene_dir = settings.get_scene_dir(self.project.project_id, pivot_scene.scene_number)
+        selected_path = scene_dir / "image.png"
+        shutil.copy(self.architecture_pivot_candidates[index], selected_path)
+
+        # Read URL from metadata file
+        metadata_path = scene_dir / f"candidate_{index + 1}_metadata.json"
+        if metadata_path.exists():
+            try:
+                with open(metadata_path, 'r', encoding='utf-8') as f:
+                    metadata = json.load(f)
+                    self.architecture_reference_url = metadata.get('image_url')
+                    if self.architecture_reference_url:
+                        logger.info(f"[MACRO_ENTRY] Architecture reference URL: {self.architecture_reference_url[:60]}...")
+            except Exception as e:
+                logger.warning(f"Failed to read metadata for architecture reference URL: {e}")
+
+        self.architecture_reference_path = selected_path
+        pivot_scene.image_path = str(selected_path)
+        pivot_scene.status = SceneStatus.IMAGE_READY
+        pivot_scene.validation_approved = True
+
+        # Also set the selected_reference_url for compatibility with any code that uses it
+        self.selected_reference_url = self.architecture_reference_url
+
+        # Notify UI
+        cache_bust = int(time.time())
+        await self._notify_scene_update(pivot_scene.scene_number, {
+            "scene_num": pivot_scene.scene_number,
+            "image_url": f"/projects/{self.project.project_id}/scene_{pivot_scene.scene_number}/image.png?t={cache_bust}",
+            "status": "image_ready"
+        })
+
+        await self.orchestrator._save_project_state(self.project)
+
+    async def _process_remaining_scenes_macro(
+        self,
+        arch_ref: Optional[Path],
+        arch_url: Optional[str],
+        pivot_num: Optional[int],
+    ):
+        """
+        Generate and validate images for remaining scenes in MACRO_ENTRY flow.
+
+        Differences from _process_remaining_scenes:
+        - Scene 1 already generated (auto, skip)
+        - Pivot scene already generated (user-picked, skip)
+        - REQUIRES_REF scenes use architecture reference
+        - INDEPENDENT scenes get no reference
+        - Validation includes Scene 1 (auto-generated, not user-approved)
+        """
+        if not self.project:
+            return
+
+        await self._notify_stage("GENERATING_SCENES", 35)
+
+        # ================================================================
+        # LOOP_CLOSE scene: Copy Scene 1 image
+        # ================================================================
+        loop_close_scene = next((s for s in self.project.scenes if s.reference_type == "LOOP_CLOSE"), None)
+        if loop_close_scene:
+            last_scene_num = loop_close_scene.scene_number
+            scene_1_dir = settings.get_scene_dir(self.project.project_id, 1)
+            scene_N_dir = settings.get_scene_dir(self.project.project_id, last_scene_num)
+            scene_1_image = scene_1_dir / "image.png"
+            scene_N_image = scene_N_dir / "image.png"
+
+            if scene_1_image.exists() and not scene_N_image.exists():
+                scene_N_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy(scene_1_image, scene_N_image)
+                loop_close_scene.image_path = str(scene_N_image)
+                loop_close_scene.status = SceneStatus.IMAGE_READY
+                loop_close_scene.validation_approved = True
+                logger.success(f"[Scene {last_scene_num}] Copied from Scene 1 (LOOP_CLOSE)")
+
+                cache_bust = int(time.time())
+                await self._notify_scene_update(last_scene_num, {
+                    "scene_num": last_scene_num,
+                    "image_url": f"/projects/{self.project.project_id}/scene_{last_scene_num}/image.png?t={cache_bust}",
+                    "status": "image_ready"
+                })
+
+        # ================================================================
+        # Collect scenes that need generation (skip Scene 1, pivot, LOOP_CLOSE)
+        # ================================================================
+        max_batch_retries = 2
+        skip_scene_nums = {1}
+        if pivot_num:
+            skip_scene_nums.add(pivot_num)
+
+        for batch_attempt in range(1, max_batch_retries + 1):
+            scenes_to_generate = []
+            for scene in self.project.scenes:
+                if scene.scene_number in skip_scene_nums:
+                    continue
+                if scene.reference_type == "LOOP_CLOSE":
+                    continue
+                scene_dir = settings.get_scene_dir(self.project.project_id, scene.scene_number)
+                if not (scene_dir / "image.png").exists():
+                    scenes_to_generate.append(scene)
+
+            if not scenes_to_generate:
+                logger.success("[MACRO_ENTRY] All scenes have images!")
+                break
+
+            logger.info(f"[MACRO_ENTRY] Batch {batch_attempt}/{max_batch_retries}: {len(scenes_to_generate)} scenes need images")
+
+            # Build scenes_data with per-scene reference routing
+            scenes_data = []
+            for s in scenes_to_generate:
+                scene_entry = {
+                    'scene_number': s.scene_number,
+                    'image_prompt': s.image_prompt,
+                    'reference_type': s.reference_type,
+                }
+                # REQUIRES_REF → use architecture reference; INDEPENDENT → no reference
+                if s.reference_type == "REQUIRES_REF" and arch_ref:
+                    scene_entry['reference_image'] = str(arch_ref)
+                scenes_data.append(scene_entry)
+
+            logger.info(f"[MACRO_ENTRY] Generating {len(scenes_data)} scene images...")
+            if arch_url:
+                logger.info(f"[MACRO_ENTRY] Architecture reference URL: {arch_url[:60]}...")
+
+            try:
+                image_paths = await self.orchestrator.visual_engine.generate_all_images_parallel(
+                    scenes=scenes_data,
+                    project_id=self.project.project_id,
+                    reference_image=Path(arch_ref) if arch_ref else None,
+                    reference_url=arch_url,
+                )
+
+                generated_count = 0
+                for i, path in enumerate(image_paths):
+                    if path and i < len(scenes_to_generate):
+                        scene = scenes_to_generate[i]
+                        scene.image_path = path
+                        scene.status = SceneStatus.IMAGE_READY
+                        generated_count += 1
+                        logger.success(f"[Scene {scene.scene_number}] Image generated")
+
+                        await self._notify_scene_update(scene.scene_number, {
+                            "scene_num": scene.scene_number,
+                            "image_url": f"/projects/{self.project.project_id}/scene_{scene.scene_number}/image.png",
+                            "status": "image_ready"
+                        })
+
+                logger.info(f"[MACRO_ENTRY] Generated {generated_count}/{len(scenes_to_generate)} images in batch {batch_attempt}")
+
+                missing_scenes = [
+                    s for s in self.project.scenes
+                    if s.scene_number not in skip_scene_nums
+                    and s.reference_type != "LOOP_CLOSE"
+                    and not s.image_path
+                ]
+                if missing_scenes:
+                    logger.warning(f"[MACRO_ENTRY] Missing images: {[s.scene_number for s in missing_scenes]}")
+                    if batch_attempt < max_batch_retries:
+                        await asyncio.sleep(5)
+                else:
+                    break
+
+            except Exception as e:
+                logger.error(f"[MACRO_ENTRY] Batch generation failed: {e}")
+                if batch_attempt < max_batch_retries:
+                    await asyncio.sleep(10)
+                else:
+                    raise
+
+        # ================================================================
+        # RETRY LOOP — ensure ALL images exist
+        # ================================================================
+        MAX_IMAGE_RETRIES = 15
+        retry_round = 0
+
+        while retry_round < MAX_IMAGE_RETRIES:
+            retry_round += 1
+
+            from app.api.control_routes import get_state
+            state = get_state()
+            if state.abort_pipeline:
+                raise Exception("Pipeline aborted by user")
+
+            missing_scenes = []
+            for scene in self.project.scenes:
+                has_image = scene.image_path and Path(scene.image_path).exists()
+                if not has_image:
+                    missing_scenes.append(scene)
+
+            if not missing_scenes:
+                logger.success(f"[MACRO_ENTRY] ALL {len(self.project.scenes)} IMAGES READY!")
+                break
+
+            logger.warning(f"[MACRO_ENTRY] Round {retry_round}/{MAX_IMAGE_RETRIES}: Missing {len(missing_scenes)} images: {[s.scene_number for s in missing_scenes]}")
+            await self.notify_log(f"Round {retry_round}: Generating {len(missing_scenes)} missing images...", "warning")
+            await self._notify_image_retry(retry_round, missing_scenes)
+
+            for scene in missing_scenes:
+                # LOOP_CLOSE: copy from Scene 1
+                if scene.reference_type == "LOOP_CLOSE":
+                    scene_1_dir = settings.get_scene_dir(self.project.project_id, 1)
+                    scene_dir = settings.get_scene_dir(self.project.project_id, scene.scene_number)
+                    scene_1_image = scene_1_dir / "image.png"
+
+                    if scene_1_image.exists():
+                        scene_dir.mkdir(parents=True, exist_ok=True)
+                        dest_image = scene_dir / "image.png"
+                        shutil.copy(scene_1_image, dest_image)
+                        scene.image_path = str(dest_image)
+                        scene.status = SceneStatus.IMAGE_READY
+                        scene.validation_approved = True
+                        logger.success(f"[Scene {scene.scene_number}] Copied from Scene 1 (LOOP_CLOSE)")
+
+                        cache_bust = int(time.time())
+                        await self._notify_scene_update(scene.scene_number, {
+                            "scene_num": scene.scene_number,
+                            "image_url": f"/projects/{self.project.project_id}/scene_{scene.scene_number}/image.png?t={cache_bust}",
+                            "status": "image_ready"
+                        })
+                    continue
+
+                # Per-scene reference routing
+                ref_image = None
+                if scene.reference_type == "REQUIRES_REF" and arch_ref:
+                    ref_image = Path(arch_ref)
+
+                logger.info(f"[MACRO_ENTRY] Generating scene {scene.scene_number} (round {retry_round})...")
+                try:
+                    image_path = await self.orchestrator.visual_engine.generate_scene_image(
+                        prompt=scene.image_prompt,
+                        scene_number=scene.scene_number,
+                        project_id=self.project.project_id,
+                        reference_image=ref_image,
+                        reference_type=scene.reference_type,
+                    )
+                    if image_path:
+                        scene.image_path = str(image_path)
+                        scene.status = SceneStatus.IMAGE_READY
+                        logger.success(f"[Scene {scene.scene_number}] Image generated: {image_path}")
+
+                        cache_bust = int(time.time())
+                        await self._notify_scene_update(scene.scene_number, {
+                            "scene_num": scene.scene_number,
+                            "image_url": f"/projects/{self.project.project_id}/scene_{scene.scene_number}/image.png?t={cache_bust}",
+                            "status": "image_ready"
+                        })
+                except Exception as e:
+                    logger.error(f"[Scene {scene.scene_number}] Generation failed: {e}, will retry...")
+
+            await asyncio.sleep(5)
+
+        # Check exhausted retries
+        remaining_missing = [s for s in self.project.scenes if not (s.image_path and Path(s.image_path).exists())]
+        if remaining_missing:
+            raise Exception(f"Failed to generate images for {len(remaining_missing)} scenes after {MAX_IMAGE_RETRIES} retries: {[s.scene_number for s in remaining_missing]}")
+
+        # Notify UI about all scenes
+        await self._notify_all_scenes()
+
+        # Validate images (including Scene 1 which was auto-generated)
+        await self._notify_stage("VALIDATING_IMAGES", 50)
+        await self._validate_scenes(include_scene_1=True)
+
+        await self.orchestrator._save_project_state(self.project)
+
+    async def _validate_scenes(self, include_scene_1: bool = False):
+        """Run VAL_IMG validation on scenes with regeneration on failure.
+
+        Args:
+            include_scene_1: If True, validate Scene 1 as well (MACRO_ENTRY flow
+                where Scene 1 was auto-generated, not user-picked).
+        """
 
         if not self.project:
             return
@@ -455,7 +888,8 @@ class ControlPipeline:
         max_validation_retries = 3
         primary_scene = self.project.scenes[0] if self.project.scenes else None
 
-        for scene in self.project.scenes[1:]:
+        scenes_to_validate = self.project.scenes if include_scene_1 else self.project.scenes[1:]
+        for scene in scenes_to_validate:
             if scene.status != SceneStatus.IMAGE_READY:
                 continue
 
@@ -528,8 +962,9 @@ class ControlPipeline:
                 scene.status = SceneStatus.APPROVED
                 scene.validation_approved = False
 
-        # Mark scene 1 as approved (already selected by user)
-        self.project.scenes[0].status = SceneStatus.APPROVED
+        # Mark scene 1 as approved (already selected by user) — only in legacy/SCALE_SHOCK flow
+        if not include_scene_1:
+            self.project.scenes[0].status = SceneStatus.APPROVED
 
     async def _wait_for_scenes_confirmation(self):
         """Auto-confirm all scenes (simplified UI - no user interaction needed)."""
@@ -1414,7 +1849,13 @@ class ControlPipeline:
             # Don't raise - continue without upscaling
 
     async def _upload_to_youtube(self):
-        """Upload final video to YouTube."""
+        """Upload final video to YouTube.
+
+        Reads publish_config.target_channel from project_brief.json to resolve
+        the correct channel directory under config/channels/{target_channel}/.
+        Auto-publishes when publish_config is present; falls back to UI approval
+        if publish_config is missing.
+        """
         if not self.project:
             return
 
@@ -1449,26 +1890,44 @@ class ControlPipeline:
         description = youtube_data.get('description', '')
         tags = youtube_data.get('tags', [])
 
+        # Merge with channel default discovery tags (v8.3.0)
+        CHANNEL_DEFAULT_TAGS = [
+            "oddly satisfying", "satisfying", "food art", "asmr",
+            "forbidden food", "shorts", "satisfying loop", "dreamcore", "surreal",
+        ]
+        existing_lower = {t.lower() for t in tags if isinstance(t, str)}
+        for default_tag in CHANNEL_DEFAULT_TAGS:
+            if default_tag.lower() not in existing_lower:
+                tags.append(default_tag)
+
+        # Resolve target channel from publish_config
+        publish_config = brief.get('publish_config') or {}
+        target_channel = publish_config.get('target_channel', '')
+        auto_publish = bool(target_channel)
+
         logger.info(f"[PIPELINE] Preparing YouTube upload...")
         logger.info(f"  Title: {title}")
+        logger.info(f"  Channel: {target_channel or '(not set)'}")
         logger.info(f"  Video: {video_path.name} ({video_path.stat().st_size / 1024 / 1024:.1f} MB)")
 
-        # Request upload approval from UI
-        result = await self._request_approval("youtube_upload", {
-            "title": title,
-            "description": description[:200] + "..." if len(description) > 200 else description,
-            "video_path": str(video_path),
-            "video_size_mb": round(video_path.stat().st_size / 1024 / 1024, 1),
-        })
+        if not auto_publish:
+            # No publish_config — fall back to UI approval
+            result = await self._request_approval("youtube_upload", {
+                "title": title,
+                "description": description[:200] + "..." if len(description) > 200 else description,
+                "video_path": str(video_path),
+                "video_size_mb": round(video_path.stat().st_size / 1024 / 1024, 1),
+            })
 
-        action = result.get("action", "skip")
-        if action == "skip":
-            logger.info("[PIPELINE] YouTube upload skipped by user")
-            return
-
-        if action != "upload":
-            logger.info(f"[PIPELINE] YouTube upload cancelled: {action}")
-            return
+            action = result.get("action", "skip")
+            if action == "skip":
+                logger.info("[PIPELINE] YouTube upload skipped by user")
+                return
+            if action != "upload":
+                logger.info(f"[PIPELINE] YouTube upload cancelled: {action}")
+                return
+        else:
+            logger.info(f"[PIPELINE] Auto-publish enabled for channel '{target_channel}'")
 
         try:
             # Import YouTube API
@@ -1477,27 +1936,34 @@ class ControlPipeline:
             from publisher.youtube_api import YouTubeAPI
             from publisher.models import ChannelConfig, PrivacyStatus
 
-            # Load channel config
+            # Resolve channel directory
             channels_dir = settings.BASE_DIR / "config" / "channels"
-            default_channel = channels_dir / "default"
+            channel_dir = channels_dir / target_channel if target_channel else channels_dir / "default"
 
-            if not default_channel.exists():
-                logger.warning("[PIPELINE] No default YouTube channel configured")
+            if not channel_dir.exists():
+                logger.warning(f"[PIPELINE] Channel directory not found: {channel_dir}")
                 return
 
-            # Load channel config
-            channel_config_path = default_channel / "channel.json"
-            token_path = default_channel / "token.json"
-            secrets_path = settings.BASE_DIR / "config" / "client_secrets.json"
+            # Load channel config + credentials
+            channel_config_path = channel_dir / "config.json"
+            token_path = channel_dir / "token.json"
+            secrets_path = channel_dir / "client_secrets.json"
 
-            if not all(p.exists() for p in [channel_config_path, secrets_path]):
-                logger.warning("[PIPELINE] YouTube channel not fully configured")
+            missing = [str(p.name) for p in [channel_config_path, token_path, secrets_path] if not p.exists()]
+            if missing:
+                logger.warning(f"[PIPELINE] Channel '{target_channel}' missing files: {', '.join(missing)}")
                 return
 
             with open(channel_config_path, 'r', encoding='utf-8') as f:
                 channel_data = json.load(f)
 
             channel_config = ChannelConfig(**channel_data)
+
+            # Read upload settings from channel config
+            ch_settings = channel_config.settings
+            privacy = PrivacyStatus(ch_settings.default_privacy) if ch_settings.default_privacy else PrivacyStatus.PUBLIC
+            category_id = ch_settings.default_category_id or "24"
+            made_for_kids = ch_settings.made_for_kids
 
             # Initialize YouTube API
             api = YouTubeAPI(
@@ -1520,12 +1986,27 @@ class ControlPipeline:
                 title=title,
                 description=description,
                 tags=tags,
-                privacy_status=PrivacyStatus.PUBLIC,
+                category_id=category_id,
+                privacy_status=privacy,
+                made_for_kids=made_for_kids,
+                project_id=self.project.project_id,
             )
 
             if success and video_id:
-                video_url = f"https://youtube.com/watch?v={video_id}"
+                video_url = f"https://youtube.com/shorts/{video_id}"
                 logger.success(f"[PIPELINE] YouTube upload complete: {video_url}")
+
+                # Save publish status to project dir
+                publish_status = {
+                    "status": "PUBLISHED",
+                    "video_id": video_id,
+                    "video_url": video_url,
+                    "channel_id": target_channel,
+                    "published_at": datetime.now().isoformat(),
+                }
+                status_path = project_dir / "publish_status.json"
+                with open(status_path, 'w', encoding='utf-8') as f:
+                    json.dump(publish_status, f, indent=2, ensure_ascii=False)
 
                 # Notify UI
                 await broadcast_youtube_success(video_url)

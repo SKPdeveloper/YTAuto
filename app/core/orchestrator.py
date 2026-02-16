@@ -864,6 +864,10 @@ class ProjectOrchestrator:
                 )
                 project.scenes.append(scene_data)
 
+            # Extract scene_1_entry_type from hook strategy
+            project.scene_1_entry_type = getattr(glaze_project.hook, 'scene_1_entry_type', None)
+            logger.info(f"  Scene 1 entry type: {project.scene_1_entry_type}")
+
             logger.success(f"[{project.project_id}] Script generated: {project.title}")
             logger.info(f"  Scenes: {len(project.scenes)}")
             logger.info(f"  Reference types: {[s.reference_type for s in project.scenes]}")
@@ -1824,18 +1828,18 @@ class ProjectOrchestrator:
                     else:
                         # Flat structure: voice_id, stability, etc. directly in voiceover
                         vo_settings = VoiceoverSettings(
-                            voice_id=voiceover_data.get('voice_id', 'Adam'),
-                            stability=voiceover_data.get('stability', 0.5),
+                            voice_id=voiceover_data.get('voice_id', 'fdph4PvCSJPBv95E9UZF'),
+                            stability=voiceover_data.get('stability', 0.60),
                             similarity_boost=voiceover_data.get('similarity_boost', 0.75),
-                            style=voiceover_data.get('style', 0.0),
+                            style=voiceover_data.get('style', 0.30),
                             speaker_boost=voiceover_data.get('speaker_boost', True),
                         )
 
                     voiceover_config = VoiceoverConfig(
                         settings=vo_settings,
                         full_script=voiceover_data['full_script'],
-                        character=voiceover_data.get('character', 'announcer'),
-                        model=voiceover_data.get('model', 'eleven_multilingual_v2'),
+                        character=voiceover_data.get('character', 'sensory_witness'),
+                        model=voiceover_data.get('model', 'eleven_v3'),
                         total_duration_seconds=voiceover_data.get('total_duration_seconds', 30),
                     )
 
