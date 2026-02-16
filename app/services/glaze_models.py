@@ -520,6 +520,7 @@ class GlazeScene(BaseModel):
     # GEN1 sensory fields (preserved through pipeline)
     sensory_pressure: Optional[int] = Field(default=None, ge=1, le=10, description="Sensory pressure 1-10")
     money_shot: Optional[Dict[str, Any]] = Field(default=None, description="Money shot info {is_money_shot, still_image_description}")
+    snap_moment: Optional[Dict[str, Any]] = Field(default=None, description="Snap moment timing envelope for money_shot scenes (v8.4.0)")
     temperature_contrast: Optional[Dict[str, str]] = Field(default=None, description="Color/mood {subject_temp, background_temp, contrast_method}")
 
     # GEN2 metadata fields

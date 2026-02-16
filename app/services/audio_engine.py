@@ -178,6 +178,13 @@ class AudioEngine:
 
         converted = self.PAUSE_PATTERN.sub(replace_pause, text)
 
+        # v8.4.0: Convert [silence] tag to a 1.5s SSML break (ElevenLabs doesn't support [silence])
+        # Money shot scenes use [silence] to mark "no voice here — only ASMR SFX"
+        silence_count = converted.lower().count('[silence]')
+        if silence_count > 0:
+            converted = re.sub(r'\[silence\]', '<break time="1.5s"/>', converted, flags=re.IGNORECASE)
+            logger.debug(f"Converted {silence_count} [silence] markers to 1.5s SSML breaks")
+
         # Log conversion stats
         original_pauses = len(self.PAUSE_PATTERN.findall(text))
         if original_pauses > 0:

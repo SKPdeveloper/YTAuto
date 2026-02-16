@@ -1573,6 +1573,7 @@ CRITICAL REQUIREMENTS:
                 'status', 'inheritance', 'post_production_notes',
                 'first_frame_composition', 'scale_techniques',
                 'visual_punctuation', 'easter_egg_integration',
+                'snap_moment', 'sensory_pressure', 'money_shot', 'temperature_contrast',
             }
             extra_kwargs = {}
             if gen1_scene.__pydantic_extra__:
@@ -1608,6 +1609,11 @@ CRITICAL REQUIREMENTS:
                 reference_type=gen2_scene.reference_type if gen2_scene else "INDEPENDENT",
                 visual_tier=gen2_scene.visual_tier if gen2_scene else None,
                 motion_intensity=gen2_scene.motion_intensity if gen2_scene else None,
+                # v8.4.0 sensory fields (declared on models — must be explicit, won't survive via extras)
+                snap_moment=gen1_scene.snap_moment,
+                sensory_pressure=gen1_scene.sensory_pressure,
+                money_shot=gen1_scene.money_shot,
+                temperature_contrast=gen1_scene.temperature_contrast,
                 video_tool="KLING",
                 # Status
                 status="pending",

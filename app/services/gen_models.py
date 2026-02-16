@@ -13,6 +13,7 @@ VALIDATION: All required fields are validated per GEN1/GEN2 contracts.
 import re
 import warnings
 
+from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing import List, Optional, Dict, Any, Tuple, Union
 from enum import Enum
@@ -172,6 +173,7 @@ VALID_CAMERA_MOVEMENTS = [
     "TRACK",
     "PUNCH",
     "PUSH",
+    "STATIC",
 ]
 
 
@@ -271,6 +273,7 @@ class CameraMovement(str, Enum):
     TRACK = "TRACK"
     PUNCH = "PUNCH"
     PUSH = "PUSH"
+    STATIC = "STATIC"
 
 
 class NarrativePurpose(str, Enum):
@@ -349,8 +352,10 @@ class Gen1Metadata(BaseModel):
     def validate_scene_count(cls, v: int) -> int:
         """Enforce MIN_SCENES-MAX_SCENES per GEN1/GEN2 contract."""
         if v < MIN_SCENES:
+            logger.warning(f"scene_count {v} below minimum, clamping to {MIN_SCENES}")
             return MIN_SCENES
         if v > MAX_SCENES:
+            logger.warning(f"scene_count {v} above maximum, clamping to {MAX_SCENES}")
             return MAX_SCENES
         return v
 
@@ -557,6 +562,11 @@ class Gen1SceneConcept(BaseModel):
     gen2_visual_params: Optional[Gen2VisualParams] = Field(default=None, description="Visual params for GEN2")
     scene_tricks: Optional[List[SceneTrick]] = Field(default=None, description="Scene tricks from dynamic engine")
     on_screen_text: str = Field(default="", description="Mute-friendly headline text (3-6 words)")
+    # v8.4.0 sensory fields (declared for validation + explicit merge passthrough)
+    sensory_pressure: Optional[int] = Field(default=None, ge=1, le=10, description="Sensory pressure 1-10 — drives GEN2 visual tier")
+    money_shot: Optional[Dict[str, Any]] = Field(default=None, description="Money shot info {is_money_shot, still_image_description}")
+    snap_moment: Optional[Dict[str, Any]] = Field(default=None, description="Snap moment timing envelope for money_shot scenes (v8.4.0)")
+    temperature_contrast: Optional[Dict[str, str]] = Field(default=None, description="Color/mood {subject_temp, background_temp, contrast_method}")
 
     @model_validator(mode='before')
     @classmethod
@@ -1051,6 +1061,19 @@ class Gen1Output(BaseModel):
 
 
 # ============================================================================
+# SNAP MOMENT MODEL (v8.4.0 — Brand Signature)
+# ============================================================================
+
+class SnapMoment(BaseModel):
+    """Snap moment for money_shot scenes — the ASMR SFX timing envelope."""
+    enabled: bool = Field(default=True, description="Whether snap moment is active")
+    pre_silence_seconds: float = Field(default=0.5, ge=0.0, le=2.0, description="Silence before snap SFX")
+    snap_sfx: str = Field(default="", description="Descriptive text of the ASMR sound for GEN3")
+    snap_duration_seconds: float = Field(default=0.8, ge=0.1, le=3.0, description="Duration of snap SFX")
+    post_silence_seconds: float = Field(default=0.3, ge=0.0, le=2.0, description="Silence after snap SFX")
+
+
+# ============================================================================
 # GEN2 INPUT MODELS
 # ============================================================================
 
@@ -1071,6 +1094,7 @@ class Gen2SceneInput(BaseModel):
     # Sensory/tier fields (GEN2 TIER SYSTEM depends on these)
     sensory_pressure: Optional[int] = Field(default=None, ge=1, le=10, description="Sensory pressure 1-10 — drives GEN2 visual tier assignment")
     money_shot: Optional[Dict[str, Any]] = Field(default=None, description="Money shot info {is_money_shot, still_image_description}")
+    snap_moment: Optional[Dict[str, Any]] = Field(default=None, description="Snap moment timing envelope for money_shot scenes (v8.4.0)")
     temperature_contrast: Optional[Dict[str, str]] = Field(default=None, description="Color/mood direction {subject_temp, background_temp, contrast_method}")
 
     # Easter egg info
@@ -1512,9 +1536,10 @@ class DeliveryPayload(BaseModel):
                 reference_hint=scene.reference_hint,
                 gen2_visual_params=scene.gen2_visual_params,
                 scene_tricks=scene.scene_tricks,
-                sensory_pressure=scene_extra.get('sensory_pressure'),
-                money_shot=scene_extra.get('money_shot'),
-                temperature_contrast=scene_extra.get('temperature_contrast'),
+                sensory_pressure=scene.sensory_pressure or scene_extra.get('sensory_pressure'),
+                money_shot=scene.money_shot or scene_extra.get('money_shot'),
+                snap_moment=scene.snap_moment or scene_extra.get('snap_moment'),
+                temperature_contrast=scene.temperature_contrast or scene_extra.get('temperature_contrast'),
                 has_easter_egg=has_easter_egg,
                 easter_egg_info=gen1.engagement.easter_egg if has_easter_egg else None,
             )
@@ -2447,6 +2472,9 @@ __all__ = [
     "Gen1ViralAssessment",
     "Gen1Engagement",
     "Gen1Output",
+
+    # Snap Moment (v8.4.0)
+    "SnapMoment",
 
     # GEN2 Models
     "Gen2SceneInput",

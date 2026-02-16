@@ -608,14 +608,20 @@ NO markdown formatting."""
                 source_start = min(s.get("start", 0.0) for s in segs)
                 source_end = max(s.get("end", 0.0) for s in segs)
 
-                # Detect style from text tags
+                # Detect style from text tags (v8.4.0: [calm] added, [silence] = no VO)
                 raw_text = scene_info.get('raw', '')
                 style_tag = "NORMAL"
-                if '[whispers]' in raw_text.lower() or '[whisper]' in raw_text.lower():
+                raw_lower = raw_text.lower()
+                if '[silence]' in raw_lower:
+                    style_tag = "SILENCE"
+                elif '[whispers]' in raw_lower or '[whisper]' in raw_lower:
                     style_tag = "WHISPER"
-                elif '[excited]' in raw_text.lower() or '[excitement]' in raw_text.lower():
+                elif '[calm]' in raw_lower:
+                    style_tag = "CALM"
+                # Legacy tag detection (banned in v8.4.0 but may appear in old briefs)
+                elif '[excited]' in raw_lower or '[excitement]' in raw_lower:
                     style_tag = "EXCITED"
-                elif '[dramatic]' in raw_text.lower():
+                elif '[dramatic]' in raw_lower:
                     style_tag = "DRAMATIC"
 
                 vo_segments.append(VOSegmentAnalysis(
