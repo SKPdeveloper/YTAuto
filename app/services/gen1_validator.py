@@ -966,6 +966,16 @@ class Gen1Validator:
                     suggestion="Use more specific, unique descriptors"
                 )
 
+            # Перевірка на філери (мертвий ефір — wasted screen time)
+            fillers = get_fillers()
+            found_fillers = [f for f in fillers if re.search(r'\b' + re.escape(f) + r'\b', script_lower)]
+            if found_fillers:
+                self._add_warning(
+                    "voiceover.full_script",
+                    f"Contains filler phrases: {', '.join(found_fillers[:3])}",
+                    suggestion="Remove filler words — every second counts in Shorts"
+                )
+
             # Перевірка на generic luxury слова
             generic = get_generic_luxury()
             found_generic = [w for w in generic if w in script_lower]
@@ -1137,6 +1147,31 @@ class Gen1Validator:
 
                 # comment_bait
                 self._require_non_empty(egg, "comment_bait", "engagement.easter_egg.comment_bait")
+
+        # share_trigger — REQUIRED per GEN1 contract
+        share_trigger = self._get_nested(engagement, "share_trigger")
+        if share_trigger is None:
+            self._add_error(
+                "engagement.share_trigger",
+                "Missing share_trigger — required for viewer engagement",
+                code="MISSING_SHARE_TRIGGER",
+                suggestion='Add: "Send this to someone who..." or "Tag a [relevant identity]"'
+            )
+        elif isinstance(share_trigger, dict):
+            text = share_trigger.get("text", "")
+            if not text or not text.strip():
+                self._add_error(
+                    "engagement.share_trigger.text",
+                    "Share trigger text cannot be empty",
+                    code="EMPTY_SHARE_TRIGGER"
+                )
+        elif isinstance(share_trigger, str):
+            if not share_trigger.strip():
+                self._add_error(
+                    "engagement.share_trigger",
+                    "Share trigger text cannot be empty",
+                    code="EMPTY_SHARE_TRIGGER"
+                )
 
         # hashtags — optional in v6 (may be embedded in youtube.description instead)
         # v8.2.0: hashtags increased from 3 to 6-8 for algorithm discovery
@@ -1649,11 +1684,17 @@ class Gen1Validator:
                 )
             else:
                 words = on_screen.strip().split()
-                if len(words) > 6:
+                if len(words) < 2:
+                    self._add_warning(
+                        f"{prefix}.on_screen_text",
+                        f"Too short ({len(words)} word) — min 2 words for meaningful headline",
+                        suggestion="Use 2-6 word headline for impact"
+                    )
+                elif len(words) > 6:
                     self._add_warning(
                         f"{prefix}.on_screen_text",
                         f"Too long ({len(words)} words) — max 6 recommended for Shorts",
-                        suggestion="Shorten to 3-6 word headline"
+                        suggestion="Shorten to 2-6 word headline"
                     )
                 # Scene 1: must contain food name (critical for mute Shorts viewers)
                 if scene_num == 1:

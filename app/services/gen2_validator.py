@@ -77,6 +77,11 @@ ANTI_TOY_KEYWORDS: Set[str] = {
     "tilt-shift", "miniature", "diorama", "toy"
 }
 
+# Anti-yellow keywords в negative_prompt (GEN2 v6.1.0 Color Accuracy Doctrine)
+ANTI_YELLOW_KEYWORDS: Set[str] = {
+    "yellow color cast", "sepia tone"
+}
+
 # Banned words у video_prompt (VAL_GEN2 рядки 308-315)
 BANNED_VIDEO_WORDS: Set[str] = {
     "slow", "slowly",
@@ -487,6 +492,20 @@ class Gen2Validator:
                     f"Missing anti-toy keywords: {', '.join(missing_keywords)}",
                     code="MISSING_ANTI_TOY",
                     suggestion="Add: tilt-shift, miniature, diorama, toy"
+                )
+
+            # Check for anti-yellow keywords (GEN2 v6.1.0 Color Accuracy Doctrine)
+            missing_yellow = []
+            for keyword in ANTI_YELLOW_KEYWORDS:
+                if keyword not in negative_lower:
+                    missing_yellow.append(keyword)
+
+            if missing_yellow:
+                self._add_error(
+                    "global_settings.negative_prompt",
+                    f"Missing anti-yellow keywords: {', '.join(missing_yellow)}",
+                    code="MISSING_ANTI_YELLOW",
+                    suggestion="Add: yellow color cast, sepia tone"
                 )
 
     # ========================================================================
@@ -940,9 +959,10 @@ class Gen2Validator:
             required = ["hook_element", "foreground", "scale_proof", "safe_zone"]
             for field_name in required:
                 if not ffc.get(field_name):
-                    self._add_warning(
+                    self._add_error(
                         f"{prefix}.first_frame_composition.{field_name}",
-                        "Should not be empty"
+                        "Required for Scene 1 first frame",
+                        code="MISSING_FFC_FIELD"
                     )
 
         # image_prompt scale keywords — tier-dependent per GEN2.txt v6:
@@ -995,6 +1015,22 @@ class Gen2Validator:
                     suggestion="Remove meta-instructions — Kling doesn't understand them"
                 )
                 check.loop_complementary = "FAIL"
+
+        # motion_elements must be reversal-safe (Scene N is reversed in post-production)
+        REVERSAL_UNSAFE = {"rising", "falling", "dripping", "pouring", "cascading", "sinking", "dropping", "growing"}
+        motion_elements = scene.get("motion_elements", [])
+        if isinstance(motion_elements, list):
+            for me in motion_elements:
+                if isinstance(me, str):
+                    for unsafe in REVERSAL_UNSAFE:
+                        if unsafe in me.lower():
+                            self._add_error(
+                                f"{prefix}.motion_elements",
+                                f"Contains reversal-unsafe word '{unsafe}' in '{me}' — will look unnatural when reversed",
+                                code="REVERSAL_UNSAFE_MOTION",
+                                suggestion="Use reversal-safe motion: shimmer, glow, pulse, fog drift, heat haze"
+                            )
+                            break
 
     # ========================================================================
     # IMAGE PROMPT VALIDATION
@@ -1320,6 +1356,10 @@ class Gen2Validator:
         if not all(kw in negative for kw in ANTI_TOY_KEYWORDS):
             anti_toy_status = "FAIL"
 
+        anti_yellow_status = "PASS"
+        if not all(kw in negative for kw in ANTI_YELLOW_KEYWORDS):
+            anti_yellow_status = "FAIL"
+
         # Check Scene 1 scale keywords (tier-dependent)
         s1_prompt = scene1.get("image_prompt", "").lower()
         s1_tier = scene1.get("visual_tier", "")
@@ -1332,7 +1372,8 @@ class Gen2Validator:
         return {
             "global_settings": gs_status,
             "scene1_scale_keywords": scale_status,
-            "anti_toy_negative": anti_toy_status
+            "anti_toy_negative": anti_toy_status,
+            "anti_yellow_negative": anti_yellow_status
         }
 
     def _build_loop_check(self) -> Dict[str, str]:

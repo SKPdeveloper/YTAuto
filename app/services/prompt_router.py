@@ -16,6 +16,7 @@ Flow:
 import asyncio
 import json
 import re
+import threading
 import traceback
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
@@ -2462,13 +2463,16 @@ CRITICAL REQUIREMENTS:
 # ============================================================================
 
 _router_instance: Optional[PromptRouter] = None
+_router_lock = threading.Lock()
 
 
 def get_prompt_router() -> PromptRouter:
-    """Get singleton PromptRouter instance."""
+    """Get singleton PromptRouter instance (thread-safe)."""
     global _router_instance
     if _router_instance is None:
-        _router_instance = PromptRouter()
+        with _router_lock:
+            if _router_instance is None:
+                _router_instance = PromptRouter()
     return _router_instance
 
 
