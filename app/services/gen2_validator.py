@@ -626,20 +626,36 @@ class Gen2Validator:
     def _validate_loop_verification_object(self, lv: Dict[str, Any]) -> None:
         """Валідація loop_verification об'єкту."""
         # movements_are_different
-        if lv.get("movements_are_different") is not True:
+        movements_val = lv.get("movements_are_different")
+        if movements_val is True:
+            pass  # OK
+        elif movements_val is False:
             self._add_error(
                 "visual_summary.loop_verification.movements_are_different",
                 "Must be true — last scene movement must differ from Scene 1",
                 code="SAME_LOOP_MOVEMENT",
                 suggestion="Use COMPLEMENTARY movement for last scene (LOOP_CLOSE)"
             )
+        else:
+            self._add_warning(
+                "visual_summary.loop_verification.movements_are_different",
+                f"Missing or non-boolean value: {movements_val!r} (expected true/false)",
+            )
 
         # loop_ready
-        if lv.get("loop_ready") is not True:
+        loop_ready_val = lv.get("loop_ready")
+        if loop_ready_val is True:
+            pass  # OK
+        elif loop_ready_val is False:
             self._add_error(
                 "visual_summary.loop_verification.loop_ready",
                 "Must be true",
                 code="LOOP_NOT_READY"
+            )
+        else:
+            self._add_warning(
+                "visual_summary.loop_verification.loop_ready",
+                f"Missing or non-boolean value: {loop_ready_val!r} (expected true/false)",
             )
 
         # Match fields
@@ -742,11 +758,18 @@ class Gen2Validator:
 
         # reference_type
         ref_type = scene.get("reference_type")
-        if not ref_type:
+        if ref_type is None:
             self._add_error(
                 f"{prefix}.reference_type",
-                "Required field is missing",
+                "Required field is missing (null or absent)",
                 code="MISSING_REF_TYPE"
+            )
+        elif ref_type == "":
+            self._add_error(
+                f"{prefix}.reference_type",
+                "Field is empty string — GEN2 likely failed to determine reference type",
+                code="EMPTY_REF_TYPE",
+                suggestion=f"Must be one of: {', '.join(e.value for e in ReferenceType)}"
             )
         elif ref_type not in [e.value for e in ReferenceType]:
             self._add_error(

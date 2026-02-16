@@ -42,6 +42,7 @@ GEN1 Python Validator v1.0
 
 from __future__ import annotations
 
+import copy
 import re
 import time
 from dataclasses import dataclass, field
@@ -350,12 +351,16 @@ VALID_CAMERA_MOVEMENTS: Set[str] = {
 # Заборонені camera movements (VAL_GEN1 рядок 239-244)
 BANNED_CAMERA_MOVEMENTS: Set[str] = {"DRIFT", "FLOAT", "GLIDE"}
 
-# ElevenLabs v3 підтримувані теги (GEN1.txt рядки 760-785)
+# ElevenLabs v3 підтримувані теги (GEN1.txt v8.4.0 — Brand Signature whitelist)
+# v8.4.0: sensory_witness uses ONLY [whispers], [calm] for emotion.
+# Full ElevenLabs v3 tag set kept for backwards compat (old briefs may use [excited] etc.)
 ELEVENLABS_EMOTION_TAGS: Set[str] = {
-    "[excited]", "[sad]", "[angry]", "[happily]", "[whispers]", "[shouts]"
+    "[whispers]", "[calm]",
+    # Legacy (still work in ElevenLabs, but banned in v8.4.0 brand signature):
+    "[excited]", "[sad]", "[angry]", "[happily]", "[shouts]"
 }
 ELEVENLABS_DELIVERY_TAGS: Set[str] = {
-    "[pause]", "[short pause]", "[long pause]", "[laughs]", "[sighs]"
+    "[pause]", "[short pause]", "[long pause]", "[silence]", "[laughs]", "[sighs]"
 }
 ELEVENLABS_STYLE_TAGS: Set[str] = {
     "[rushed]", "[drawn out]"
@@ -363,6 +368,12 @@ ELEVENLABS_STYLE_TAGS: Set[str] = {
 ALL_ELEVENLABS_TAGS: Set[str] = (
     ELEVENLABS_EMOTION_TAGS | ELEVENLABS_DELIVERY_TAGS | ELEVENLABS_STYLE_TAGS
 )
+
+# v8.4.0 Brand Signature — banned direction tags (sensory_witness never uses these)
+BANNED_DIRECTION_TAGS: list = [
+    "[excited]", "[rushed]", "[dramatic]", "[shouts]", "[loud]",
+    "[energetic]", "[cheerful]", "[screams]", "[urgent]", "[intense]"
+]
 
 # Scene count range
 MIN_SCENES: int = 6
@@ -560,7 +571,7 @@ class Gen1Validator:
         # Reset state
         self._errors = []
         self._warnings = []
-        self._data = data
+        self._data = copy.deepcopy(data)
 
         # Auto-correct known Gemini confusions before validation
         self._auto_correct_gemini_confusions()
@@ -818,12 +829,19 @@ class Gen1Validator:
 
         # scene_count
         scene_count = self._get_nested(metadata, "scene_count")
-        if scene_count is not None and (scene_count < MIN_SCENES or scene_count > MAX_SCENES):
-            self._add_error(
-                "metadata.scene_count",
-                f"Must be {MIN_SCENES}-{MAX_SCENES}, got {scene_count}",
-                code="INVALID_SCENE_COUNT"
-            )
+        if scene_count is not None:
+            if not isinstance(scene_count, int):
+                self._add_error(
+                    "metadata.scene_count",
+                    f"Expected integer, got {type(scene_count).__name__}",
+                    code="INVALID_SCENE_COUNT"
+                )
+            elif scene_count < MIN_SCENES or scene_count > MAX_SCENES:
+                self._add_error(
+                    "metadata.scene_count",
+                    f"Must be {MIN_SCENES}-{MAX_SCENES}, got {scene_count}",
+                    code="INVALID_SCENE_COUNT"
+                )
 
     def _validate_property(self) -> None:
         """Валідація property об'єкту."""
@@ -1102,6 +1120,16 @@ class Gen1Validator:
                     suggestion="Be more specific and creative with descriptions"
                 )
 
+        # v8.4.0: Check for banned direction tags in full_script
+        if script:
+            found_banned = [tag for tag in BANNED_DIRECTION_TAGS if tag in script.lower()]
+            if found_banned:
+                self._add_warning(
+                    "voiceover.full_script",
+                    f"Contains banned direction tags (v8.4.0): {', '.join(found_banned)}",
+                    suggestion="sensory_witness only uses [whispers], [calm], [pause], [silence], [long pause]"
+                )
+
         # character
         self._require_non_empty(vo, "character", "voiceover.character")
 
@@ -1145,9 +1173,23 @@ class Gen1Validator:
         if word_count < 2 or word_count > 10:
             self._add_error(
                 "warning_line",
-                f"warning_line has {word_count} words (expected 2-10)",
+                f"warning_line has {word_count} words (expected 3-5)",
                 code="WARNING_LINE_LENGTH",
-                suggestion="Keep warning_line punchy: 3-8 words ideal"
+                suggestion="Format: \"Don't [FOOD_ACTION] the [ARCHITECTURE_ELEMENT].\" (3-5 words)"
+            )
+        elif word_count < 3 or word_count > 5:
+            self._add_warning(
+                "warning_line",
+                f"warning_line has {word_count} words (ideal: 3-5)",
+                suggestion="Format: \"Don't [FOOD_ACTION] the [ARCHITECTURE_ELEMENT].\" (3-5 words)"
+            )
+
+        # v8.4.0: warning_line should start with "Don't"
+        if not warning_clean.lower().startswith("don't") and not warning_clean.lower().startswith("don\u2019t"):
+            self._add_warning(
+                "warning_line",
+                f"warning_line should start with \"Don't\" per v8.4.0 format",
+                suggestion="Format: \"Don't [lick/bite/eat/drink/touch/taste/chew/nibble/swallow/smell] the [walls/floor/ceiling/stairs/door/roof/window/pool/...]\""
             )
 
         # Cross-check: warning_line should appear in voiceover.full_script
@@ -1549,11 +1591,16 @@ class Gen1Validator:
                         f"viral_assessment.{field_name}",
                         "Score is missing",
                     )
+                elif not isinstance(score, (int, float)):
+                    self._add_warning(
+                        f"viral_assessment.{field_name}",
+                        f"Expected numeric score, got {type(score).__name__}",
+                    )
                 elif not (0.0 <= score <= 1.0):
                     self._add_warning(
                         f"viral_assessment.{field_name}",
                         f"Score out of range: {score} (expected 0.0-1.0)",
-                        code="INVALID_SCORE_RANGE"
+                        suggestion="Ensure score is between 0.0 and 1.0"
                     )
         else:
             # Neither format present
@@ -1621,6 +1668,9 @@ class Gen1Validator:
         # Check for duplicate scene_numbers upfront
         seen_scene_nums: set = set()
         for i, scene in enumerate(scenes):
+            if not isinstance(scene, dict):
+                self._add_error(f"scenes[{i}]", f"Expected object, got {type(scene).__name__}")
+                continue
             sn = scene.get("scene_number")
             if sn is not None:
                 if sn in seen_scene_nums:
@@ -1637,6 +1687,8 @@ class Gen1Validator:
         low_energy_count: int = 0
 
         for i, scene in enumerate(scenes):
+            if not isinstance(scene, dict):
+                continue  # Already reported in duplicate check loop above
             scene_num = scene.get("scene_number", i + 1)
             prefix = f"scenes[{i}]"
 
@@ -1763,7 +1815,7 @@ class Gen1Validator:
                     # Check for AI markers
                     vo_lower = vo_text.lower()
                     ai_markers = get_ai_markers()
-                    found_ai = [m for m in ai_markers if m in vo_lower]
+                    found_ai = [m for m in ai_markers if re.search(r'\b' + re.escape(m) + r'\b', vo_lower)]
                     if found_ai:
                         self._add_error(
                             f"{prefix}.voiceover_segment",
@@ -1778,7 +1830,7 @@ class Gen1Validator:
                 if vo_segment:
                     vo_lower = vo_segment.lower()
                     ai_markers = get_ai_markers()
-                    found_ai = [m for m in ai_markers if m in vo_lower]
+                    found_ai = [m for m in ai_markers if re.search(r'\b' + re.escape(m) + r'\b', vo_lower)]
                     if found_ai:
                         self._add_error(
                             f"{prefix}.voiceover_segment",
@@ -1819,6 +1871,50 @@ class Gen1Validator:
                             f"{prefix}.on_screen_text",
                             f"Scene 1 should contain food name '{food}' (auto-fix should have prepended it)",
                         )
+
+            # ===== MONEY SHOT + SNAP MOMENT VALIDATION (v8.4.0) =====
+            ms = scene.get("money_shot")
+            if isinstance(ms, dict) and ms.get("is_money_shot"):
+                # Money shot voiceover must be silence
+                vo_seg = self._get_nested(scene, "voiceover_segment", "")
+                narrator = self._get_nested(scene, "narrator_script", "")
+                if vo_seg and vo_seg.strip() not in ("", "[silence]"):
+                    self._add_warning(
+                        f"{prefix}.voiceover_segment",
+                        f"Money shot scene should have voiceover_segment='[silence]', got '{vo_seg[:40]}'",
+                        suggestion="Money shot = THE SNAP moment. No voice, only ASMR SFX."
+                    )
+                if narrator and narrator.strip():
+                    self._add_warning(
+                        f"{prefix}.narrator_script",
+                        "Money shot scene should have empty narrator_script",
+                        suggestion="Money shot scene = silence (no narration)"
+                    )
+                # snap_moment should be present
+                snap = scene.get("snap_moment")
+                if not snap or not isinstance(snap, dict):
+                    self._add_warning(
+                        f"{prefix}.snap_moment",
+                        "Money shot scene missing snap_moment object (v8.4.0)",
+                        suggestion="Add snap_moment with enabled=true, snap_sfx, and timing fields"
+                    )
+                elif not snap.get("snap_sfx"):
+                    self._add_warning(
+                        f"{prefix}.snap_moment.snap_sfx",
+                        "snap_sfx is empty — should describe the ASMR sound",
+                        suggestion="e.g. 'Wet fruit scooping, close-mic, juice welling'"
+                    )
+
+            # v8.4.0: Check per-scene voiceover_segment for banned tags
+            vo_seg_check = self._get_nested(scene, "voiceover_segment", "")
+            if vo_seg_check:
+                found_banned_scene = [t for t in BANNED_DIRECTION_TAGS if t in vo_seg_check.lower()]
+                if found_banned_scene:
+                    self._add_warning(
+                        f"{prefix}.voiceover_segment",
+                        f"Contains banned direction tags (v8.4.0): {', '.join(found_banned_scene)}",
+                        suggestion="Use only [whispers], [calm], [pause], [silence], [long pause]"
+                    )
 
             # ===== SCENE 1 SPECIFIC RULES =====
             if scene_num == 1:
@@ -1880,6 +1976,25 @@ class Gen1Validator:
                 "scenes",
                 f"Energy pattern has {low_energy_count} LOW scenes",
                 suggestion="Recommended max is 1 LOW scene per video"
+            )
+
+        # v8.4.0: Exactly one money_shot scene required
+        money_shot_count = sum(
+            1 for s in scenes
+            if isinstance(s, dict) and isinstance(s.get("money_shot"), dict)
+            and s["money_shot"].get("is_money_shot")
+        )
+        if money_shot_count == 0:
+            self._add_warning(
+                "scenes",
+                "No money_shot scene found — exactly 1 required per v8.4.0",
+                suggestion="Mark one scene as money_shot with snap_moment for brand signature"
+            )
+        elif money_shot_count > 1:
+            self._add_warning(
+                "scenes",
+                f"Found {money_shot_count} money_shot scenes — exactly 1 allowed",
+                suggestion="Only ONE scene per video gets money_shot (the ASMR snap moment)"
             )
 
     # ========================================================================
