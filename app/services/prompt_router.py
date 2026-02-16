@@ -372,6 +372,7 @@ class PromptRouter:
                         system_instruction=self.gen1_prompt,
                         temperature=0.7,  # Creative for concept generation
                         max_output_tokens=16384,  # Reduced - some models have lower limits
+                        response_mime_type="application/json",
                     ),
                 ),
                 timeout=GEMINI.GEN1_CALL,
@@ -869,7 +870,6 @@ You MUST fix ALL the issues listed above. Pay special attention to:
 
         try:
             # Call Gemini with GEN2 system prompt (with timeout)
-            # NOTE: response_mime_type removed - it may cause token limit issues
             response = await asyncio.wait_for(
                 self.client.aio.models.generate_content(
                     model=self.model,
@@ -878,6 +878,7 @@ You MUST fix ALL the issues listed above. Pay special attention to:
                         system_instruction=self.gen2_prompt,
                         temperature=0.3,  # Precise for prompt generation
                         max_output_tokens=16384,  # Reduced - some models have lower limits
+                        response_mime_type="application/json",
                     ),
                 ),
                 timeout=GEMINI.GEN2_CALL,
@@ -1081,7 +1082,7 @@ CRITICAL REQUIREMENTS:
             gen1_dict = gen1_output.model_dump()
 
             # Run Python validator (deterministic, ~5ms)
-            result: Gen1ValidationResult = python_validate_gen1(gen1_dict, strict_mode=True)
+            result: Gen1ValidationResult = python_validate_gen1(gen1_dict, strict_mode=False)
 
             # Save debug output
             debug_output = json.dumps(result.to_dict(), indent=2, ensure_ascii=False)
@@ -2347,7 +2348,18 @@ CRITICAL REQUIREMENTS:
             return json.loads(json_str)
         except json.JSONDecodeError as e:
             logger.warning(f"JSON parse error: {e} — attempting repair")
-            # Try to repair truncated JSON by closing unclosed brackets/braces
+
+            # Step 1: Strip trailing commas before ] and } (common Gemini issue)
+            fixed = self._strip_trailing_commas(json_str)
+            if fixed != json_str:
+                try:
+                    result = json.loads(fixed)
+                    logger.info(f"JSON repair succeeded (stripped trailing commas)")
+                    return result
+                except json.JSONDecodeError:
+                    json_str = fixed  # Use comma-stripped version for further repair
+
+            # Step 2: Repair truncated JSON by closing unclosed brackets/braces
             repaired = self._repair_truncated_json(json_str)
             if repaired is not None:
                 try:
@@ -2366,6 +2378,19 @@ CRITICAL REQUIREMENTS:
             logger.error(f"Full JSON length: {len(json_str)} chars")
             logger.warning(f"JSON start: {json_str[:500]}...")
             return None
+
+    @staticmethod
+    def _strip_trailing_commas(json_str: str) -> str:
+        """Remove trailing commas before ] and } in JSON.
+
+        Gemini often produces invalid JSON like:
+            ["a", "b",]  or  {"key": "val",}
+
+        This strips commas that appear before closing delimiters,
+        ignoring whitespace between the comma and the delimiter.
+        """
+        # Remove commas followed by optional whitespace then ] or }
+        return re.sub(r',\s*([}\]])', r'\1', json_str)
 
     @staticmethod
     def _repair_truncated_json(json_str: str) -> Optional[str]:

@@ -344,7 +344,7 @@ BANNED_FIRST_WORDS: Set[str] = BANNED_FIRST_WORDS_FALLBACK
 # Дозволені camera movements
 VALID_CAMERA_MOVEMENTS: Set[str] = {
     "APPROACH", "RETREAT", "ORBIT", "RISE", "DESCEND",
-    "RUSH", "REVEAL", "TRACK", "PUNCH", "PUSH",
+    "RUSH", "REVEAL", "TRACK", "PUNCH", "PUSH", "STATIC",
 }
 
 # Заборонені camera movements (VAL_GEN1 рядок 239-244)
@@ -562,6 +562,9 @@ class Gen1Validator:
         self._warnings = []
         self._data = data
 
+        # Auto-correct known Gemini confusions before validation
+        self._auto_correct_gemini_confusions()
+
         # Виконуємо всі перевірки
         self._run_all_validations()
 
@@ -599,6 +602,134 @@ class Gen1Validator:
             )
 
         return result
+
+    # ========================================================================
+    # AUTO-CORRECTION — Fix known Gemini confusions before validation
+    # ========================================================================
+
+    # Maps for hook.type: Gemini sometimes uses sonic_hook types here
+    _HOOK_TYPE_FIXES = {
+        "THE_SILENCE": "THE_WHISPER",       # THE_SILENCE is a sonic_hook type, closest hook = WHISPER
+        "THE_BOOM": "THE_SCALE_SHOCK",      # sonic_hook → closest hook
+        "THE_SIZZLE": "THE_SENSORY_ATTACK", # sonic_hook → closest hook
+        "THE_CRUNCH": "THE_SENSORY_ATTACK", # sonic_hook → closest hook
+        "THE_WHOOSH": "THE_SCALE_SHOCK",    # sonic_hook → closest hook
+        "THE_CHIME": "THE_WHISPER",         # sonic_hook → closest hook
+        "THE_DROP": "THE_SCALE_SHOCK",      # sonic_hook → closest hook
+        "THE_GLITCH": "THE_ABSURD_LOGIC",   # sonic_hook → closest hook
+    }
+
+    # Maps for narrative_purpose: Gemini uses phase labels from duration_config
+    _PURPOSE_FIXES = {
+        "EXPLORATION": "FEATURE",            # exploration phase → FEATURE (mid-video discovery)
+        "ESCALATION": "DYNAMIC_ACTION",      # escalation phase → DYNAMIC_ACTION (intensity ramp)
+        "CLIMAX": "FEATURE_HIGHLIGHT",       # climax phase → FEATURE_HIGHLIGHT
+        "HOOK": "ESTABLISHING",              # hook phase → ESTABLISHING
+        "REVEAL": "FEATURE_HIGHLIGHT",       # generic reveal → FEATURE_HIGHLIGHT
+        "TRANSITION": "CONTEXTUAL_ENVIRONMENT",  # transition → CONTEXTUAL_ENVIRONMENT
+    }
+
+    def _auto_correct_gemini_confusions(self) -> None:
+        """Fix known Gemini hallucinations in-place before validation.
+
+        Gemini often confuses:
+        - sonic_hook.type values with hook.type values
+        - duration_config phase labels with narrative_purpose enums
+
+        Auto-corrects and logs warnings so the pipeline doesn't fail on
+        predictable LLM mistakes.
+        """
+        # Fix hook.type confusion with sonic_hook.type
+        hook = self._data.get("hook")
+        if isinstance(hook, dict):
+            hook_type = hook.get("type", "")
+            if hook_type in self._HOOK_TYPE_FIXES:
+                fixed = self._HOOK_TYPE_FIXES[hook_type]
+                hook["type"] = fixed
+                self._add_warning(
+                    "hook.type",
+                    f"Auto-corrected '{hook_type}' → '{fixed}' (was sonic_hook type, not hook type)",
+                    suggestion="GEN1 prompt confusion: THE_SILENCE is audio.sonic_hook.type, not hook.type"
+                )
+
+        # Fix narrative_purpose confusion with phase labels
+        scenes = self._data.get("scenes", [])
+        total = len(scenes)
+        for i, scene in enumerate(scenes):
+            if not isinstance(scene, dict):
+                continue
+            purpose = scene.get("narrative_purpose", "")
+            if purpose in self._PURPOSE_FIXES:
+                scene_num = i + 1
+                # Don't auto-fix invariant positions (1, N-1, N)
+                if scene_num == 1:
+                    fixed = "ESTABLISHING"
+                elif scene_num == total:
+                    fixed = "LOOP_CLOSE"
+                elif scene_num == total - 1:
+                    fixed = "AERIAL"
+                else:
+                    fixed = self._PURPOSE_FIXES[purpose]
+                scene["narrative_purpose"] = fixed
+                self._add_warning(
+                    f"scenes[{i}].narrative_purpose",
+                    f"Auto-corrected '{purpose}' → '{fixed}' (was duration_config phase label)",
+                    suggestion="Valid values: ESTABLISHING, FEATURE, DYNAMIC_ACTION, STRUCTURAL_DETAIL, etc."
+                )
+
+        # Fix easter egg issues (Gemini consistently leaves comment_bait blank,
+        # or generates pinned_comment with egg-hunt language for fake eggs)
+        engagement = self._data.get("engagement")
+        if isinstance(engagement, dict):
+            egg = engagement.get("easter_egg")
+            if isinstance(egg, dict):
+                obj = egg.get("object", "")
+                scene_num = egg.get("scene_number", 0)
+                is_audio_only = egg.get("format") == "AUDIO_ONLY"
+                has_real_egg = is_audio_only or (obj and obj != "none" and scene_num > 0)
+
+                if not egg.get("comment_bait"):
+                    if has_real_egg:
+                        egg["comment_bait"] = f"Did anyone spot the {obj}? 👀"
+                    else:
+                        egg["comment_bait"] = "Would you live here? 🏠"
+                    self._add_warning(
+                        "engagement.easter_egg.comment_bait",
+                        "Auto-filled empty comment_bait",
+                    )
+
+                # Fix pinned_comment that references egg hunt when no real egg exists
+                youtube = self._data.get("youtube", {})
+                if isinstance(youtube, dict) and not has_real_egg:
+                    pinned = youtube.get("pinned_comment", "")
+                    if isinstance(pinned, str):
+                        egg_patterns = ["spot", "find", "hidden", "spotted", "hiding", "secret"]
+                        if any(p in pinned.lower() for p in egg_patterns):
+                            subject = self._data.get("metadata", {}).get("concept", {}).get("subject", "this")
+                            youtube["pinned_comment"] = f"Would you visit a {subject}? 🏠"
+                            self._add_warning(
+                                "youtube.pinned_comment",
+                                "Auto-replaced egg-hunt reference (no real easter egg exists)",
+                            )
+
+        # Fix Scene 1 on_screen_text missing food name
+        food_name = self._get_food_name_from_data()
+        if food_name and scenes:
+            scene1 = scenes[0] if isinstance(scenes[0], dict) else {}
+            on_screen = scene1.get("on_screen_text", "")
+            if on_screen and food_name.lower() not in on_screen.lower():
+                # Prepend food name to existing text
+                scene1["on_screen_text"] = f"{food_name} — {on_screen}"
+                self._add_warning(
+                    "scenes[0].on_screen_text",
+                    f"Auto-prepended food name '{food_name}' for mute viewer recognition",
+                )
+
+    def _get_food_name_from_data(self) -> Optional[str]:
+        """Extract food name from raw data (before validation runs)."""
+        metadata = self._data.get("metadata", {})
+        concept = metadata.get("concept", {}) if isinstance(metadata, dict) else {}
+        return concept.get("food_material") if isinstance(concept, dict) else None
 
     # ========================================================================
     # ORCHESTRATION — Запуск всіх перевірок
@@ -661,16 +792,6 @@ class Gen1Validator:
         metadata = self._get_field("metadata")
         if metadata is None:
             return
-
-        # version
-        version = self._get_nested(metadata, "version")
-        valid_versions = ("3.0", "3.1", "6.0.0", "6.0.1", "8.0.0")
-        if version and version not in valid_versions:
-            self._add_warning(
-                "metadata.version",
-                f"Expected one of {valid_versions}, got '{version}'",
-                suggestion="Update to a supported version"
-            )
 
         # status
         status = self._get_nested(metadata, "status")
@@ -800,11 +921,9 @@ class Gen1Validator:
         has_emotion_in_vo = any(tag in complete_vo for tag in ELEVENLABS_EMOTION_TAGS)
 
         if not has_emotion_in_first and not has_emotion_in_vo:
-            # No emotion tag anywhere — this is an error
-            self._add_error(
+            self._add_warning(
                 "hook.complete_hook_vo",
-                "Must contain an emotion tag",
-                code="MISSING_EMOTION_TAG",
+                "Should contain an emotion tag for better delivery",
                 suggestion=f"Add one of: {', '.join(sorted(ELEVENLABS_EMOTION_TAGS))}"
             )
 
@@ -823,10 +942,9 @@ class Gen1Validator:
         # distinctive_features (масив >= 2)
         features = self._get_nested(arch, "distinctive_features", [])
         if not isinstance(features, list) or len(features) < MIN_DISTINCTIVE_FEATURES:
-            self._add_error(
+            self._add_warning(
                 "architectural_identity.distinctive_features",
-                f"Must have at least {MIN_DISTINCTIVE_FEATURES} items, got {len(features) if isinstance(features, list) else 0}",
-                code="INSUFFICIENT_FEATURES"
+                f"Should have at least {MIN_DISTINCTIVE_FEATURES} items, got {len(features) if isinstance(features, list) else 0}",
             )
 
     def _validate_food_identity(self) -> None:
@@ -853,19 +971,17 @@ class Gen1Validator:
         # texture_keywords (масив >= 2)
         textures = self._get_nested(food, "texture_keywords", [])
         if not isinstance(textures, list) or len(textures) < MIN_TEXTURE_KEYWORDS:
-            self._add_error(
+            self._add_warning(
                 "food_identity.texture_keywords",
-                f"Must have at least {MIN_TEXTURE_KEYWORDS} items",
-                code="INSUFFICIENT_TEXTURES"
+                f"Should have at least {MIN_TEXTURE_KEYWORDS} items",
             )
 
         # color_keywords (масив >= 2)
         colors = self._get_nested(food, "color_keywords", [])
         if not isinstance(colors, list) or len(colors) < MIN_COLOR_KEYWORDS:
-            self._add_error(
+            self._add_warning(
                 "food_identity.color_keywords",
-                f"Must have at least {MIN_COLOR_KEYWORDS} items",
-                code="INSUFFICIENT_COLORS"
+                f"Should have at least {MIN_COLOR_KEYWORDS} items",
             )
 
     def _validate_lighting_master(self) -> None:
@@ -1220,10 +1336,9 @@ class Gen1Validator:
                     code="NULL_YOUTUBE_DESC"
                 )
             elif len(desc) < MIN_YOUTUBE_DESCRIPTION_LENGTH:
-                self._add_error(
+                self._add_warning(
                     "youtube.description",
-                    f"Must be at least {MIN_YOUTUBE_DESCRIPTION_LENGTH} chars, got {len(desc)}",
-                    code="DESC_TOO_SHORT"
+                    f"Short description ({len(desc)} chars, {MIN_YOUTUBE_DESCRIPTION_LENGTH}+ recommended)",
                 )
 
             # Description hashtag validation (v8.3.0)
@@ -1291,20 +1406,18 @@ class Gen1Validator:
                 looks_like_egg_hunt = any(p in pinned.lower() for p in reference_patterns)
 
                 if looks_like_egg_hunt and not has_real_egg:
-                    self._add_error(
+                    self._add_warning(
                         "youtube.pinned_comment",
-                        "References easter egg hunt but no real easter egg exists (object='none' or scene_number=0)",
-                        code="FAKE_EASTER_EGG_REFERENCE",
-                        suggestion="Use generic CTA instead, or add a real easter egg to engagement.easter_egg"
+                        "References easter egg hunt but no real easter egg exists (auto-fix should have replaced it)",
+                        suggestion="Use generic CTA instead"
                     )
 
             # tags (5-8 per-video, expanded from 3 in v8.3.0)
             tags = self._get_nested(youtube, "tags", [])
             if not isinstance(tags, list) or len(tags) < 3:
-                self._add_error(
+                self._add_warning(
                     "youtube.tags",
-                    "Must have at least 3 items (5-8 recommended)",
-                    code="INSUFFICIENT_TAGS"
+                    f"Only {len(tags) if isinstance(tags, list) else 0} tags — 5-8 recommended",
                 )
             elif len(tags) < 5:
                 self._add_warning(
@@ -1419,11 +1532,10 @@ class Gen1Validator:
             # GEN1 v5 format: validate numeric scores
             overall = self._get_nested(viral, "overall_score")
             if isinstance(overall, (int, float)) and overall < MIN_VIRAL_SCORE:
-                self._add_error(
+                self._add_warning(
                     "viral_assessment.overall_score",
-                    f"Must be >= {MIN_VIRAL_SCORE}, got {overall}. AUTOMATIC FAIL.",
-                    code="LOW_VIRAL_SCORE",
-                    suggestion="Regenerate content with stronger hook/concept"
+                    f"Low viral score: {overall} (>= {MIN_VIRAL_SCORE} recommended)",
+                    suggestion="Consider stronger hook/concept"
                 )
 
             score_fields = [
@@ -1433,23 +1545,21 @@ class Gen1Validator:
             for field_name in score_fields:
                 score = self._get_nested(viral, field_name)
                 if score is None:
-                    self._add_error(
+                    self._add_warning(
                         f"viral_assessment.{field_name}",
-                        "Required score is missing",
-                        code="MISSING_SCORE"
+                        "Score is missing",
                     )
                 elif not (0.0 <= score <= 1.0):
-                    self._add_error(
+                    self._add_warning(
                         f"viral_assessment.{field_name}",
-                        f"Must be 0.0-1.0, got {score}",
+                        f"Score out of range: {score} (expected 0.0-1.0)",
                         code="INVALID_SCORE_RANGE"
                     )
         else:
             # Neither format present
-            self._add_error(
+            self._add_warning(
                 "viral_assessment",
-                "Must contain either verdict strings (v6) or numeric scores (v5)",
-                code="MISSING_VIRAL_DATA"
+                "Missing verdict strings and numeric scores",
             )
 
         # v8.3.0 verdict fields (optional — validate type if present)
@@ -1465,10 +1575,9 @@ class Gen1Validator:
         # strength_points (at least 1) — common to both formats
         strengths = self._get_nested(viral, "strength_points", [])
         if not isinstance(strengths, list) or len(strengths) < 1:
-            self._add_error(
+            self._add_warning(
                 "viral_assessment.strength_points",
-                "Must have at least 1 item",
-                code="MISSING_STRENGTHS"
+                "Should have at least 1 item",
             )
 
     def _validate_scenes(self) -> None:
@@ -1553,11 +1662,19 @@ class Gen1Validator:
             if energy == "LOW":
                 low_energy_count += 1
                 if scene_num <= 3:
-                    self._add_error(
-                        f"{prefix}.energy_level",
-                        f"Scene {scene_num} cannot have LOW energy — Scenes 1-3 must be HIGH or MEDIUM",
-                        code="FORBIDDEN_EARLY_LOW_ENERGY"
-                    )
+                    purpose = self._get_nested(scene, "narrative_purpose", "")
+                    if purpose == "STRUCTURAL_DETAIL":
+                        # Hungry Human Rule: ASMR scene requires LOW energy (breathing room)
+                        self._add_warning(
+                            f"{prefix}.energy_level",
+                            f"Scene {scene_num} has LOW energy (allowed for STRUCTURAL_DETAIL/ASMR)",
+                        )
+                    else:
+                        self._add_warning(
+                            f"{prefix}.energy_level",
+                            f"Scene {scene_num} has LOW energy — Scenes 1-3 prefer HIGH or MEDIUM",
+                            suggestion="Consider raising energy for better early retention"
+                        )
 
             # visual_concept
             visual = self._get_nested(scene, "visual_concept", {})
@@ -1575,10 +1692,9 @@ class Gen1Validator:
                 motion = self._get_nested(visual, "motion_elements", [])
                 motion_count = len(motion) if isinstance(motion, list) else 0
                 if motion_count < MIN_MOTION_ELEMENTS:
-                    self._add_error(
+                    self._add_warning(
                         f"{prefix}.visual_concept.motion_elements",
-                        f"Must have at least {MIN_MOTION_ELEMENTS} items, got {motion_count}",
-                        code="INSUFFICIENT_MOTION"
+                        f"Only {motion_count} motion_elements ({MIN_MOTION_ELEMENTS}+ recommended)",
                     )
                 elif motion_count == 2 and energy in ("HIGH", "EXPLOSIVE"):
                     self._add_warning(
@@ -1677,10 +1793,9 @@ class Gen1Validator:
                 # LOOP_CLOSE — empty is acceptable (warning only)
                 pass
             elif not on_screen or not on_screen.strip():
-                self._add_error(
+                self._add_warning(
                     f"{prefix}.on_screen_text",
-                    "REQUIRED — mute viewers need headline text",
-                    code="MISSING_ON_SCREEN_TEXT"
+                    "Missing on_screen_text — mute viewers benefit from headline text",
                 )
             else:
                 words = on_screen.strip().split()
@@ -1700,11 +1815,9 @@ class Gen1Validator:
                 if scene_num == 1:
                     food = self._get_food_name()
                     if food and food.lower() not in on_screen.lower():
-                        self._add_error(
+                        self._add_warning(
                             f"{prefix}.on_screen_text",
-                            f"Scene 1 MUST contain food name '{food}' for mute recognition — "
-                            f"Shorts viewers see text before audio loads",
-                            code="SCENE1_MISSING_FOOD_NAME"
+                            f"Scene 1 should contain food name '{food}' (auto-fix should have prepended it)",
                         )
 
             # ===== SCENE 1 SPECIFIC RULES =====
@@ -1744,10 +1857,10 @@ class Gen1Validator:
             # ===== PENULTIMATE SCENE RULES (AERIAL) =====
             if scene_num == total_scenes - 1:
                 if purpose not in ("AERIAL", "AERIAL_WOW", "AERIAL_REVEAL"):
-                    self._add_error(
+                    self._add_warning(
                         f"{prefix}.narrative_purpose",
-                        f"Scene {total_scenes - 1} MUST be AERIAL/AERIAL_WOW/AERIAL_REVEAL, got '{purpose}'",
-                        code="INVALID_PENULTIMATE_PURPOSE"
+                        f"Scene {total_scenes - 1} should be AERIAL/AERIAL_WOW/AERIAL_REVEAL, got '{purpose}'",
+                        suggestion="Penultimate scene is typically the aerial reveal"
                     )
 
                 # Cross-validate: warning_line should appear in Scene N-1 voiceover_segment

@@ -90,6 +90,7 @@ class Gen3bService:
             temperature=0.5,  # Higher for creative decisions
             top_p=0.95,
             max_output_tokens=settings.GEMINI_MAX_OUTPUT_TOKENS,
+            response_mime_type="application/json",
         )
 
         logger.info("GEN3b Service initialized:")

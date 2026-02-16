@@ -85,6 +85,7 @@ class Gen3aService:
             temperature=0.2,  # Low for precise analysis
             top_p=0.95,
             max_output_tokens=settings.GEMINI_MAX_OUTPUT_TOKENS,
+            response_mime_type="application/json",
         )
 
         logger.info("GEN3a Service v1.6.0 initialized:")
