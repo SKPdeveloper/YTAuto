@@ -276,10 +276,13 @@ class Gen2ValidationResult:
     gigantism_check: Dict[str, str] = field(default_factory=dict)
     loop_check: Dict[str, str] = field(default_factory=dict)
 
+    # Auto-fix tracking
+    auto_fixes: List[str] = field(default_factory=list)
+
     # Метадані
     validation_time_ms: float = 0.0
     timestamp: str = field(default_factory=lambda: datetime.now().astimezone().isoformat())
-    validator_version: str = "1.0"
+    validator_version: str = "1.1"
 
     @property
     def error_messages(self) -> List[str]:
@@ -293,7 +296,7 @@ class Gen2ValidationResult:
 
     def to_dict(self) -> Dict[str, Any]:
         """Конвертувати в словник для JSON."""
-        return {
+        result = {
             "validation": {
                 "stage": "VAL_GEN2_PYTHON",
                 "version": self.validator_version,
@@ -320,6 +323,9 @@ class Gen2ValidationResult:
             },
             "retry_guidance": self._build_retry_guidance() if not self.passed else None
         }
+        if self.auto_fixes:
+            result["auto_fixes"] = self.auto_fixes
+        return result
 
     def _build_reasoning(self) -> str:
         if self.passed:
@@ -353,10 +359,31 @@ class Gen2Validator:
     Фокусується на структурних перевірках, пропускає суб'єктивні критерії.
     """
 
+    # Auto-replacement map for banned words (single best replacement)
+    AUTO_REPLACEMENTS: Dict[str, str] = {
+        "slow motion": "suspended mid-air",
+        "slo-mo": "suspended mid-air",
+        "slowly": "",
+        "slow": "steady",
+        "gentle": "soft",
+        "gently": "softly",
+        "subtle": "visible",
+        "subtly": "visibly",
+        "calm": "smooth",
+        "gradual": "progressive",
+        "gradually": "progressively",
+        "leisurely": "measured",
+        "accelerating": "",
+        "rack focus": "",
+        "speed ramp": "",
+        "dolly zoom": "",
+    }
+
     def __init__(self):
         self._errors: List[ValidationError] = []
         self._warnings: List[ValidationError] = []
         self._scene_checks: List[SceneCheckResult] = []
+        self._auto_fixes: List[str] = []
         self._data: Dict[str, Any] = {}
         self._gen1_data: Optional[Dict[str, Any]] = None
         self._total_scenes: int = 0
@@ -368,14 +395,17 @@ class Gen2Validator:
     def validate(
         self,
         data: Dict[str, Any],
-        gen1_data: Optional[Dict[str, Any]] = None
+        gen1_data: Optional[Dict[str, Any]] = None,
+        auto_fix: bool = True,
     ) -> Gen2ValidationResult:
         """
         Валідувати GEN2 JSON вихід.
 
         Args:
-            data: Словник з GEN2 JSON виходом
+            data: Словник з GEN2 JSON виходом (modified in-place if auto_fix=True)
             gen1_data: Опціональний GEN1 вихід для cross-validation
+            auto_fix: Якщо True, автоматично виправляти банальні помилки
+                      (заборонені слова, "10s", "--ar 9:16") замість FAIL
 
         Returns:
             Gen2ValidationResult
@@ -386,6 +416,7 @@ class Gen2Validator:
         self._errors = []
         self._warnings = []
         self._scene_checks = []
+        self._auto_fixes = []
         self._data = data
         self._gen1_data = gen1_data
         self._scene1_movement = ""
@@ -393,6 +424,10 @@ class Gen2Validator:
         # Pre-compute _total_scenes so it's always available (even if _validate_scenes returns early)
         scenes = data.get("scenes", [])
         self._total_scenes = len(scenes) if isinstance(scenes, list) else 0
+
+        # Auto-fix common issues BEFORE validation (saves a full retry)
+        if auto_fix:
+            self._auto_fix_data()
 
         # Run validations
         self._run_all_validations()
@@ -408,14 +443,16 @@ class Gen2Validator:
             scene_checks=self._scene_checks.copy(),
             gigantism_check=self._build_gigantism_check(),
             loop_check=self._build_loop_check(),
+            auto_fixes=self._auto_fixes.copy(),
             validation_time_ms=validation_time_ms
         )
 
         # Log result
         if passed:
+            fix_msg = f", {len(self._auto_fixes)} auto-fixes" if self._auto_fixes else ""
             logger.success(
                 f"GEN2 validation PASSED in {validation_time_ms:.2f}ms "
-                f"({len(self._warnings)} warnings)"
+                f"({len(self._warnings)} warnings{fix_msg})"
             )
         else:
             logger.warning(
@@ -424,6 +461,85 @@ class Gen2Validator:
             )
 
         return result
+
+    # ========================================================================
+    # AUTO-FIX — Pre-validation fixes that save a full GEN2 retry (~4400 tokens)
+    # ========================================================================
+
+    def _auto_fix_data(self) -> None:
+        """
+        Auto-fix common Gemini mistakes BEFORE validation.
+
+        Fixes banned words, "10s" duration, "--ar 9:16" in prompts.
+        Each fix is logged as a warning (not error) and tracked in auto_fixes.
+        This prevents a full GEN2 retry that costs ~4400 tokens.
+        """
+        scenes = self._data.get("scenes", [])
+        if not isinstance(scenes, list):
+            return
+
+        for i, scene in enumerate(scenes):
+            if not isinstance(scene, dict):
+                continue
+
+            # 1. Fix banned words in video_prompt
+            video_prompt = scene.get("video_prompt", "")
+            if video_prompt:
+                fixed = self._replace_banned_words(video_prompt)
+                if fixed != video_prompt:
+                    scene["video_prompt"] = fixed
+                    fix_desc = f"scenes[{i}].video_prompt: auto-replaced banned words"
+                    self._auto_fixes.append(fix_desc)
+                    self._add_warning(
+                        f"scenes[{i}].video_prompt",
+                        f"Auto-fixed banned words (saved a retry)",
+                        suggestion=f"Original: ...{video_prompt[-60:]}",
+                    )
+                    logger.info(f"  [AUTO-FIX] {fix_desc}")
+
+            # 2. Fix "10s" in video_prompt (hardcoded in software)
+            video_prompt = scene.get("video_prompt", "")
+            if re.search(r'\b10s\b', video_prompt):
+                fixed = re.sub(r',?\s*\b10s\b', '', video_prompt).strip()
+                fixed = re.sub(r'\s+', ' ', fixed).strip().rstrip(',')
+                scene["video_prompt"] = fixed
+                fix_desc = f"scenes[{i}].video_prompt: auto-removed '10s'"
+                self._auto_fixes.append(fix_desc)
+                logger.info(f"  [AUTO-FIX] {fix_desc}")
+
+            # 3. Fix "--ar 9:16" in image_prompt (hardcoded in software)
+            image_prompt = scene.get("image_prompt", "")
+            if "--ar 9:16" in image_prompt or "--ar 9\\:16" in image_prompt:
+                fixed = image_prompt.replace("--ar 9:16", "").replace("--ar 9\\:16", "")
+                fixed = re.sub(r'\s+', ' ', fixed).strip()
+                scene["image_prompt"] = fixed
+                fix_desc = f"scenes[{i}].image_prompt: auto-removed '--ar 9:16'"
+                self._auto_fixes.append(fix_desc)
+                logger.info(f"  [AUTO-FIX] {fix_desc}")
+
+    def _replace_banned_words(self, prompt: str) -> str:
+        """
+        Replace banned words in a video prompt with safe alternatives.
+
+        Processes multi-word phrases first (e.g., "slow motion" before "slow"),
+        then cleans up whitespace/punctuation artifacts.
+        """
+        fixed = prompt
+
+        # Process multi-word replacements first (longest match first)
+        for banned in sorted(self.AUTO_REPLACEMENTS.keys(), key=len, reverse=True):
+            pattern = r'\b' + re.escape(banned) + r'\b'
+            if re.search(pattern, fixed, re.IGNORECASE):
+                replacement = self.AUTO_REPLACEMENTS[banned]
+                fixed = re.sub(pattern, replacement, fixed, flags=re.IGNORECASE)
+
+        # Clean up artifacts: double spaces, double commas, trailing commas
+        fixed = re.sub(r'\s+', ' ', fixed).strip()
+        fixed = re.sub(r',\s*,', ',', fixed)
+        fixed = re.sub(r',\s*$', '', fixed)
+        fixed = re.sub(r'^\s*,\s*', '', fixed)
+
+        return fixed
 
     # ========================================================================
     # ORCHESTRATION
@@ -1437,14 +1553,16 @@ class Gen2Validator:
 
 def validate_gen2(
     data: Dict[str, Any],
-    gen1_data: Optional[Dict[str, Any]] = None
+    gen1_data: Optional[Dict[str, Any]] = None,
+    auto_fix: bool = True,
 ) -> Gen2ValidationResult:
     """
     Зручна функція для валідації GEN2 виходу.
 
     Args:
-        data: GEN2 JSON вихід як словник
+        data: GEN2 JSON вихід як словник (modified in-place if auto_fix=True)
         gen1_data: Опціональний GEN1 вихід для cross-validation
+        auto_fix: Автоматично виправляти банальні помилки (default True)
 
     Returns:
         Gen2ValidationResult
@@ -1459,7 +1577,7 @@ def validate_gen2(
                 print(f"  - {error}")
     """
     validator = Gen2Validator()
-    return validator.validate(data, gen1_data)
+    return validator.validate(data, gen1_data, auto_fix=auto_fix)
 
 
 # ============================================================================

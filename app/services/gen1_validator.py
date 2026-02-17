@@ -346,6 +346,7 @@ BANNED_FIRST_WORDS: Set[str] = BANNED_FIRST_WORDS_FALLBACK
 VALID_CAMERA_MOVEMENTS: Set[str] = {
     "APPROACH", "RETREAT", "ORBIT", "RISE", "DESCEND",
     "RUSH", "REVEAL", "TRACK", "PUNCH", "PUSH", "STATIC",
+    "DOLLY", "CRANE",
 }
 
 # Заборонені camera movements (VAL_GEN1 рядок 239-244)

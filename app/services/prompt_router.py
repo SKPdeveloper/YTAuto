@@ -1164,11 +1164,21 @@ CRITICAL REQUIREMENTS:
 
         try:
             # Convert Pydantic models to dicts for Python validator
+            # Note: auto_fix=True modifies gen2_dict in-place
             gen2_dict = gen2_output.model_dump()
             gen1_dict = gen1_output.model_dump()
 
-            # Run Python validator (deterministic, ~5ms)
-            result: Gen2ValidationResult = python_validate_gen2(gen2_dict, gen1_dict)
+            # Run Python validator with auto-fix (deterministic, ~5ms)
+            result: Gen2ValidationResult = python_validate_gen2(gen2_dict, gen1_dict, auto_fix=True)
+
+            # Apply auto-fixes back to the Pydantic model (so merge uses fixed data)
+            if result.auto_fixes:
+                logger.info(f"[VAL_GEN2_PYTHON] Applied {len(result.auto_fixes)} auto-fixes (saved a full retry ~4400 tokens)")
+                gen2_scenes = gen2_dict.get("scenes", [])
+                for i, scene_dict in enumerate(gen2_scenes):
+                    if i < len(gen2_output.scenes):
+                        gen2_output.scenes[i].video_prompt = scene_dict.get("video_prompt", gen2_output.scenes[i].video_prompt)
+                        gen2_output.scenes[i].image_prompt = scene_dict.get("image_prompt", gen2_output.scenes[i].image_prompt)
 
             # Save debug output
             debug_output = json.dumps(result.to_dict(), indent=2, ensure_ascii=False)
@@ -1200,8 +1210,9 @@ CRITICAL REQUIREMENTS:
                 "phase2_quality": None,
                 "decision": {
                     "status": "PASSED" if result.passed else "FAILED",
-                    "reasoning": f"Python validator: {len(result.errors)} errors, {len(result.warnings)} warnings. "
-                                 + ("Ready for IMG_GEN." if result.passed else "Fix errors before proceeding."),
+                    "reasoning": f"Python validator: {len(result.errors)} errors, {len(result.warnings)} warnings"
+                                 + (f", {len(result.auto_fixes)} auto-fixes" if result.auto_fixes else "")
+                                 + (". Ready for IMG_GEN." if result.passed else ". Fix errors before proceeding."),
                     "proceed_to": "IMG_GEN" if result.passed else None,
                 },
                 "issues": {

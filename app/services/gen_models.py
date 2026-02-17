@@ -174,6 +174,8 @@ VALID_CAMERA_MOVEMENTS = [
     "PUNCH",
     "PUSH",
     "STATIC",
+    "DOLLY",
+    "CRANE",
 ]
 
 
@@ -293,6 +295,8 @@ class CameraMovement(str, Enum):
     PUNCH = "PUNCH"
     PUSH = "PUSH"
     STATIC = "STATIC"
+    DOLLY = "DOLLY"
+    CRANE = "CRANE"
 
 
 class NarrativePurpose(str, Enum):
