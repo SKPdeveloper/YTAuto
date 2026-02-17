@@ -197,14 +197,26 @@ class VideoTool(str, Enum):
 
 
 class ContentCategory(str, Enum):
-    """Content pillar categories."""
-    LUXURY_LISTINGS = "LUXURY_LISTINGS"
+    """Content pillar categories (synced with gen1_validator.Category)."""
+    GRAND_STRUCTURES = "GRAND_STRUCTURES"
     VEHICLES = "VEHICLES"
+    ENTERTAINMENT = "ENTERTAINMENT"
+    INFRASTRUCTURE = "INFRASTRUCTURE"
+    RESIDENTIAL = "RESIDENTIAL"
+    NATURE_FORMATIONS = "NATURE_FORMATIONS"
+    # Legacy categories
+    LUXURY_LISTINGS = "LUXURY_LISTINGS"
     TRANSIT = "TRANSIT"
     LANDMARKS = "LANDMARKS"
     COMMERCIAL = "COMMERCIAL"
-    INFRASTRUCTURE = "INFRASTRUCTURE"
-    ENTERTAINMENT = "ENTERTAINMENT"
+    NEIGHBORHOODS = "NEIGHBORHOODS"
+    NATURE = "NATURE"
+    FREESTYLE = "FREESTYLE"
+    # Gemini creative variations
+    INDUSTRIAL = "INDUSTRIAL"
+    MILITARY = "MILITARY"
+    SPECIALIZED = "SPECIALIZED"
+    HOSPITALITY = "HOSPITALITY"
 
 
 class HookType(str, Enum):
@@ -227,6 +239,9 @@ class PsychologicalTrigger(str, Enum):
     CONTRAST_HOOK = "CONTRAST_HOOK"
     AUDIO_PRIME = "AUDIO_PRIME"
     CURIOSITY_GAP = "CURIOSITY_GAP"
+    OLFACTORY_RECALL = "OLFACTORY_RECALL"
+    SYNAESTHESIA = "SYNAESTHESIA"
+    OLFACTORY_MEMORY = "OLFACTORY_MEMORY"
 
 
 class ArchitecturalStyle(str, Enum):
@@ -259,6 +274,10 @@ class LightingPreset(str, Enum):
     # Legacy presets kept for backwards compat
     AFTERNOON_WARM = "AFTERNOON_WARM"
     MIDDAY_BRIGHT = "MIDDAY_BRIGHT"
+    HARSH_INDUSTRIAL = "HARSH_INDUSTRIAL"
+    FOGGY_DIFFUSED = "FOGGY_DIFFUSED"
+    STORMY_DRAMATIC = "STORMY_DRAMATIC"
+    FLUORESCENT_COLD = "FLUORESCENT_COLD"
 
 
 class CameraMovement(str, Enum):
@@ -1085,6 +1104,7 @@ class Gen2SceneInput(BaseModel):
     camera_intent: Gen1CameraIntent = Field(..., description="Camera intent from GEN1")
     energy_level: str = Field(default="HIGH", description="Energy level")
     voiceover_segment: str = Field(default="", description="VO segment")
+    on_screen_text: str = Field(default="", description="Mute-friendly headline text (3-6 words)")
 
     # GEN1 → GEN2 handoff fields (required by GEN2 prompt)
     reference_hint: str = Field(default="INDEPENDENT", description="PRIMARY | REQUIRES_REF | INDEPENDENT | LOOP_CLOSE")
@@ -1177,6 +1197,20 @@ class Gen2SceneOutput(BaseModel):
     visual_tier: Optional[str] = Field(default=None, description="TIER_1_MONEY_SHOT | TIER_2_HIGH_APPETITE | TIER_3_BALANCED | TIER_4_ARCHITECTURE")
     motion_intensity: Optional[int] = Field(default=None, ge=1, le=10, description="Motion intensity 1-10")
 
+    @field_validator('motion_intensity', mode='before')
+    @classmethod
+    def coerce_motion_intensity(cls, v: Any) -> Optional[int]:
+        """Gemini sometimes returns integers as strings."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            try:
+                return int(v)
+            except ValueError:
+                digits = re.findall(r'\d+', v)
+                return int(digits[0]) if digits else None
+        return v
+
     # Generated prompts - REQUIRED
     image_prompt: str = Field(..., description="Full prompt for Nano Banana Pro - REQUIRED")
     video_prompt: str = Field(..., description="Animation prompt for Kling i2v - NO duration spec (hardcoded) - REQUIRED")
@@ -1268,16 +1302,16 @@ class Gen2LoopVerification(BaseModel):
     """Loop verification data from GEN2 for seamless video looping."""
     scene1_camera_movement: str = Field(default="", description="Camera movement in Scene 1")
     sceneN_camera_movement: str = Field(default="", description="Camera movement in last scene")
-    movements_are_different: bool = Field(default=True, description="Whether movements are different")
+    movements_are_different: Optional[bool] = Field(default=True, description="Whether movements are different")
     sceneN_after_reverse: str = Field(default="", description="Last scene description after reverse")
     scene1_foreground: str = Field(default="", description="Foreground element in Scene 1")
     sceneN_foreground: str = Field(default="", description="Foreground element in last scene")
-    foreground_match: bool = Field(default=True, description="Whether foreground elements match")
+    foreground_match: Optional[bool] = Field(default=True, description="Whether foreground elements match")
     scene1_lighting: str = Field(default="", description="Lighting in Scene 1")
     sceneN_lighting: str = Field(default="", description="Lighting in last scene")
-    lighting_match: bool = Field(default=True, description="Whether lighting matches")
-    same_reference_image: bool = Field(default=True, description="Whether same reference image is used")
-    loop_ready: bool = Field(default=True, description="Whether loop is ready")
+    lighting_match: Optional[bool] = Field(default=True, description="Whether lighting matches")
+    same_reference_image: Optional[bool] = Field(default=True, description="Whether same reference image is used")
+    loop_ready: Optional[bool] = Field(default=True, description="Whether loop is ready")
 
     @model_validator(mode='before')
     @classmethod
@@ -1342,23 +1376,23 @@ class Gen2VisualSummary(BaseModel):
                 data['loop_verification'] = {
                     'scene1_camera_movement': '',
                     'sceneN_camera_movement': '',
-                    'movements_are_different': False,
+                    'movements_are_different': None,
                     'sceneN_after_reverse': '',
                     'scene1_foreground': '',
                     'sceneN_foreground': '',
-                    'foreground_match': False,
+                    'foreground_match': None,
                     'scene1_lighting': '',
                     'sceneN_lighting': '',
-                    'lighting_match': False,
-                    'same_reference_image': False,
-                    'loop_ready': False
+                    'lighting_match': None,
+                    'same_reference_image': None,
+                    'loop_ready': None
                 }
         return data
 
 
 class Gen2GlobalSettings(BaseModel):
     """Global settings from GEN2 for consistent visual generation."""
-    gigantism_applied: bool = Field(default=True, description="Whether gigantism protocol is applied")
+    gigantism_applied: Optional[bool] = Field(default=True, description="Whether gigantism protocol is applied")
     negative_prompt: str = Field(
         default="tilt-shift, miniature, diorama, toy, cartoon, anime, illustration, drawing, painting, sketch, yellow color cast, sepia tone",
         description="Global negative prompt with anti-toy and anti-yellow keywords"
@@ -1533,13 +1567,14 @@ class DeliveryPayload(BaseModel):
                 camera_intent=scene.camera_intent,
                 energy_level=scene.energy_level,
                 voiceover_segment=scene.voiceover_segment,
+                on_screen_text=scene.on_screen_text,
                 reference_hint=scene.reference_hint,
                 gen2_visual_params=scene.gen2_visual_params,
                 scene_tricks=scene.scene_tricks,
-                sensory_pressure=scene.sensory_pressure or scene_extra.get('sensory_pressure'),
-                money_shot=scene.money_shot or scene_extra.get('money_shot'),
-                snap_moment=scene.snap_moment or scene_extra.get('snap_moment'),
-                temperature_contrast=scene.temperature_contrast or scene_extra.get('temperature_contrast'),
+                sensory_pressure=scene.sensory_pressure if scene.sensory_pressure is not None else scene_extra.get('sensory_pressure'),
+                money_shot=scene.money_shot if scene.money_shot is not None else scene_extra.get('money_shot'),
+                snap_moment=scene.snap_moment if scene.snap_moment is not None else scene_extra.get('snap_moment'),
+                temperature_contrast=scene.temperature_contrast if scene.temperature_contrast is not None else scene_extra.get('temperature_contrast'),
                 has_easter_egg=has_easter_egg,
                 easter_egg_info=gen1.engagement.easter_egg if has_easter_egg else None,
             )

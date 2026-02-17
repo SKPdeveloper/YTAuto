@@ -695,7 +695,11 @@ class Gen1Validator:
             egg = engagement.get("easter_egg")
             if isinstance(egg, dict):
                 obj = egg.get("object", "")
-                scene_num = egg.get("scene_number", 0)
+                scene_num_raw = egg.get("scene_number", 0)
+                try:
+                    scene_num = int(scene_num_raw)
+                except (ValueError, TypeError):
+                    scene_num = 0
                 is_audio_only = egg.get("format") == "AUDIO_ONLY"
                 has_real_egg = is_audio_only or (obj and obj != "none" and scene_num > 0)
 
@@ -716,7 +720,9 @@ class Gen1Validator:
                     if isinstance(pinned, str):
                         egg_patterns = ["spot", "find", "hidden", "spotted", "hiding", "secret"]
                         if any(p in pinned.lower() for p in egg_patterns):
-                            subject = self._data.get("metadata", {}).get("concept", {}).get("subject", "this")
+                            _meta = self._data.get("metadata", {})
+                            _concept = _meta.get("concept", {}) if isinstance(_meta, dict) else {}
+                            subject = _concept.get("subject", "this") if isinstance(_concept, dict) else "this"
                             youtube["pinned_comment"] = f"Would you visit a {subject}? 🏠"
                             self._add_warning(
                                 "youtube.pinned_comment",
@@ -1092,7 +1098,7 @@ class Gen1Validator:
 
             # Перевірка на перевикористані прикметники
             overused = get_overused_adjectives()
-            found_overused = [w for w in overused if w in script_lower]
+            found_overused = [w for w in overused if re.search(r'\b' + re.escape(w) + r'\b', script_lower)]
             if found_overused:
                 self._add_warning(
                     "voiceover.full_script",
@@ -1112,7 +1118,7 @@ class Gen1Validator:
 
             # Перевірка на generic luxury слова
             generic = get_generic_luxury()
-            found_generic = [w for w in generic if w in script_lower]
+            found_generic = [w for w in generic if re.search(r'\b' + re.escape(w) + r'\b', script_lower)]
             if len(found_generic) >= 2:
                 self._add_warning(
                     "voiceover.full_script",
@@ -1120,9 +1126,8 @@ class Gen1Validator:
                     suggestion="Be more specific and creative with descriptions"
                 )
 
-        # v8.4.0: Check for banned direction tags in full_script
-        if script:
-            found_banned = [tag for tag in BANNED_DIRECTION_TAGS if tag in script.lower()]
+            # v8.4.0: Check for banned direction tags in full_script
+            found_banned = [tag for tag in BANNED_DIRECTION_TAGS if tag in script_lower]
             if found_banned:
                 self._add_warning(
                     "voiceover.full_script",
@@ -1173,14 +1178,14 @@ class Gen1Validator:
         if word_count < 2 or word_count > 10:
             self._add_error(
                 "warning_line",
-                f"warning_line has {word_count} words (expected 3-5)",
+                f"warning_line has {word_count} words (allowed 2-10, ideal 3-5)",
                 code="WARNING_LINE_LENGTH",
                 suggestion="Format: \"Don't [FOOD_ACTION] the [ARCHITECTURE_ELEMENT].\" (3-5 words)"
             )
         elif word_count < 3 or word_count > 5:
             self._add_warning(
                 "warning_line",
-                f"warning_line has {word_count} words (ideal: 3-5)",
+                f"warning_line has {word_count} words (ideal 3-5)",
                 suggestion="Format: \"Don't [FOOD_ACTION] the [ARCHITECTURE_ELEMENT].\" (3-5 words)"
             )
 
@@ -1277,9 +1282,14 @@ class Gen1Validator:
                 self._require_non_empty(egg, "object", "engagement.easter_egg.object")
 
                 # scene_number (must be 2 to N-1)
-                scene_num = self._get_nested(egg, "scene_number")
+                scene_num_raw = self._get_nested(egg, "scene_number")
+                try:
+                    scene_num = int(scene_num_raw) if scene_num_raw is not None else None
+                except (ValueError, TypeError):
+                    scene_num = None
                 scenes_list = self._data.get("scenes", [])
-                total_scenes = len(scenes_list) if scenes_list else self._data.get("metadata", {}).get("scene_count", 8)
+                meta_for_count = self._data.get("metadata", {})
+                total_scenes = len(scenes_list) if scenes_list else (meta_for_count.get("scene_count", 8) if isinstance(meta_for_count, dict) else 8)
                 if scene_num is None:
                     self._add_error(
                         "engagement.easter_egg.scene_number",
@@ -1689,7 +1699,11 @@ class Gen1Validator:
         for i, scene in enumerate(scenes):
             if not isinstance(scene, dict):
                 continue  # Already reported in duplicate check loop above
-            scene_num = scene.get("scene_number", i + 1)
+            scene_num_raw = scene.get("scene_number", i + 1)
+            try:
+                scene_num = int(scene_num_raw)
+            except (ValueError, TypeError):
+                scene_num = i + 1
             prefix = f"scenes[{i}]"
 
             # scene_number validation — must be sequential
@@ -1714,7 +1728,6 @@ class Gen1Validator:
             if energy == "LOW":
                 low_energy_count += 1
                 if scene_num <= 3:
-                    purpose = self._get_nested(scene, "narrative_purpose", "")
                     if purpose == "STRUCTURAL_DETAIL":
                         # Hungry Human Rule: ASMR scene requires LOW energy (breathing room)
                         self._add_warning(
@@ -2136,20 +2149,32 @@ class Gen1Validator:
         Викликається тільки якщо валідація пройшла.
         """
         metadata = self._data.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
         concept = metadata.get("concept", {})
+        if not isinstance(concept, dict):
+            concept = {}
         lighting = self._data.get("lighting_master", {})
+        if not isinstance(lighting, dict):
+            lighting = {}
         scenes = self._data.get("scenes", [])
+        if not isinstance(scenes, list):
+            scenes = []
 
         # Отримуємо movements для loop strategy
         scene1_movement = ""
         last_scene_movement = ""
         last_scene_num = len(scenes)
         for scene in scenes:
+            if not isinstance(scene, dict):
+                continue
             sn = scene.get("scene_number", 0)
             if sn == 1:
-                scene1_movement = scene.get("camera_intent", {}).get("movement", "")
+                cam = scene.get("camera_intent", {})
+                scene1_movement = cam.get("movement", "") if isinstance(cam, dict) else ""
             if sn == last_scene_num:
-                last_scene_movement = scene.get("camera_intent", {}).get("movement", "")
+                cam = scene.get("camera_intent", {})
+                last_scene_movement = cam.get("movement", "") if isinstance(cam, dict) else ""
 
         return {
             "atmosphere_mode": self._data.get("atmosphere_mode", "CINEMATIC"),

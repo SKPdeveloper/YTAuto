@@ -20,10 +20,15 @@ from enum import Enum
 # ============================================================================
 
 class AtmosphereMode(str, Enum):
-    """Режим атмосфери відео."""
+    """Режим атмосфери відео (synced with gen1_validator.AtmosphereMode)."""
     CINEMATIC = "CINEMATIC"
     VIBRANT = "VIBRANT"
     PLAYFUL = "PLAYFUL"
+    GOLDEN_WARM = "GOLDEN_WARM"
+    TROPICAL = "TROPICAL"
+    ETHEREAL = "ETHEREAL"
+    NOIR = "NOIR"
+    HAUNTED = "HAUNTED"
 
 
 class HookStyleType(str, Enum):
@@ -256,6 +261,7 @@ class HookStrategy(BaseModel):
     visual_hook: str = Field(default="", description="Візуальний хук (legacy)")
     audio_hook: str = Field(default="", description="Аудіо хук (legacy)")
     scene_1_entry_type: str = Field(default="MACRO_ENTRY", description="MACRO_ENTRY | SCALE_SHOCK")
+    body_trigger: Optional[str] = Field(default=None, description="SKIN | MOUTH | NOSE | EARS | STOMACH")
 
     @model_validator(mode='before')
     @classmethod

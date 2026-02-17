@@ -978,8 +978,11 @@ class Gen2Validator:
                 code="MISSING_FIRST_FRAME_COMPOSITION"
             )
         else:
-            # Check required fields
-            required = ["hook_element", "foreground", "scale_proof", "safe_zone"]
+            # Check required fields (scale_proof only required for TIER_4 architecture)
+            visual_tier = scene.get("visual_tier", "")
+            required = ["hook_element", "foreground", "safe_zone"]
+            if visual_tier in ("TIER_4_ARCHITECTURE",):
+                required.append("scale_proof")
             for field_name in required:
                 if not ffc.get(field_name):
                     self._add_error(
@@ -1088,6 +1091,7 @@ class Gen2Validator:
                 "Should contain safe zone instruction",
                 suggestion="Add: 'subject positioned in upper portion of frame'"
             )
+            valid = False
 
         # Check for --ar 9:16 (should NOT be present)
         if "--ar 9:16" in prompt_lower or "--ar 9\\:16" in prompt_lower:

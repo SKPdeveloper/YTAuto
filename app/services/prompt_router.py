@@ -1765,6 +1765,7 @@ CRITICAL REQUIREMENTS:
                 visual_hook=gen1.hook.first_frame_visual,  # legacy alias
                 audio_hook=gen1.hook.complete_hook_vo,  # legacy alias
                 scene_1_entry_type=getattr(gen1.hook, 'scene_1_entry_type', 'MACRO_ENTRY'),
+                body_trigger=getattr(gen1.hook, 'body_trigger', None),
             ),
             psychology=Psychology(
                 triggers=[gen1.hook.psychological_trigger],
