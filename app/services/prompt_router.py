@@ -1857,6 +1857,7 @@ CRITICAL REQUIREMENTS:
             ),
             # Audio with all required fields (including full GEN1 audio data)
             audio=AudioConfig(
+                suno_prompt=gen1.audio.suno_prompt if gen1.audio else "",
                 background_music=BackgroundMusic(
                     genre="cinematic",
                     style="epic orchestral",
@@ -1875,9 +1876,15 @@ CRITICAL REQUIREMENTS:
                 target_channel=getattr(gen1.publish_config, 'target_channel', "glaze_city") if gen1.publish_config else "glaze_city"
             ),
             youtube=ViralMetadata(
-                title=(gen1.youtube.title if gen1.youtube else None) or gen1.youtube_title or gen1.metadata.title or "Glaze City Property",
+                title=youtube_title,
+                title_char_count=len(youtube_title),
                 description=(gen1.youtube.description if gen1.youtube else None) or gen1.youtube_description or gen1.metadata.title or "Glaze City",
-                pinned_comment=(gen1.youtube.pinned_comment if gen1.youtube and gen1.youtube.pinned_comment is not None else None) if gen1.youtube else gen1.youtube_pinned_comment if gen1.youtube_pinned_comment is not None else (gen1.engagement.easter_egg.comment_bait if gen1.engagement.easter_egg else ""),
+                pinned_comment=(
+                    gen1.youtube.pinned_comment
+                    or getattr(gen1, 'youtube_pinned_comment', None)
+                    or (gen1.engagement.easter_egg.comment_bait if gen1.engagement.easter_egg else "")
+                    or ""
+                ),
                 hashtags=gen1.youtube_hashtags or gen1.engagement.hashtags or [],
                 tags=(gen1.youtube.tags if gen1.youtube else None) or gen1.youtube_tags or [],
             ),
@@ -1939,6 +1946,7 @@ CRITICAL REQUIREMENTS:
             meta=ProjectMeta(
                 total_scenes=len(gen1.scenes),  # authoritative: GEN1 scene count
                 total_duration_seconds=sum(s.duration_seconds for s in glaze_scenes),
+                content_pillar=gen1.metadata.concept.category if gen1.metadata.concept else "",
                 generated_at=datetime.now().isoformat(),
             ),
             # Warning line for AERIAL (N-1) scene

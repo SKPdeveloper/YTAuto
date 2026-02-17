@@ -668,6 +668,7 @@ class SFXItem(BaseModel):
 class AudioConfig(BaseModel):
     """Повна аудіо конфігурація - background_music required."""
     background_music: BackgroundMusic = Field(..., description="Фонова музика - REQUIRED")
+    suno_prompt: str = Field(default="", description="GEN1 music prompt for Suno/Udio generation")
     sfx: List[SFXItem] = Field(default_factory=list, description="SFX legacy format")
     # New fields from GEN1
     sonic_hook: Optional[SonicHook] = Field(default=None, description="Звуковий хук з GEN1")
