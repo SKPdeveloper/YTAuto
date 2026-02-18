@@ -528,6 +528,7 @@ class GlazeScene(BaseModel):
     money_shot: Optional[Dict[str, Any]] = Field(default=None, description="Money shot info {is_money_shot, still_image_description}")
     snap_moment: Optional[Dict[str, Any]] = Field(default=None, description="Snap moment timing envelope for money_shot scenes (v8.4.0)")
     temperature_contrast: Optional[Dict[str, str]] = Field(default=None, description="Color/mood {subject_temp, background_temp, contrast_method}")
+    food_visual_ratio: Optional[str] = Field(default=None, description="FOOD_DOMINANT | BALANCED | ARCHITECTURE_DOMINANT (v8.5.0)")
 
     # GEN2 metadata fields
     inheritance: Optional[SceneInheritance] = Field(default=None, description="Наслідування від батьківської сцени")

@@ -1084,6 +1084,9 @@ CRITICAL REQUIREMENTS:
             # Run Python validator (deterministic, ~5ms)
             result: Gen1ValidationResult = python_validate_gen1(gen1_dict, strict_mode=False)
 
+            # Store auto-corrected data for re-parsing after validation (v8.5.0)
+            self._last_corrected_gen1_data = result.corrected_data
+
             # Save debug output
             debug_output = json.dumps(result.to_dict(), indent=2, ensure_ascii=False)
             self._save_raw_response(debug_output, "VAL_GEN1_PYTHON", project_id)
@@ -1177,21 +1180,27 @@ CRITICAL REQUIREMENTS:
                 gen2_scenes = gen2_dict.get("scenes", [])
                 for i, scene_dict in enumerate(gen2_scenes):
                     if i < len(gen2_output.scenes):
-                        gen2_output.scenes[i].video_prompt = scene_dict.get("video_prompt", gen2_output.scenes[i].video_prompt)
-                        gen2_output.scenes[i].image_prompt = scene_dict.get("image_prompt", gen2_output.scenes[i].image_prompt)
+                        scene_model = gen2_output.scenes[i]
+                        for key, value in scene_dict.items():
+                            if hasattr(scene_model, key) and value is not None:
+                                try:
+                                    setattr(scene_model, key, value)
+                                except (ValueError, TypeError):
+                                    pass  # Skip fields that can't be set directly
 
             # Save debug output
             debug_output = json.dumps(result.to_dict(), indent=2, ensure_ascii=False)
             self._save_raw_response(debug_output, "VAL_GEN2_PYTHON", project_id)
 
             # Convert scene_checks to Gen2SceneCheck format
+            _valid_statuses = {"PASS", "FAIL", "WARNING"}
             scene_checks = []
             for sc in result.scene_checks:
                 scene_checks.append({
                     "scene": sc.scene,
-                    "image_prompt": sc.image_prompt if sc.image_prompt in ["PASS", "FAIL", "WARNING"] else "PASS",
-                    "video_prompt": sc.video_prompt if sc.video_prompt in ["PASS", "FAIL", "WARNING"] else "PASS",
-                    "motion_elements": sc.motion_elements if sc.motion_elements in ["PASS", "FAIL", "WARNING"] else "PASS",
+                    "image_prompt": sc.image_prompt if sc.image_prompt in _valid_statuses else "WARNING",
+                    "video_prompt": sc.video_prompt if sc.video_prompt in _valid_statuses else "WARNING",
+                    "motion_elements": sc.motion_elements if sc.motion_elements in _valid_statuses else "WARNING",
                 })
 
             # Convert to Gen2ValidationResponse format
@@ -1585,6 +1594,7 @@ CRITICAL REQUIREMENTS:
                 'first_frame_composition', 'scale_techniques',
                 'visual_punctuation', 'easter_egg_integration',
                 'snap_moment', 'sensory_pressure', 'money_shot', 'temperature_contrast',
+                'food_visual_ratio',
             }
             extra_kwargs = {}
             if gen1_scene.__pydantic_extra__:
@@ -1625,6 +1635,7 @@ CRITICAL REQUIREMENTS:
                 sensory_pressure=gen1_scene.sensory_pressure,
                 money_shot=gen1_scene.money_shot,
                 temperature_contrast=gen1_scene.temperature_contrast,
+                food_visual_ratio=gen1_scene.food_visual_ratio,
                 video_tool="KLING",
                 # Status
                 status="pending",
@@ -2232,6 +2243,21 @@ CRITICAL REQUIREMENTS:
 
             if val_result and val_result.passed:
                 logger.success(f"[VAL_GEN1] Validation PASSED on attempt {attempt}")
+                # Re-parse gen1_output from auto-corrected data (v8.5.0)
+                # Auto-fix may have corrected narrative_purpose, food_visual_ratio, etc.
+                corrected = getattr(self, '_last_corrected_gen1_data', None)
+                if corrected:
+                    try:
+                        gen1_output = Gen1Output.model_validate(corrected)
+                        logger.info("[VAL_GEN1] Applied auto-corrections to gen1_output")
+                    except Exception as e:
+                        logger.error(f"[VAL_GEN1] Failed to re-parse corrected data: {e}")
+                        # Auto-corrections are critical — don't proceed with uncorrected data
+                        if attempt < MAX_VALIDATION_RETRIES:
+                            logger.info("[VAL_GEN1] Will retry GEN1 (corrected data re-parse failed)")
+                            continue
+                        else:
+                            logger.warning("[VAL_GEN1] Last attempt — proceeding with original gen1_output")
                 gen1_validated = True
                 break
             else:

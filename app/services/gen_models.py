@@ -590,6 +590,7 @@ class Gen1SceneConcept(BaseModel):
     money_shot: Optional[Dict[str, Any]] = Field(default=None, description="Money shot info {is_money_shot, still_image_description}")
     snap_moment: Optional[Dict[str, Any]] = Field(default=None, description="Snap moment timing envelope for money_shot scenes (v8.4.0)")
     temperature_contrast: Optional[Dict[str, str]] = Field(default=None, description="Color/mood {subject_temp, background_temp, contrast_method}")
+    food_visual_ratio: Optional[str] = Field(default=None, description="FOOD_DOMINANT | BALANCED | ARCHITECTURE_DOMINANT (v8.5.0)")
 
     @model_validator(mode='before')
     @classmethod
@@ -1120,6 +1121,7 @@ class Gen2SceneInput(BaseModel):
     money_shot: Optional[Dict[str, Any]] = Field(default=None, description="Money shot info {is_money_shot, still_image_description}")
     snap_moment: Optional[Dict[str, Any]] = Field(default=None, description="Snap moment timing envelope for money_shot scenes (v8.4.0)")
     temperature_contrast: Optional[Dict[str, str]] = Field(default=None, description="Color/mood direction {subject_temp, background_temp, contrast_method}")
+    food_visual_ratio: Optional[str] = Field(default=None, description="FOOD_DOMINANT | BALANCED | ARCHITECTURE_DOMINANT (v8.5.0)")
 
     # Easter egg info
     has_easter_egg: bool = Field(default=False, description="Whether this scene has easter egg")
@@ -1579,6 +1581,7 @@ class DeliveryPayload(BaseModel):
                 money_shot=scene.money_shot if scene.money_shot is not None else scene_extra.get('money_shot'),
                 snap_moment=scene.snap_moment if scene.snap_moment is not None else scene_extra.get('snap_moment'),
                 temperature_contrast=scene.temperature_contrast if scene.temperature_contrast is not None else scene_extra.get('temperature_contrast'),
+                food_visual_ratio=scene.food_visual_ratio if scene.food_visual_ratio is not None else scene_extra.get('food_visual_ratio'),
                 has_easter_egg=has_easter_egg,
                 easter_egg_info=gen1.engagement.easter_egg if has_easter_egg else None,
             )

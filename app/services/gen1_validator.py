@@ -43,6 +43,7 @@ GEN1 Python Validator v1.0
 from __future__ import annotations
 
 import copy
+import difflib
 import re
 import time
 from dataclasses import dataclass, field
@@ -352,16 +353,18 @@ VALID_CAMERA_MOVEMENTS: Set[str] = {
 # Заборонені camera movements (VAL_GEN1 рядок 239-244)
 BANNED_CAMERA_MOVEMENTS: Set[str] = {"DRIFT", "FLOAT", "GLIDE"}
 
-# ElevenLabs v3 підтримувані теги (GEN1.txt v8.4.0 — Brand Signature whitelist)
-# v8.4.0: sensory_witness uses ONLY [whispers], [calm] for emotion.
+# ElevenLabs v3 підтримувані теги (GEN1.txt v8.5.0 — Brand Signature whitelist)
+# v8.5.0: sensory_witness uses [whispers], [calm], [warm], [gentle] for emotion.
+# COMEDY arc also allows [dry laugh].
 # Full ElevenLabs v3 tag set kept for backwards compat (old briefs may use [excited] etc.)
 ELEVENLABS_EMOTION_TAGS: Set[str] = {
-    "[whispers]", "[calm]",
-    # Legacy (still work in ElevenLabs, but banned in v8.4.0 brand signature):
+    "[whispers]", "[calm]", "[warm]", "[gentle]",
+    # Legacy (still work in ElevenLabs, but banned in v8.5.0 brand signature):
     "[excited]", "[sad]", "[angry]", "[happily]", "[shouts]"
 }
 ELEVENLABS_DELIVERY_TAGS: Set[str] = {
-    "[pause]", "[short pause]", "[long pause]", "[silence]", "[laughs]", "[sighs]"
+    "[pause]", "[short pause]", "[long pause]", "[silence]", "[laughs]", "[sighs]",
+    "[dry laugh]"
 }
 ELEVENLABS_STYLE_TAGS: Set[str] = {
     "[rushed]", "[drawn out]"
@@ -387,6 +390,35 @@ MIN_DISTINCTIVE_FEATURES: int = 2
 MIN_TEXTURE_KEYWORDS: int = 2
 MIN_COLOR_KEYWORDS: int = 2
 MIN_PROMPT_SNIPPET_LENGTH: int = 10
+
+# v8.5.0: warning_line element/action whitelists
+VALID_ARCHITECTURE_ELEMENTS: Set[str] = {
+    "walls", "floor", "ceiling", "stairs", "door", "roof", "window",
+    "pool", "fence", "chimney", "columns", "railing", "pipes", "beams", "tiles",
+    "foundation", "ledge", "fountain", "bridge", "arch", "balcony", "tower", "dome", "porch", "gutter",
+}
+VALID_FOOD_ACTIONS: Set[str] = {
+    "lick", "bite", "eat", "drink", "touch", "taste", "chew", "nibble", "swallow", "smell",
+    "scrape", "peel", "squeeze", "sip", "crunch", "snap", "break", "crack", "slice", "dip",
+}
+
+# v8.5.0: Color words — visual descriptors banned in VO (sensory_witness rule)
+COLOR_WORDS: Set[str] = {
+    "golden", "white", "black", "red", "blue", "green", "pink",
+    "orange", "silver", "purple", "brown", "yellow",
+}
+
+# v8.5.0: Narrative bridge starters — banned first words for VO lines
+NARRATIVE_BRIDGE_STARTERS: Set[str] = {
+    "but", "and", "yet", "so", "then", "deeper", "further",
+    "inside", "below", "above", "beyond",
+}
+
+
+def _closest_match(word: str, valid_set: Set[str], default: str) -> str:
+    """Find the closest match in a set using difflib SequenceMatcher."""
+    matches = difflib.get_close_matches(word, valid_set, n=1, cutoff=0.4)
+    return matches[0] if matches else default
 
 
 # ============================================================================
@@ -450,6 +482,9 @@ class ValidationResult:
 
     # Дані для передачі в GEN2
     gen2_handoff: Dict[str, Any] = field(default_factory=dict)
+
+    # Auto-corrected data (v8.5.0) — dict з виправленнями auto_correct_gemini_confusions
+    corrected_data: Optional[Dict[str, Any]] = field(default=None)
 
     @property
     def error_messages(self) -> List[str]:
@@ -598,7 +633,8 @@ class Gen1Validator:
             errors=self._errors.copy(),
             warnings=self._warnings.copy(),
             validation_time_ms=validation_time_ms,
-            gen2_handoff=gen2_handoff
+            gen2_handoff=gen2_handoff,
+            corrected_data=self._data,
         )
 
         # Логування
@@ -691,7 +727,9 @@ class Gen1Validator:
 
         # Fix easter egg issues (Gemini consistently leaves comment_bait blank,
         # or generates pinned_comment with egg-hunt language for fake eggs)
+        # Also handle easter_egg=null (Gemini sometimes outputs null instead of object)
         engagement = self._data.get("engagement")
+        has_real_egg = False
         if isinstance(engagement, dict):
             egg = engagement.get("easter_egg")
             if isinstance(egg, dict):
@@ -713,22 +751,35 @@ class Gen1Validator:
                         "engagement.easter_egg.comment_bait",
                         "Auto-filled empty comment_bait",
                     )
+            # egg is None/null → no real egg
 
-                # Fix pinned_comment that references egg hunt when no real egg exists
-                youtube = self._data.get("youtube", {})
-                if isinstance(youtube, dict) and not has_real_egg:
-                    pinned = youtube.get("pinned_comment", "")
-                    if isinstance(pinned, str):
-                        egg_patterns = ["spot", "find", "hidden", "spotted", "hiding", "secret"]
-                        if any(p in pinned.lower() for p in egg_patterns):
-                            _meta = self._data.get("metadata", {})
-                            _concept = _meta.get("concept", {}) if isinstance(_meta, dict) else {}
-                            subject = _concept.get("subject", "this") if isinstance(_concept, dict) else "this"
-                            youtube["pinned_comment"] = f"Would you visit a {subject}? 🏠"
-                            self._add_warning(
-                                "youtube.pinned_comment",
-                                "Auto-replaced egg-hunt reference (no real easter egg exists)",
-                            )
+        # Also check top-level easter_egg (prompt_router sometimes puts it here)
+        if not has_real_egg:
+            top_egg = self._data.get("easter_egg")
+            if isinstance(top_egg, dict):
+                obj = top_egg.get("object", "")
+                try:
+                    sn = int(top_egg.get("scene_number", 0))
+                except (ValueError, TypeError):
+                    sn = 0
+                is_audio = top_egg.get("format") == "AUDIO_ONLY"
+                has_real_egg = is_audio or (obj and obj != "none" and sn > 0)
+
+        # Fix pinned_comment that references egg hunt when no real egg exists
+        youtube = self._data.get("youtube", {})
+        if isinstance(youtube, dict) and not has_real_egg:
+            pinned = youtube.get("pinned_comment", "")
+            if isinstance(pinned, str):
+                egg_patterns = ["spot", "find", "hidden", "spotted", "hiding", "secret"]
+                if any(p in pinned.lower() for p in egg_patterns):
+                    _meta = self._data.get("metadata", {})
+                    _concept = _meta.get("concept", {}) if isinstance(_meta, dict) else {}
+                    subject = _concept.get("subject", "this") if isinstance(_concept, dict) else "this"
+                    youtube["pinned_comment"] = f"Would you visit a {subject}? 🏠"
+                    self._add_warning(
+                        "youtube.pinned_comment",
+                        "Auto-replaced egg-hunt reference (no real easter egg exists)",
+                    )
 
         # Fix Scene 1 on_screen_text missing food name
         food_name = self._get_food_name_from_data()
@@ -743,11 +794,478 @@ class Gen1Validator:
                     f"Auto-prepended food name '{food_name}' for mute viewer recognition",
                 )
 
+        # Fix food_visual_ratio: auto-correct invalid values, infer missing (v8.5.0)
+        for i, scene in enumerate(scenes):
+            if not isinstance(scene, dict):
+                continue
+            fvr = scene.get("food_visual_ratio", "")
+            if fvr and isinstance(fvr, str) and fvr.strip().upper() == "ARCHITECTURE_DOMINANT":
+                scene["food_visual_ratio"] = "BALANCED"
+                self._add_warning(
+                    f"scenes[{i}].food_visual_ratio",
+                    "Auto-corrected 'ARCHITECTURE_DOMINANT' → 'BALANCED' (never allowed per v8.5.0)",
+                )
+            elif not fvr:
+                purpose = scene.get("narrative_purpose", "")
+                ms = scene.get("money_shot")
+                is_money = isinstance(ms, dict) and ms.get("is_money_shot")
+                if i == 0 or purpose == "STRUCTURAL_DETAIL" or is_money:
+                    scene["food_visual_ratio"] = "FOOD_DOMINANT"
+                else:
+                    scene["food_visual_ratio"] = "BALANCED"
+                self._add_warning(
+                    f"scenes[{i}].food_visual_ratio",
+                    f"Auto-filled missing food_visual_ratio → '{scene['food_visual_ratio']}'",
+                )
+
+        # ---- 1A: Money shot voiceover → mode-based enforcement ----
+        # MODE A (CRISPY/CRUNCHY/BRITTLE): pure [silence]
+        # MODE B (CREAMY/CHEWY/SMOOTH): allow "[long pause] [whispers] <word>."
+        _SOFT_TEXTURES = {"creamy", "chewy", "smooth", "gooey", "silky", "velvety", "soft", "melty"}
+        food_id = self._data.get("food_identity", {})
+        tex_kws = food_id.get("texture_keywords", []) if isinstance(food_id, dict) else []
+        is_soft_texture = any(
+            kw.lower().strip() in _SOFT_TEXTURES
+            for kw in tex_kws if isinstance(kw, str)
+        )
+        _MODE_B_PATTERN = re.compile(
+            r'^\s*\[long\s+pause\]\s*\[whispers\]\s*\S+\.?\s*$', re.IGNORECASE
+        )
+
+        for i, scene in enumerate(scenes):
+            if not isinstance(scene, dict):
+                continue
+            ms = scene.get("money_shot")
+            if isinstance(ms, dict) and ms.get("is_money_shot"):
+                vo_seg = scene.get("voiceover_segment", "")
+                if vo_seg and vo_seg.strip() not in ("", "[silence]"):
+                    if is_soft_texture and _MODE_B_PATTERN.match(vo_seg.strip()):
+                        # MODE B: valid — one whispered word after [long pause]
+                        pass
+                    else:
+                        scene["voiceover_segment"] = "[silence]"
+                        scene["narrator_script"] = ""
+                        self._add_warning(
+                            f"scenes[{i}].voiceover_segment",
+                            f"Auto-forced '[silence]' on money_shot scene (was: '{vo_seg[:60]}')",
+                        )
+                narrator = scene.get("narrator_script", "")
+                if narrator and narrator.strip():
+                    # MODE B allows 1-word narrator_script
+                    if is_soft_texture and len(narrator.strip().split()) <= 1:
+                        pass
+                    else:
+                        scene["narrator_script"] = ""
+                        self._add_warning(
+                            f"scenes[{i}].narrator_script",
+                            "Auto-cleared narrator_script on money_shot scene",
+                        )
+
+        # ---- 1A-bis: ASMR scene whisper anchor (H3 cold-start fix) ----
+        # Pure ASMR scenes (not money_shot) must have "[whispers] <word>. [long pause]"
+        # If Gemini generates empty VO for ASMR scenes, auto-fix with default anchor word
+        asmr_scene_nums = self._data.get("asmr_scenes", [])
+        if isinstance(asmr_scene_nums, list):
+            for i, scene in enumerate(scenes):
+                if not isinstance(scene, dict):
+                    continue
+                scene_num = scene.get("scene_number", i + 1)
+                if scene_num not in asmr_scene_nums:
+                    continue
+                # Skip money_shot scenes — they follow MODE A/B rule (handled by 1A)
+                ms = scene.get("money_shot")
+                if isinstance(ms, dict) and ms.get("is_money_shot"):
+                    continue
+                # Pure ASMR scene: ensure whisper anchor
+                vo_seg = scene.get("voiceover_segment", "")
+                narrator = scene.get("narrator_script", "")
+                vo_empty = not vo_seg or vo_seg.strip() in ("", "[silence]")
+                narrator_empty = not narrator or not narrator.strip()
+                if vo_empty and narrator_empty:
+                    scene["voiceover_segment"] = "[whispers] Warm. [long pause]"
+                    scene["narrator_script"] = "Warm."
+                    self._add_warning(
+                        f"scenes[{i}].voiceover_segment",
+                        f"Auto-added whisper anchor to ASMR scene {scene_num} "
+                        f"(was empty — cold-start viewers need audio anchor)",
+                    )
+
+        # ---- 1B: Narrative bridge ban → strip bridge WORD from VO, keep content ----
+        for i, scene in enumerate(scenes):
+            if not isinstance(scene, dict):
+                continue
+            for field_key in ("voiceover_segment", "narrator_script"):
+                text = scene.get(field_key, "")
+                if not text or not isinstance(text, str):
+                    continue
+                # Check each line (some segments are multi-line)
+                lines = text.split("\n")
+                fixed_lines = []
+                changed = False
+                for line in lines:
+                    stripped = line.strip()
+                    # Get first real word (skip ElevenLabs tags)
+                    clean_line = re.sub(r'\[[\w\s]+\]', '', stripped).strip()
+                    if clean_line:
+                        first_word = clean_line.split()[0].rstrip(".,!?;:").lower()
+                        if first_word in NARRATIVE_BRIDGE_STARTERS:
+                            # Strip only the bridge word, preserve the rest
+                            # Find the bridge word in the original line (after any tags)
+                            bridge_pattern = re.compile(
+                                r'(\[[\w\s]+\]\s*)*' + re.escape(clean_line.split()[0]) + r'\s*',
+                                re.IGNORECASE,
+                            )
+                            fixed_line = bridge_pattern.sub(
+                                lambda m: m.group(1) or '' if m.group(1) else '',
+                                stripped,
+                                count=1,
+                            ).strip()
+                            # Capitalize first real word after stripping
+                            if fixed_line:
+                                # Preserve leading tags, capitalize first text char
+                                tag_prefix = re.match(r'((?:\[[\w\s]+\]\s*)*)', fixed_line)
+                                prefix = tag_prefix.group(1) if tag_prefix else ""
+                                rest = fixed_line[len(prefix):]
+                                if rest:
+                                    rest = rest[0].upper() + rest[1:]
+                                fixed_line = prefix + rest
+                            self._add_warning(
+                                f"scenes[{i}].{field_key}",
+                                f"Auto-stripped bridge word '{first_word}': '{stripped[:50]}' → '{fixed_line[:50]}'",
+                            )
+                            changed = True
+                            fixed_lines.append(fixed_line if fixed_line else line)
+                            continue
+                    fixed_lines.append(line)
+                if changed:
+                    scene[field_key] = "\n".join(fixed_lines).strip()
+            # Also strip from micro_open_loop.setup_line
+            mol = scene.get("micro_open_loop")
+            if isinstance(mol, dict):
+                setup = mol.get("setup_line", "")
+                if isinstance(setup, str) and setup.strip():
+                    clean_setup = re.sub(r'\[[\w\s]+\]', '', setup).strip()
+                    if clean_setup:
+                        first_w = clean_setup.split()[0].rstrip(".,!?;:").lower()
+                        if first_w in NARRATIVE_BRIDGE_STARTERS:
+                            mol["setup_line"] = ""
+                            self._add_warning(
+                                f"scenes[{i}].micro_open_loop.setup_line",
+                                f"Auto-cleared narrative bridge setup_line: '{setup[:60]}'",
+                            )
+
+        # ---- 1E: Pinned comment — second pass with expanded patterns ----
+        # (has_real_egg already determined above in the easter egg block)
+        youtube_1e = self._data.get("youtube", {})
+        if isinstance(youtube_1e, dict) and not has_real_egg:
+            pinned_1e = youtube_1e.get("pinned_comment", "")
+            if isinstance(pinned_1e, str) and pinned_1e.strip():
+                expanded_egg_patterns = [
+                    "spot", "find", "hidden", "spotted", "hiding", "secret",
+                    "passenger", "who", "did you", "anyone", "notice",
+                ]
+                if any(p in pinned_1e.lower() for p in expanded_egg_patterns):
+                    _meta = self._data.get("metadata", {})
+                    _concept = _meta.get("concept", {}) if isinstance(_meta, dict) else {}
+                    subject = _concept.get("subject", "this") if isinstance(_concept, dict) else "this"
+                    youtube_1e["pinned_comment"] = f"Would you visit a {subject}? 🏠"
+                    self._add_warning(
+                        "youtube.pinned_comment",
+                        f"Auto-replaced egg-hunt/quiz reference (no real easter egg): '{pinned_1e[:60]}'",
+                    )
+
+            # Also check if pinned references food material when no real egg
+            pinned_1e = youtube_1e.get("pinned_comment", "")
+            if isinstance(pinned_1e, str) and pinned_1e.strip():
+                food_id = self._data.get("food_identity", {})
+                primary_food = food_id.get("primary_food", "") if isinstance(food_id, dict) else ""
+                if primary_food and primary_food.lower() in pinned_1e.lower():
+                    _meta = self._data.get("metadata", {})
+                    _concept = _meta.get("concept", {}) if isinstance(_meta, dict) else {}
+                    subject = _concept.get("subject", "this") if isinstance(_concept, dict) else "this"
+                    youtube_1e["pinned_comment"] = f"Would you visit a {subject}? 🏠"
+                    self._add_warning(
+                        "youtube.pinned_comment",
+                        f"Auto-replaced food-material reference in pinned (no real egg): '{pinned_1e[:60]}'",
+                    )
+
+        # ---- 1G: [silence] + speech tag contradiction → auto-fix ----
+        speech_tags = {"[whispers]", "[calm]", "[warm]", "[gentle]", "[excited]", "[sad]", "[angry]", "[happily]", "[shouts]"}
+        for i, scene in enumerate(scenes):
+            if not isinstance(scene, dict):
+                continue
+            vo_seg = scene.get("voiceover_segment", "")
+            if not isinstance(vo_seg, str) or "[silence]" not in vo_seg:
+                continue
+            has_speech = any(tag in vo_seg for tag in speech_tags)
+            if not has_speech:
+                continue
+            ms = scene.get("money_shot")
+            is_money = isinstance(ms, dict) and ms.get("is_money_shot")
+            if is_money:
+                # MODE B: soft textures may have [silence] mixed in — strip it, keep [whispers]
+                if is_soft_texture and _MODE_B_PATTERN.match(
+                    vo_seg.replace("[silence]", "").strip()
+                ):
+                    fixed = vo_seg.replace("[silence]", "").strip()
+                    scene["voiceover_segment"] = fixed
+                    self._add_warning(
+                        f"scenes[{i}].voiceover_segment",
+                        f"Auto-stripped '[silence]' from MODE B money_shot (kept: '{fixed[:60]}')",
+                    )
+                else:
+                    scene["voiceover_segment"] = "[silence]"
+                    self._add_warning(
+                        f"scenes[{i}].voiceover_segment",
+                        f"Auto-forced '[silence]' (money_shot had mixed tags: '{vo_seg[:60]}')",
+                    )
+            else:
+                # Strip [silence], keep speech tags + text
+                fixed = vo_seg.replace("[silence]", "").strip()
+                if fixed:
+                    scene["voiceover_segment"] = fixed
+                    self._add_warning(
+                        f"scenes[{i}].voiceover_segment",
+                        f"Auto-stripped '[silence]' from mixed-tag VO (kept speech: '{fixed[:60]}')",
+                    )
+
+        # ---- 1H: on_screen_text cleanup + truncation → max 6 words ----
+        food_name_val = self._get_food_name_from_data() or ""
+        for i, scene in enumerate(scenes):
+            if not isinstance(scene, dict):
+                continue
+            on_screen = scene.get("on_screen_text", "")
+            if not isinstance(on_screen, str) or not on_screen.strip():
+                continue
+
+            needs_fix = False
+            cleaned = on_screen.strip()
+
+            # Strip parenthetical qualifiers and trailing commas (Gemini truncation artifacts)
+            if "(" in cleaned and ")" not in cleaned:
+                cleaned = re.sub(r'\s*\(.*$', '', cleaned).strip()
+                needs_fix = True
+            # Strip orphan closing paren without opening (e.g. "GREEN) BRIDGE")
+            if ")" in cleaned and "(" not in cleaned:
+                cleaned = cleaned.replace(")", "").strip()
+                needs_fix = True
+            cleaned = cleaned.rstrip(",").strip()
+            if cleaned != on_screen.strip():
+                needs_fix = True
+
+            words = cleaned.split()
+            if len(words) > 6 or needs_fix:
+                # Build clean OSD: food name + key concept word, max 4 words
+                # For Scene 1: use food + subject concept
+                if i == 0 and food_name_val:
+                    # Extract short subject from metadata
+                    _meta = self._data.get("metadata", {})
+                    _concept = _meta.get("concept", {}) if isinstance(_meta, dict) else {}
+                    subject = _concept.get("subject", "") if isinstance(_concept, dict) else ""
+                    # Take last word of subject as concept (e.g. "High-rise Apartment Tower" → "Tower")
+                    concept_word = subject.split()[-1].upper() if subject else ""
+                    food_short = food_name_val.split()[-1].upper()  # "Waffle"
+                    truncated = f"{food_short} {concept_word}".strip() if concept_word else food_short
+                else:
+                    # Non-Scene-1: keep first 4 clean words, uppercase key word
+                    kept = [w for w in words if w.strip("(,)")][:4]
+                    if kept:
+                        kept[0] = kept[0].upper()
+                    truncated = " ".join(kept)
+
+                if truncated != on_screen.strip():
+                    scene["on_screen_text"] = truncated
+                    self._add_warning(
+                        f"scenes[{i}].on_screen_text",
+                        f"Auto-cleaned OSD: '{on_screen.strip()[:40]}' → '{truncated}'",
+                    )
+
+        # ---- 1J: Scene N-1 narrative_purpose → AERIAL auto-fix ----
+        if len(scenes) >= 3:
+            penultimate_idx = len(scenes) - 2
+            penultimate = scenes[penultimate_idx]
+            if isinstance(penultimate, dict):
+                p_purpose = penultimate.get("narrative_purpose", "")
+                if p_purpose not in ("AERIAL", "AERIAL_WOW", "AERIAL_REVEAL"):
+                    penultimate["narrative_purpose"] = "AERIAL"
+                    self._add_warning(
+                        f"scenes[{penultimate_idx}].narrative_purpose",
+                        f"Auto-corrected '{p_purpose}' → 'AERIAL' (Scene N-1 must be AERIAL)",
+                    )
+
+        # ---- 1M: warning_line delivery — move from LOOP_CLOSE to AERIAL if needed ----
+        wl_raw = self._data.get("warning_line", "")
+        if isinstance(wl_raw, str) and wl_raw.strip() and len(scenes) >= 3:
+            wl_text = wl_raw.strip()
+            # Strip direction tags to get plain warning text for matching
+            wl_plain = re.sub(r'\[[\w\s]+\]\s*', '', wl_text).strip().rstrip(".")
+            aerial_idx = len(scenes) - 2
+            loop_idx = len(scenes) - 1
+            aerial_scene = scenes[aerial_idx] if isinstance(scenes[aerial_idx], dict) else {}
+            loop_scene = scenes[loop_idx] if isinstance(scenes[loop_idx], dict) else {}
+
+            aerial_vo = aerial_scene.get("voiceover_segment", "") or ""
+            loop_vo = loop_scene.get("voiceover_segment", "") or ""
+            loop_plain = re.sub(r'\[[\w\s]+\]\s*', '', loop_vo).strip().rstrip(".")
+
+            aerial_is_empty = not aerial_vo.strip() or aerial_vo.strip() == "[silence]"
+            loop_has_wl = wl_plain.lower() in loop_plain.lower() if wl_plain else False
+
+            if aerial_is_empty and loop_has_wl:
+                # Move warning_line VO from LOOP_CLOSE to AERIAL
+                aerial_scene["voiceover_segment"] = loop_vo
+                aerial_scene["narrator_script"] = loop_scene.get("narrator_script", "")
+                loop_scene["voiceover_segment"] = "[silence]"
+                loop_scene["narrator_script"] = ""
+                self._add_warning(
+                    f"scenes[{aerial_idx}].voiceover_segment",
+                    f"Auto-moved warning_line from Scene {loop_idx + 1} (LOOP_CLOSE) to Scene {aerial_idx + 1} (AERIAL)",
+                )
+
+        # ---- 1K: Direction tag enforcement — prepend [whispers] if missing ----
+        for i, scene in enumerate(scenes):
+            if not isinstance(scene, dict):
+                continue
+            vo_seg = scene.get("voiceover_segment", "")
+            if not isinstance(vo_seg, str) or not vo_seg.strip():
+                continue
+            if vo_seg.strip() == "[silence]":
+                continue
+            # Check if VO starts with a direction tag
+            stripped_vo = vo_seg.strip()
+            starts_with_tag = stripped_vo.startswith("[")
+            if not starts_with_tag:
+                scene["voiceover_segment"] = f"[whispers] {stripped_vo}"
+                self._add_warning(
+                    f"scenes[{i}].voiceover_segment",
+                    f"Auto-prepended [whispers] (was missing direction tag): '{stripped_vo[:50]}'",
+                )
+                # Also fix narrator_script if it matches
+                narrator = scene.get("narrator_script", "")
+                if narrator and narrator.strip() == stripped_vo.lstrip("[").split("]")[-1].strip():
+                    pass  # narrator_script doesn't need tags
+
+        # ---- 1N: narrator_script tag strip — narrator_script is plain text, no tags ----
+        for i, scene in enumerate(scenes):
+            if not isinstance(scene, dict):
+                continue
+            narrator = scene.get("narrator_script", "")
+            if not isinstance(narrator, str) or not narrator.strip():
+                continue
+            # Check if narrator_script contains any ElevenLabs tags
+            if re.search(r'\[[\w\s]+\]', narrator):
+                cleaned_narrator = re.sub(r'\[[\w\s]+\]\s*', '', narrator).strip()
+                if cleaned_narrator:
+                    scene["narrator_script"] = cleaned_narrator
+                    self._add_warning(
+                        f"scenes[{i}].narrator_script",
+                        f"Auto-stripped tags from narrator_script (plain text only): '{narrator[:50]}' → '{cleaned_narrator[:50]}'",
+                    )
+                else:
+                    # Tags only, no real text — clear it
+                    scene["narrator_script"] = ""
+                    self._add_warning(
+                        f"scenes[{i}].narrator_script",
+                        f"Auto-cleared narrator_script (was tags-only: '{narrator[:50]}')",
+                    )
+
+        # ---- 1L: Scene VO ↔ warning_line sync ----
+        # If a scene VO contains a warning pattern where element differs from
+        # warning_line's element, replace to match warning_line
+        warning_line_raw = self._data.get("warning_line", "")
+        if isinstance(warning_line_raw, str) and warning_line_raw.strip():
+            wl_stripped = re.sub(r'\[[\w\s]+\]', '', warning_line_raw).strip()
+            # Extract action/element from any of the 3 formats
+            wl_action = None
+            wl_element = None
+            for _sync_re in [
+                re.compile(r"(?:don['\u2019]t)\s+(\w+)\s+the\s+(\w+)", re.IGNORECASE),
+                re.compile(r"^(\w+)\s+the\s+(\w+)\.\s*I\s+dare\s+you", re.IGNORECASE),
+                re.compile(r"the\s+architect\s+says:\s*nobody\s+(\w+)\s+the\s+(\w+)", re.IGNORECASE),
+            ]:
+                _sync_m = _sync_re.search(wl_stripped)
+                if _sync_m:
+                    wl_action = _sync_m.group(1)
+                    wl_element = _sync_m.group(2)
+                    break
+            if wl_action and wl_element:
+                dont_pattern = re.compile(
+                    r"(don['\u2019]t)\s+(\w+)\s+the\s+(\w+)",
+                    re.IGNORECASE,
+                )
+                for i, scene in enumerate(scenes):
+                    if not isinstance(scene, dict):
+                        continue
+                    vo_seg = scene.get("voiceover_segment", "")
+                    if not isinstance(vo_seg, str):
+                        continue
+                    m = dont_pattern.search(vo_seg)
+                    if m:
+                        scene_element = m.group(3).lower()
+                        if scene_element != wl_element.lower():
+                            # Replace the entire "Don't X the Y" with warning_line version
+                            fixed_vo = dont_pattern.sub(
+                                f"\\1 {wl_action} the {wl_element}",
+                                vo_seg,
+                                count=1,
+                            )
+                            scene["voiceover_segment"] = fixed_vo
+                            self._add_warning(
+                                f"scenes[{i}].voiceover_segment",
+                                f"Auto-synced with warning_line: '{m.group(0)}' → 'Don't {wl_action} the {wl_element}.'",
+                            )
+                            # Also fix narrator_script
+                            narrator = scene.get("narrator_script", "")
+                            if isinstance(narrator, str) and dont_pattern.search(narrator):
+                                scene["narrator_script"] = dont_pattern.sub(
+                                    f"\\1 {wl_action} the {wl_element}",
+                                    narrator,
+                                    count=1,
+                                )
+
+        # ---- 1I: Rebuild full_script from per-scene voiceover_segment ----
+        vo = self._data.get("voiceover")
+        if isinstance(vo, dict) and scenes:
+            segments = []
+            for scene in scenes:
+                if not isinstance(scene, dict):
+                    continue
+                seg = scene.get("voiceover_segment", "")
+                if isinstance(seg, str) and seg.strip() and seg.strip() != "[silence]":
+                    segments.append(seg.strip())
+            if segments:
+                rebuilt = " ".join(segments)
+                old_script = vo.get("full_script", "")
+                if old_script != rebuilt:
+                    vo["full_script"] = rebuilt
+                    self._add_warning(
+                        "voiceover.full_script",
+                        "Auto-rebuilt full_script from per-scene voiceover_segments after auto-fixes",
+                    )
+
     def _get_food_name_from_data(self) -> Optional[str]:
-        """Extract food name from raw data (before validation runs)."""
+        """Extract short food name from raw data (before validation runs).
+
+        Prefers food_identity.primary_food, strips parenthetical qualifiers.
+        E.g. 'Gummy Candy (Translucent Red, Orange, Green)' → 'Gummy Candy'.
+        Falls back to metadata.concept.food_material with same stripping.
+        """
+        # Prefer food_identity.primary_food
+        food_id = self._data.get("food_identity", {})
+        if isinstance(food_id, dict):
+            primary = food_id.get("primary_food", "")
+            if isinstance(primary, str) and primary.strip():
+                clean = re.sub(r'\s*\([^)]*\)', '', primary).strip()
+                return clean if clean else primary.split()[0]
+
+        # Fallback to metadata.concept.food_material
         metadata = self._data.get("metadata", {})
         concept = metadata.get("concept", {}) if isinstance(metadata, dict) else {}
-        return concept.get("food_material") if isinstance(concept, dict) else None
+        fm = concept.get("food_material", "") if isinstance(concept, dict) else ""
+        if fm:
+            fm_clean = re.sub(r'\s*\([^)]*\)', '', fm).strip()
+            return fm_clean if fm_clean else fm.split()[0] if fm else None
+        return None
 
     # ========================================================================
     # ORCHESTRATION — Запуск всіх перевірок
@@ -785,6 +1303,9 @@ class Gen1Validator:
 
         # 9b. Warning Line (AERIAL scene signature)
         self._validate_warning_line()
+
+        # 9c. VO sensory check (color words)
+        self._validate_vo_sensory()
 
         # 10. Audio
         self._validate_audio()
@@ -1133,7 +1654,7 @@ class Gen1Validator:
                 self._add_warning(
                     "voiceover.full_script",
                     f"Contains banned direction tags (v8.4.0): {', '.join(found_banned)}",
-                    suggestion="sensory_witness only uses [whispers], [calm], [pause], [silence], [long pause]"
+                    suggestion="sensory_witness uses [whispers], [calm], [warm], [gentle], [pause], [silence], [long pause], [drawn out], [dry laugh]"
                 )
 
         # character
@@ -1141,6 +1662,31 @@ class Gen1Validator:
 
         # voice_id
         self._require_non_empty(vo, "voice_id", "voiceover.voice_id")
+
+    def _validate_vo_sensory(self) -> None:
+        """1F: Detect color words in voiceover (visual descriptors, not sensory)."""
+        scenes = self._data.get("scenes", [])
+        if not isinstance(scenes, list):
+            return
+        color_pattern = re.compile(
+            r'\b(' + '|'.join(re.escape(c) for c in COLOR_WORDS) + r')\b\s+\w+',
+            re.IGNORECASE,
+        )
+        for i, scene in enumerate(scenes):
+            if not isinstance(scene, dict):
+                continue
+            vo_seg = scene.get("voiceover_segment", "")
+            if not isinstance(vo_seg, str) or not vo_seg.strip() or vo_seg.strip() == "[silence]":
+                continue
+            # Strip tags before checking
+            clean = re.sub(r'\[[\w\s]+\]', '', vo_seg)
+            matches = color_pattern.findall(clean)
+            if matches:
+                self._add_warning(
+                    f"scenes[{i}].voiceover_segment",
+                    f"Color word(s) in VO: {', '.join(set(m.lower() for m in matches))} — visual, not sensory",
+                    suggestion="Replace color descriptions with sensation: texture, temperature, taste, smell"
+                )
 
     def _validate_warning_line(self) -> None:
         """Validate warning_line — catchy warning for AERIAL (N-1) scene."""
@@ -1176,38 +1722,202 @@ class Gen1Validator:
         warning_clean = re.sub(r'\[[\w\s]+\]', '', warning).strip()
         word_count = len(warning_clean.split()) if warning_clean else 0
 
-        if word_count < 2 or word_count > 10:
+        if word_count < 2 or word_count > 12:
             self._add_error(
                 "warning_line",
-                f"warning_line has {word_count} words (allowed 2-10, ideal 3-5)",
+                f"warning_line has {word_count} words (allowed 2-12)",
                 code="WARNING_LINE_LENGTH",
-                suggestion="Format: \"Don't [FOOD_ACTION] the [ARCHITECTURE_ELEMENT].\" (3-5 words)"
-            )
-        elif word_count < 3 or word_count > 5:
-            self._add_warning(
-                "warning_line",
-                f"warning_line has {word_count} words (ideal 3-5)",
-                suggestion="Format: \"Don't [FOOD_ACTION] the [ARCHITECTURE_ELEMENT].\" (3-5 words)"
+                suggestion="Formats: A) \"Don't [action] the [element].\" B) \"[Action] the [element]. I dare you.\" C) \"The architect says: nobody [action] the [element].\""
             )
 
-        # v8.4.0: warning_line should start with "Don't"
-        if not warning_clean.lower().startswith("don't") and not warning_clean.lower().startswith("don\u2019t"):
-            self._add_warning(
-                "warning_line",
-                f"warning_line should start with \"Don't\" per v8.4.0 format",
-                suggestion="Format: \"Don't [lick/bite/eat/drink/touch/taste/chew/nibble/swallow/smell] the [walls/floor/ceiling/stairs/door/roof/window/pool/...]\""
-            )
+        # 1C: Validate action + element — supports 3 warning_line formats
+        # Format A: "Don't [action] the [element]."
+        # Format B: "[Action] the [element]. I dare you."
+        # Format C: "The architect says: nobody [action] the [element]."
+        _WL_FORMAT_A = re.compile(
+            r"(?:don['\u2019]t)\s+(\w+)\s+the\s+(\w+)", re.IGNORECASE
+        )
+        _WL_FORMAT_B = re.compile(
+            r"^(\w+)\s+the\s+(\w+)\.\s*I\s+dare\s+you", re.IGNORECASE
+        )
+        _WL_FORMAT_C = re.compile(
+            r"the\s+architect\s+says:\s*nobody\s+(\w+)\s+the\s+(\w+)", re.IGNORECASE
+        )
 
-        # Cross-check: warning_line should appear in voiceover.full_script
-        vo = self._data.get("voiceover")
-        if isinstance(vo, dict):
-            full_script = vo.get("full_script", "")
-            if isinstance(full_script, str) and warning.lower() not in full_script.lower():
+        action_word = None
+        element_word = None
+        matched_format = None
+
+        for fmt_name, fmt_re in [("A", _WL_FORMAT_A), ("B", _WL_FORMAT_B), ("C", _WL_FORMAT_C)]:
+            m = fmt_re.search(warning_clean)
+            if m:
+                action_word = m.group(1).lower()
+                element_word = m.group(2).lower()
+                matched_format = fmt_name
+                break
+
+        if matched_format and action_word and element_word:
+            if action_word not in VALID_FOOD_ACTIONS:
+                closest_action = _closest_match(action_word, VALID_FOOD_ACTIONS, "lick")
+                old_warning = self._data.get("warning_line", "")
+                new_warning = old_warning.replace(action_word, closest_action, 1)
+                if action_word[0].isupper():
+                    new_warning = old_warning.replace(
+                        action_word.capitalize(), closest_action.capitalize(), 1
+                    )
+                self._data["warning_line"] = new_warning
                 self._add_warning(
                     "warning_line",
-                    f"warning_line '{warning}' not found in voiceover.full_script",
-                    suggestion="The warning should appear in the AERIAL scene voiceover"
+                    f"Auto-fixed invalid action '{action_word}' → '{closest_action}'",
                 )
+                warning = new_warning.strip()
+                warning_clean = re.sub(r'\[[\w\s]+\]', '', warning).strip()
+
+            if element_word not in VALID_ARCHITECTURE_ELEMENTS:
+                closest_elem = _closest_match(element_word, VALID_ARCHITECTURE_ELEMENTS, "walls")
+                old_warning = self._data.get("warning_line", "")
+                new_warning = re.sub(
+                    r"(?i)the\s+" + re.escape(element_word),
+                    f"the {closest_elem}",
+                    old_warning,
+                    count=1,
+                )
+                self._data["warning_line"] = new_warning
+                self._add_warning(
+                    "warning_line",
+                    f"Auto-fixed invalid element '{element_word}' → '{closest_elem}'",
+                )
+
+        elif warning_clean.lower().startswith("don") and "the" not in warning_clean.lower():
+            # 1C-fallback: Non-standard format like "Don't bounce." (missing "the [element]")
+            # Parse: "Don't [word]." → try to use word as action, infer element
+            short_match = re.match(
+                r"(?:don['\u2019]t)\s+(\w+)",
+                warning_clean,
+                re.IGNORECASE,
+            )
+            if short_match:
+                raw_action = short_match.group(1).lower()
+
+                # Determine best action: use raw_action if valid, else find closest
+                if raw_action in VALID_FOOD_ACTIONS:
+                    best_action = raw_action
+                else:
+                    best_action = _closest_match(raw_action, VALID_FOOD_ACTIONS, "lick")
+
+                # Infer architecture element from architectural_identity
+                best_element = "walls"  # safe default
+                arch = self._data.get("architectural_identity", {})
+                if isinstance(arch, dict):
+                    features = arch.get("distinctive_features", [])
+                    if isinstance(features, list):
+                        for feat in features:
+                            if not isinstance(feat, str):
+                                continue
+                            feat_lower = feat.lower()
+                            for elem in VALID_ARCHITECTURE_ELEMENTS:
+                                if re.search(r'\b' + re.escape(elem) + r'\b', feat_lower):
+                                    best_element = elem
+                                    break
+                            if best_element != "walls":
+                                break
+                    # Also check food_dna keys for relevant elements
+                    if best_element == "walls":
+                        food_id = self._data.get("food_identity", {})
+                        food_dna = food_id.get("food_dna", {}) if isinstance(food_id, dict) else {}
+                        if isinstance(food_dna, dict):
+                            # Map food_dna keys to elements (singular + plural)
+                            dna_to_elem = {
+                                "columns_become": "columns",
+                                "columns": "columns",
+                                "stairs_become": "stairs",
+                                "stairs": "stairs",
+                                "fence_becomes": "fence",
+                                "fence": "fence",
+                                "floors_become": "floor",
+                                "floor_becomes": "floor",
+                                "roof_becomes": "roof",
+                                "roof": "roof",
+                                "ceiling_becomes": "ceiling",
+                                "ceiling": "ceiling",
+                                "door_becomes": "door",
+                                "doors_become": "door",
+                                "walls_become": "walls",
+                                "walls": "walls",
+                                "chimney_becomes": "chimney",
+                                "chimney": "chimney",
+                                "windows_become": "window",
+                                "window_becomes": "window",
+                            }
+                            for dna_key, elem in dna_to_elem.items():
+                                val = food_dna.get(dna_key, "")
+                                if isinstance(val, str) and val.strip() and val.strip().upper() != "N/A":
+                                    best_element = elem
+                                    break
+
+                old_wl = self._data.get("warning_line", "")
+                new_wl = f"Don't {best_action} the {best_element}."
+                self._data["warning_line"] = new_wl
+                self._add_warning(
+                    "warning_line",
+                    f"Auto-fixed non-standard format: '{old_wl}' → '{new_wl}'",
+                )
+                warning = new_wl
+                warning_clean = new_wl
+
+                # Propagate new warning_line to scene VOs that had the old text
+                old_plain = re.sub(r'\[[\w\s]+\]\s*', '', old_wl).strip().rstrip(".")
+                if old_plain:
+                    scenes_data = self._data.get("scenes", [])
+                    for si, sc in enumerate(scenes_data):
+                        if not isinstance(sc, dict):
+                            continue
+                        for fkey in ("voiceover_segment", "narrator_script"):
+                            fval = sc.get(fkey, "")
+                            if not isinstance(fval, str):
+                                continue
+                            fval_plain = re.sub(r'\[[\w\s]+\]\s*', '', fval).strip().rstrip(".")
+                            if old_plain.lower() == fval_plain.lower():
+                                # Preserve direction tags, replace text
+                                tags = re.findall(r'\[[\w\s]+\]', fval)
+                                tag_prefix = " ".join(tags) + " " if tags else ""
+                                sc[fkey] = f"{tag_prefix}{new_wl}".strip()
+                                if fkey == "narrator_script":
+                                    sc[fkey] = new_wl  # narrator has no tags
+                                self._add_warning(
+                                    f"scenes[{si}].{fkey}",
+                                    f"Auto-synced with rewritten warning_line: '{fval[:40]}' → '{sc[fkey]}'",
+                                )
+                    # Rebuild full_script after VO changes
+                    vo_obj = self._data.get("voiceover")
+                    if isinstance(vo_obj, dict) and scenes_data:
+                        segs = []
+                        for sc in scenes_data:
+                            if not isinstance(sc, dict):
+                                continue
+                            seg = sc.get("voiceover_segment", "")
+                            if isinstance(seg, str) and seg.strip() and seg.strip() != "[silence]":
+                                segs.append(seg.strip())
+                        if segs:
+                            vo_obj["full_script"] = " ".join(segs)
+
+        # Cross-check: warning_line should appear in voiceover.full_script
+        # Re-read warning_line (may have been rewritten by 1C / 1C-fallback)
+        warning_final = self._data.get("warning_line", "")
+        if isinstance(warning_final, str) and warning_final.strip():
+            vo = self._data.get("voiceover")
+            if isinstance(vo, dict):
+                full_script = vo.get("full_script", "")
+                if isinstance(full_script, str):
+                    # Strip tags and trailing period for comparison
+                    wl_plain = re.sub(r'\[[\w\s]+\]\s*', '', warning_final).strip().rstrip(".")
+                    fs_plain = re.sub(r'\[[\w\s]+\]\s*', '', full_script)
+                    if wl_plain.lower() not in fs_plain.lower():
+                        self._add_warning(
+                            "warning_line",
+                            f"warning_line '{warning_final.strip()}' not found in voiceover.full_script",
+                            suggestion="The warning should appear in the AERIAL scene voiceover"
+                        )
 
     def _validate_audio(self) -> None:
         """Валідація audio об'єкту."""
@@ -1427,6 +2137,57 @@ class Gen1Validator:
                                 "Contains #glazecity — banned brand hashtag",
                                 code="BANNED_HASHTAG_GLAZECITY",
                                 suggestion="Replace with #shorts or #dreamcore"
+                            )
+
+            # 1D: Description CTA must be derived from warning_line
+            warning_line_val = self._data.get("warning_line", "")
+            if desc and isinstance(warning_line_val, str) and warning_line_val.strip():
+                wl_clean = re.sub(r'\[[\w\s]+\]', '', warning_line_val).strip()
+                # Support all 3 warning_line formats for CTA derivation
+                wl_action = None
+                wl_element = None
+                for _cta_re in [
+                    re.compile(r"(?:don['\u2019]t)\s+(\w+)\s+the\s+(\w+)", re.IGNORECASE),
+                    re.compile(r"^(\w+)\s+the\s+(\w+)\.\s*I\s+dare\s+you", re.IGNORECASE),
+                    re.compile(r"the\s+architect\s+says:\s*nobody\s+(\w+)\s+the\s+(\w+)", re.IGNORECASE),
+                ]:
+                    _cta_m = _cta_re.search(wl_clean)
+                    if _cta_m:
+                        wl_action = _cta_m.group(1).lower()
+                        wl_element = _cta_m.group(2).lower()
+                        break
+                if wl_action and wl_element:
+                    derived_cta = f"would you {wl_action} the {wl_element}?"
+                    desc_lower = desc.lower()
+                    # Check if derived CTA already present
+                    if derived_cta not in desc_lower:
+                        # Try to replace existing generic CTA question line
+                        # Common patterns: "Which floor would you eat first?" etc.
+                        cta_pattern = re.compile(
+                            r'^(which|would|could|can|do|have|what|where|want|ever)[^\n]*\?[^\n]*$',
+                            re.IGNORECASE | re.MULTILINE,
+                        )
+                        cta_line = f"Would you {wl_action} the {wl_element}?"
+                        new_desc, count = cta_pattern.subn(cta_line, desc, count=1)
+                        if count > 0:
+                            youtube["description"] = new_desc
+                            self._add_warning(
+                                "youtube.description",
+                                f"Auto-replaced generic CTA with warning_line-derived: '{cta_line}'",
+                            )
+                        else:
+                            # No existing CTA to replace — append before hashtags
+                            lines = desc.split("\n")
+                            insert_idx = len(lines)
+                            for li, line in enumerate(lines):
+                                if line.strip().startswith("#"):
+                                    insert_idx = li
+                                    break
+                            lines.insert(insert_idx, cta_line)
+                            youtube["description"] = "\n".join(lines)
+                            self._add_warning(
+                                "youtube.description",
+                                f"Auto-inserted CTA from warning_line: '{cta_line}'",
                             )
 
             # pinned_comment
@@ -1817,7 +2578,8 @@ class Gen1Validator:
                     or self._get_nested(scene, "broker_script", "")
                 )
                 if not vo_text:
-                    # ASMR scenes (typically scene 4) may have empty VO intentionally
+                    # ASMR scenes should have whisper anchor (auto-fixed by 1A-bis),
+                    # but STRUCTURAL_DETAIL may still pass through with empty VO
                     purpose = self._get_nested(scene, "narrative_purpose", "")
                     if purpose != "STRUCTURAL_DETAIL":
                         self._add_warning(
@@ -1853,6 +2615,31 @@ class Gen1Validator:
                             suggestion="Remove AI-sounding words"
                         )
 
+            # ===== VO WORD COUNT vs DURATION ("Rap God Rule") =====
+            vo_dur_check = self._get_nested(scene, "voiceover_segment", "")
+            scene_dur = scene.get("duration_seconds")
+            if (vo_dur_check and isinstance(vo_dur_check, str)
+                    and vo_dur_check.strip() not in ("", "[silence]")
+                    and scene_dur is not None):
+                try:
+                    dur_val = float(scene_dur)
+                except (ValueError, TypeError):
+                    dur_val = None
+                if dur_val and dur_val > 0:
+                    # Strip tags, count real words
+                    vo_plain = re.sub(r'\[[\w\s]+\]', '', vo_dur_check).strip()
+                    vo_words = len(vo_plain.split()) if vo_plain else 0
+                    # ~2 words/sec is comfortable whisper pace; max = dur * 2.5
+                    max_words = int(dur_val * 2.5)
+                    if max_words < 4:
+                        max_words = 4  # floor
+                    if vo_words > max_words:
+                        self._add_warning(
+                            f"{prefix}.voiceover_segment",
+                            f"Too many words ({vo_words}) for {dur_val}s scene (max ~{max_words})",
+                            suggestion=f"Trim VO to ≤{max_words} words or increase scene duration"
+                        )
+
             # ===== ON-SCREEN TEXT VALIDATION (v8.3.0) =====
             on_screen = self._get_nested(scene, "on_screen_text", "")
             if scene_num == total_scenes:
@@ -1880,11 +2667,19 @@ class Gen1Validator:
                 # Scene 1: must contain food name (critical for mute Shorts viewers)
                 if scene_num == 1:
                     food = self._get_food_name()
-                    if food and food.lower() not in on_screen.lower():
-                        self._add_warning(
-                            f"{prefix}.on_screen_text",
-                            f"Scene 1 should contain food name '{food}' (auto-fix should have prepended it)",
+                    if food:
+                        osd_lower = on_screen.lower()
+                        # Full name match OR last word match (auto-fix may truncate to last word)
+                        food_words = food.lower().split()
+                        has_food = (
+                            food.lower() in osd_lower
+                            or any(w in osd_lower for w in food_words if len(w) > 2)
                         )
+                        if not has_food:
+                            self._add_warning(
+                                f"{prefix}.on_screen_text",
+                                f"Scene 1 should contain food name '{food}' for mute viewer recognition",
+                            )
 
             # ===== MONEY SHOT + SNAP MOMENT VALIDATION (v8.4.0) =====
             ms = scene.get("money_shot")
@@ -1919,6 +2714,40 @@ class Gen1Validator:
                         suggestion="e.g. 'Wet fruit scooping, close-mic, juice welling'"
                     )
 
+            # ===== FOOD VISUAL RATIO VALIDATION (v8.5.0) =====
+            fvr = self._get_nested(scene, "food_visual_ratio", "")
+            valid_fvr = {"FOOD_DOMINANT", "BALANCED", "ARCHITECTURE_DOMINANT"}
+            if fvr:
+                fvr_upper = fvr.strip().upper()
+                if fvr_upper not in valid_fvr:
+                    self._add_error(
+                        f"{prefix}.food_visual_ratio",
+                        f"Invalid value '{fvr}' — must be FOOD_DOMINANT | BALANCED | ARCHITECTURE_DOMINANT",
+                        code="INVALID_FOOD_VISUAL_RATIO"
+                    )
+                elif fvr_upper == "ARCHITECTURE_DOMINANT":
+                    self._add_error(
+                        f"{prefix}.food_visual_ratio",
+                        "ARCHITECTURE_DOMINANT is NEVER allowed (v8.5.0)",
+                        code="ARCHITECTURE_DOMINANT_BANNED",
+                        suggestion="Rewrite visual_concept with food as the noun in subject position"
+                    )
+                elif fvr_upper != "FOOD_DOMINANT":
+                    # Scenes that MUST be FOOD_DOMINANT
+                    is_money = isinstance(ms, dict) and ms.get("is_money_shot")
+                    if scene_num == 1 or purpose == "STRUCTURAL_DETAIL" or is_money:
+                        self._add_warning(
+                            f"{prefix}.food_visual_ratio",
+                            f"Scene {scene_num} ({purpose}) should be FOOD_DOMINANT, got '{fvr_upper}'",
+                            suggestion="Scene 1, STRUCTURAL_DETAIL, and Money Shot require FOOD_DOMINANT"
+                        )
+            else:
+                self._add_warning(
+                    f"{prefix}.food_visual_ratio",
+                    "Missing food_visual_ratio field (v8.5.0)",
+                    suggestion="Add food_visual_ratio: FOOD_DOMINANT | BALANCED for each scene"
+                )
+
             # v8.4.0: Check per-scene voiceover_segment for banned tags
             vo_seg_check = self._get_nested(scene, "voiceover_segment", "")
             if vo_seg_check:
@@ -1927,7 +2756,7 @@ class Gen1Validator:
                     self._add_warning(
                         f"{prefix}.voiceover_segment",
                         f"Contains banned direction tags (v8.4.0): {', '.join(found_banned_scene)}",
-                        suggestion="Use only [whispers], [calm], [pause], [silence], [long pause]"
+                        suggestion="Use only [whispers], [calm], [warm], [gentle], [pause], [silence], [long pause], [drawn out], [dry laugh]"
                     )
 
             # ===== SCENE 1 SPECIFIC RULES =====
@@ -1974,15 +2803,18 @@ class Gen1Validator:
                     )
 
                 # Cross-validate: warning_line should appear in Scene N-1 voiceover_segment
-                warning = self._data.get("warning_line")
-                if warning and isinstance(warning, str):
+                wl_check = self._data.get("warning_line")
+                if wl_check and isinstance(wl_check, str):
                     vo_segment = self._get_nested(scene, "voiceover_segment", "")
-                    if isinstance(vo_segment, str) and warning.strip().lower() not in vo_segment.lower():
-                        self._add_warning(
-                            f"{prefix}.voiceover_segment",
-                            f"warning_line '{warning.strip()}' not found in Scene {scene_num} voiceover_segment",
-                            suggestion="AERIAL scene should deliver the warning_line"
-                        )
+                    if isinstance(vo_segment, str):
+                        wl_cmp = re.sub(r'\[[\w\s]+\]\s*', '', wl_check).strip().rstrip(".")
+                        vo_cmp = re.sub(r'\[[\w\s]+\]\s*', '', vo_segment)
+                        if wl_cmp.lower() not in vo_cmp.lower():
+                            self._add_warning(
+                                f"{prefix}.voiceover_segment",
+                                f"warning_line '{wl_check.strip()}' not found in Scene {scene_num} voiceover_segment",
+                                suggestion="AERIAL scene should deliver the warning_line"
+                            )
 
         # Energy pattern check
         if low_energy_count > 1:
@@ -2016,13 +2848,11 @@ class Gen1Validator:
     # ========================================================================
 
     def _get_food_name(self) -> Optional[str]:
-        """Extract primary food name from food_identity.primary_food."""
-        food_identity = self._data.get("food_identity")
-        if isinstance(food_identity, dict):
-            primary = food_identity.get("primary_food", "")
-            if isinstance(primary, str) and primary.strip():
-                return primary.strip()
-        return None
+        """Extract primary food name, with parenthetical qualifier stripping.
+
+        Delegates to _get_food_name_from_data() for consistent behavior.
+        """
+        return self._get_food_name_from_data()
 
     def _get_field(self, field_name: str) -> Optional[Any]:
         """
