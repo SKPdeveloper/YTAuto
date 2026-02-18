@@ -15,8 +15,8 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.common.action_chains import ActionChains
+from selenium.common.exceptions import StaleElementReferenceException
+
 from loguru import logger
 
 from app.clients.adspower_client import AdsPowerClient
@@ -69,6 +69,7 @@ class SimpleVideoGenerator:
         self.projects_dir = projects_dir or Path("D:/YTAuto/YTAuto/projects")
         self._http_client: Optional[httpx.AsyncClient] = None
         self._progress_callback = progress_callback
+        self._model_configured: bool = False  # True after first successful model/settings setup
 
     async def close(self) -> None:
         """Close HTTP client to release resources."""
@@ -117,7 +118,9 @@ class SimpleVideoGenerator:
             # DEBUG: Скриншот перед началом
             await self.take_screenshot(f"scene{scene_num}_01_before_start.png")
 
-            # 1. Перейти на чистую страницу видео (force refresh для каждой сцены)
+            # 1. Navigate to fresh video page (always — clears previous generation state)
+            # Model/audio/duration settings persist in localStorage across navigations,
+            # so _ensure_kling_model() only runs once (first scene).
             await self._ensure_video_page(force_refresh=True)
             await self.take_screenshot(f"scene{scene_num}_02_video_page.png")
 
@@ -325,12 +328,15 @@ class SimpleVideoGenerator:
 
     async def _ensure_video_page(self, force_refresh: bool = False) -> None:
         """
-        Убедиться что мы на чистой странице видео.
+        Navigate to a clean HiggsField video page ready for image upload.
 
-        Args:
-            force_refresh: Принудительно обновить страницу
+        Preserves localStorage (model/audio/duration settings persist).
+        If a cached image from a previous scene is shown, clears it via
+        scoped DOM traversal (same approach as image generator).
+
+        Scene 1: about:blank → higgsfield → model setup (full)
+        Scene 2+: about:blank → higgsfield → cached image cleared → skip model setup
         """
-        # Проверка что браузер жив
         if not await self._check_browser_alive():
             raise Exception("Browser window was closed externally")
 
@@ -340,28 +346,489 @@ class SimpleVideoGenerator:
             raise Exception(f"Failed to get current URL: {e}")
 
         if force_refresh or "higgsfield.ai/create/video" not in current_url:
-            # Navigate away first to clear cached React state (image/prompt from previous generation)
-            logger.debug("Clearing page state (about:blank)...")
+            # Step 1: Navigate through about:blank to reset React state
+            # (localStorage is per-origin — preserved across about:blank navigation)
+            logger.debug("Resetting React state via about:blank...")
             await asyncio.to_thread(self.driver.get, "about:blank")
             await asyncio.sleep(1)
 
-            logger.debug(f"Navigating to {HIGGSFIELD_VIDEO_URL}")
+            logger.debug(f"Loading {HIGGSFIELD_VIDEO_URL}")
             await asyncio.to_thread(self.driver.get, HIGGSFIELD_VIDEO_URL)
             await asyncio.sleep(4)
 
-            # Wait for page to be ready
-            for attempt in range(10):
+            # Step 2: Wait for page ready — file input OR cached image preview
+            file_input_found = False
+            for attempt in range(15):
                 file_inputs = await asyncio.to_thread(
                     self.driver.find_elements,
                     By.CSS_SELECTOR,
                     'input[type="file"]'
                 )
                 if file_inputs:
-                    logger.debug(f"Video page ready (file input found)")
-                    return
+                    file_input_found = True
+                    logger.debug("Video page ready — file input found (clean page)")
+                    break
+                # Also check if page loaded but with cached image (no file input)
+                has_img = await asyncio.to_thread(
+                    self.driver.execute_script,
+                    "return document.querySelectorAll('img').length > 2;"
+                )
+                if has_img and attempt >= 3:
+                    logger.debug("Page loaded with cached image — will clear")
+                    break
                 await asyncio.sleep(1)
 
-            logger.warning("Video page loaded but file input not found")
+            # Step 3: If no file input, clear cached image via scoped X button
+            if not file_input_found:
+                logger.info("Cached image detected — clearing via X button...")
+                cleared = await self._clear_cached_image_scoped()
+                if cleared:
+                    logger.info("Cached image cleared — waiting for file input...")
+                    for i in range(10):
+                        file_inputs = await asyncio.to_thread(
+                            self.driver.find_elements,
+                            By.CSS_SELECTOR,
+                            'input[type="file"]'
+                        )
+                        if file_inputs:
+                            logger.debug(f"File input appeared after clearing ({i}s)")
+                            break
+                        await asyncio.sleep(1)
+                    else:
+                        logger.warning("File input not found after clearing — fallback to nuclear clear")
+                        await self._nuclear_clear_and_reload()
+
+                else:
+                    logger.warning("Scoped clearing failed — fallback to nuclear clear")
+                    await self._nuclear_clear_and_reload()
+
+            # Step 4: Ensure model/audio/duration (skips if already configured)
+            await self._ensure_kling_model()
+
+            # Step 5: Wait for page to stabilize after any model setup
+            if not self._model_configured:
+                # This shouldn't happen — _ensure_kling_model sets it
+                logger.warning("Model not configured after _ensure_kling_model")
+            else:
+                # Quick stability check — verify file input isn't stale
+                await asyncio.sleep(2)
+                for attempt in range(5):
+                    inputs_1 = await asyncio.to_thread(
+                        self.driver.find_elements,
+                        By.CSS_SELECTOR,
+                        'input[type="file"]'
+                    )
+                    if not inputs_1:
+                        await asyncio.sleep(1)
+                        continue
+                    try:
+                        _ = await asyncio.to_thread(inputs_1[0].get_attribute, 'type')
+                        logger.debug("Page stable — file input confirmed")
+                        break
+                    except StaleElementReferenceException:
+                        logger.debug("File input stale — waiting for re-render...")
+                        await asyncio.sleep(2)
+
+    async def _clear_cached_image_scoped(self) -> bool:
+        """
+        Clear a cached image using scoped DOM traversal.
+        Same approach as image generator: find the image preview,
+        traverse UP the DOM tree, find X button (small button with SVG).
+
+        Returns True if X button was found and clicked.
+        """
+        try:
+            result = await asyncio.to_thread(
+                self.driver.execute_script,
+                """
+                // Strategy 1: Find image preview and traverse up to find X button
+                var imgs = document.querySelectorAll('img');
+                for (var img of imgs) {
+                    var src = img.src || '';
+                    var rect = img.getBoundingClientRect();
+
+                    // Skip logos, icons, tiny images
+                    if (rect.width < 30 || rect.height < 30) continue;
+                    // Skip images outside the left panel area (roughly x < 500)
+                    if (rect.x > 500) continue;
+                    // Must look like an uploaded preview (blob:, data:, cdn, or sizeable)
+                    var isPreview = src.startsWith('blob:') || src.startsWith('data:') ||
+                                   src.includes('cdn') || src.includes('upload') ||
+                                   (rect.width > 80 && rect.height > 80);
+                    if (!isPreview) continue;
+
+                    // Traverse UP to find container with X button
+                    var container = img;
+                    for (var i = 0; i < 8; i++) {
+                        container = container.parentElement;
+                        if (!container) break;
+
+                        var btns = container.querySelectorAll('button');
+                        for (var btn of btns) {
+                            if (btn.offsetWidth < 5 || btn.offsetWidth > 50) continue;
+                            if (btn.offsetHeight < 5 || btn.offsetHeight > 50) continue;
+                            // X button = small button with SVG icon
+                            var svg = btn.querySelector('svg');
+                            if (svg) {
+                                btn.click();
+                                return 'cleared:img_traversal';
+                            }
+                            // Or text-based X
+                            var text = btn.textContent.trim();
+                            if (text === '×' || text === 'x' || text === 'X' || text === '✕') {
+                                btn.click();
+                                return 'cleared:text_x';
+                            }
+                        }
+                    }
+                }
+
+                // Strategy 2: Find file input (even hidden) and traverse up
+                var fileInput = document.querySelector('input[type="file"]');
+                if (fileInput) {
+                    var container = fileInput;
+                    for (var i = 0; i < 8; i++) {
+                        container = container.parentElement;
+                        if (!container) break;
+                        var btns = container.querySelectorAll('button');
+                        for (var btn of btns) {
+                            if (btn.offsetWidth < 5 || btn.offsetWidth > 50) continue;
+                            if (btn.offsetHeight < 5 || btn.offsetHeight > 50) continue;
+                            var svg = btn.querySelector('svg');
+                            if (svg) {
+                                btn.click();
+                                return 'cleared:input_traversal';
+                            }
+                        }
+                    }
+                }
+
+                // Strategy 3: Find by aria-label (close, remove, delete, clear)
+                var ariaButtons = document.querySelectorAll(
+                    '[aria-label*="close" i], [aria-label*="remove" i], ' +
+                    '[aria-label*="delete" i], [aria-label*="clear" i]'
+                );
+                for (var btn of ariaButtons) {
+                    if (btn.offsetParent === null) continue;
+                    if (btn.offsetWidth > 50) continue;
+                    btn.click();
+                    return 'cleared:aria_label';
+                }
+
+                return 'not_found';
+                """
+            )
+            logger.info(f"Scoped image clear: {result}")
+            if result.startswith('cleared'):
+                await asyncio.sleep(2)
+                return True
+            return False
+
+        except Exception as e:
+            logger.warning(f"Scoped image clear failed: {e}")
+            return False
+
+    async def _nuclear_clear_and_reload(self) -> None:
+        """
+        Last resort: clear all browser storage and reload.
+        This removes cached images but also model/audio/duration settings.
+        """
+        logger.warning("Nuclear clear: wiping all storage and reloading...")
+        await asyncio.to_thread(
+            self.driver.execute_script,
+            """
+            try { localStorage.clear(); } catch(e) {}
+            try { sessionStorage.clear(); } catch(e) {}
+            try {
+                indexedDB.databases().then(function(dbs) {
+                    dbs.forEach(function(db) { indexedDB.deleteDatabase(db.name); });
+                });
+            } catch(e) {}
+            """
+        )
+        self._model_configured = False
+
+        await asyncio.to_thread(self.driver.get, "about:blank")
+        await asyncio.sleep(1)
+        await asyncio.to_thread(self.driver.get, HIGGSFIELD_VIDEO_URL)
+        await asyncio.sleep(4)
+
+        for attempt in range(15):
+            file_inputs = await asyncio.to_thread(
+                self.driver.find_elements,
+                By.CSS_SELECTOR,
+                'input[type="file"]'
+            )
+            if file_inputs:
+                logger.debug("File input found after nuclear clear")
+                break
+            await asyncio.sleep(1)
+
+    async def _ensure_kling_model(self) -> None:
+        """
+        Ensure Kling 2.6 is the active model with correct settings.
+
+        Uses textarea presence as evidence: Kling 2.6 shows a textarea,
+        Kling 3.0 does not. This is a non-destructive check that never
+        opens popups or clicks buttons unnecessarily.
+
+        _model_configured flag tracks if settings were already configured.
+        Scene 1: flag=False → full setup (model + audio + duration)
+        Scene 2+: flag=True + textarea present → skip (localStorage preserved)
+        After nuclear clear: flag=False → full setup again
+        """
+        try:
+            # Evidence-based check: does textarea exist?
+            textareas = await asyncio.to_thread(
+                self.driver.find_elements, By.CSS_SELECTOR, 'textarea'
+            )
+
+            if textareas:
+                # Kling 2.6 is already active (persisted from localStorage)
+                logger.debug("Textarea present — Kling 2.6 is active")
+                if not self._model_configured:
+                    # First scene: also configure audio and duration
+                    await self._ensure_audio_off()
+                    await self._ensure_duration_10s()
+                    self._model_configured = True
+                    logger.info("Kling 2.6 confirmed + audio/duration configured")
+                return
+
+            # No textarea — Kling 3.0 (or other model) is active, need to switch
+            logger.warning("No textarea — Kling 2.6 not active. Selecting model...")
+
+            # Step 1: Click model selector button (below prompt area)
+            clicked = await asyncio.to_thread(
+                self.driver.execute_script,
+                """
+                // Find a clickable element containing a model name keyword
+                var modelKeywords = ['kling', 'seedance', 'minimax', 'wan'];
+                var candidates = document.querySelectorAll(
+                    'button, [role="button"], div[class*="model"], div[class*="select"]'
+                );
+                for (var el of candidates) {
+                    var text = (el.textContent || '').toLowerCase();
+                    if (el.offsetParent === null) continue;
+                    for (var kw of modelKeywords) {
+                        if (text.includes(kw) && text.length < 100) {
+                            if (text.includes('generate') || text.includes('upload')) continue;
+                            el.click();
+                            return 'clicked:' + (el.textContent || '').trim().substring(0, 50);
+                        }
+                    }
+                }
+                return 'not_found';
+                """
+            )
+            logger.info(f"Model selector click: {clicked}")
+
+            if clicked == 'not_found':
+                logger.error("Model selector button not found on page!")
+                return
+
+            await asyncio.sleep(2)
+
+            # Step 2: Click "Kling 2.6" in the popup
+            kling_result = await asyncio.to_thread(
+                self.driver.execute_script,
+                """
+                var els = document.querySelectorAll('button, div, li, a, span, label, h3, h4, p');
+                var bestMatch = null;
+                var bestLen = 9999;
+                for (var el of els) {
+                    if (el.offsetParent === null) continue;
+                    var text = (el.textContent || '').trim();
+                    if (text.includes('Kling 2.6') && !text.includes('Kling 2.1')) {
+                        if (text.length < bestLen) {
+                            bestMatch = el;
+                            bestLen = text.length;
+                        }
+                    }
+                }
+                if (bestMatch) {
+                    var clickTarget = bestMatch.closest('button, [role="button"], a, li')
+                                     || bestMatch;
+                    clickTarget.click();
+                    return 'clicked: ' + bestMatch.textContent.trim().substring(0, 60);
+                }
+                return 'not_found';
+                """
+            )
+            logger.info(f"Kling 2.6 click: {kling_result}")
+
+            if 'not_found' in str(kling_result):
+                logger.error("Kling 2.6 not found in popup!")
+                await asyncio.to_thread(
+                    self.driver.execute_script,
+                    "document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape'}));"
+                )
+                return
+
+            await asyncio.sleep(3)
+
+            # Step 3: Verify textarea appeared (Kling 2.6 indicator)
+            textarea_found = False
+            for attempt in range(5):
+                ta = await asyncio.to_thread(
+                    self.driver.find_elements, By.CSS_SELECTOR, 'textarea'
+                )
+                if ta:
+                    textarea_found = True
+                    logger.info(f"Kling 2.6 verified — textarea found after {attempt}s")
+                    break
+                await asyncio.sleep(1)
+
+            if not textarea_found:
+                # Fallback: click "General" preset to finalize selection
+                logger.warning("Textarea not found — clicking General preset as fallback...")
+                await asyncio.to_thread(
+                    self.driver.execute_script,
+                    """
+                    var els = document.querySelectorAll('button, div, h4, span, li');
+                    for (var el of els) {
+                        var text = (el.textContent || '').trim().toLowerCase();
+                        if (text === 'general' && el.offsetParent !== null) {
+                            var clickable = el.closest('button, [role="button"], li') || el;
+                            clickable.click();
+                            return;
+                        }
+                    }
+                    """
+                )
+                await asyncio.sleep(3)
+                ta2 = await asyncio.to_thread(
+                    self.driver.find_elements, By.CSS_SELECTOR, 'textarea'
+                )
+                if not ta2:
+                    logger.error("CRITICAL: Textarea still not found after model selection!")
+                    return
+
+            # Configure audio and duration
+            await self._ensure_audio_off()
+            await self._ensure_duration_10s()
+            self._model_configured = True
+            logger.info("Model setup complete — Kling 2.6 + audio/duration configured")
+
+        except Exception as e:
+            logger.warning(f"Error in model/settings setup: {e}", exc_info=True)
+
+    async def _ensure_audio_off(self) -> None:
+        """Ensure the Audio toggle is OFF."""
+        try:
+            # Check if audio is currently ON and turn it OFF
+            toggled = await asyncio.to_thread(
+                self.driver.execute_script,
+                """
+                // Find Audio toggle — look for label "Audio" near a toggle/switch
+                var labels = document.querySelectorAll('span, label, p, div');
+                for (var lbl of labels) {
+                    if (lbl.textContent.trim().toLowerCase() === 'audio') {
+                        // Find nearby toggle button or switch
+                        var parent = lbl.closest('div') || lbl.parentElement;
+                        if (!parent) continue;
+                        // Look for toggle/switch in parent and its siblings
+                        var container = parent.parentElement || parent;
+                        var toggles = container.querySelectorAll(
+                            'button[role="switch"], input[type="checkbox"], [class*="toggle"], [class*="switch"]'
+                        );
+                        for (var t of toggles) {
+                            var isOn = t.getAttribute('aria-checked') === 'true'
+                                    || t.checked === true
+                                    || t.classList.contains('active')
+                                    || t.getAttribute('data-state') === 'checked';
+                            if (isOn) {
+                                t.click();
+                                return 'turned_off';
+                            }
+                            return 'already_off';
+                        }
+                    }
+                }
+                return 'not_found';
+                """
+            )
+            if toggled == 'turned_off':
+                logger.info("Audio toggle turned OFF")
+            elif toggled == 'already_off':
+                logger.debug("Audio already OFF")
+            else:
+                logger.debug("Audio toggle not found (may not exist for this model)")
+        except Exception as e:
+            logger.debug(f"Audio toggle check failed: {e}")
+
+    async def _ensure_duration_10s(self) -> None:
+        """
+        Ensure video duration is set to 10s.
+
+        HiggsField uses a DROPDOWN for duration:
+        1. Click button[aria-label="Duration"] to open dropdown
+        2. Select [role="option"][data-key="10"] or option with "10s" text
+        """
+        try:
+            # Step 1: Click the Duration dropdown button
+            clicked = await asyncio.to_thread(
+                self.driver.execute_script,
+                """
+                // Try aria-label selector first (most reliable)
+                var btn = document.querySelector('button[aria-label="Duration"]');
+                if (btn) { btn.click(); return 'aria_label'; }
+
+                // Fallback: find button containing "5s" or "10s" text (current duration shown)
+                var candidates = document.querySelectorAll('button');
+                for (var el of candidates) {
+                    if (el.offsetParent === null) continue;
+                    var text = (el.textContent || '').trim();
+                    if (/^\\d+s$/.test(text)) {
+                        el.click();
+                        return 'text:' + text;
+                    }
+                }
+                return 'not_found';
+                """
+            )
+            logger.debug(f"Duration button click: {clicked}")
+
+            if clicked == 'not_found':
+                logger.warning("Duration button not found on page")
+                return
+
+            await asyncio.sleep(0.5)
+
+            # Step 2: Select "10" from dropdown options
+            selected = await asyncio.to_thread(
+                self.driver.execute_script,
+                """
+                // Try data-key selector (most reliable)
+                var option = document.querySelector('[role="option"][data-key="10"]');
+                if (option) { option.click(); return 'data_key'; }
+
+                // Fallback: find option containing "10s" or "10" text
+                var options = document.querySelectorAll('[role="option"], [role="menuitem"], li');
+                for (var opt of options) {
+                    if (opt.offsetParent === null) continue;
+                    var text = (opt.textContent || '').trim();
+                    if (text === '10s' || text === '10') {
+                        opt.click();
+                        return 'text:' + text;
+                    }
+                }
+
+                // Diagnostic: log what options are available
+                var available = [];
+                document.querySelectorAll('[role="option"]').forEach(function(o) {
+                    available.push(o.textContent.trim());
+                });
+                return 'not_found:' + available.join(',');
+                """
+            )
+
+            if 'not_found' in str(selected):
+                logger.warning(f"Duration 10s option: {selected}")
+            else:
+                logger.info(f"Duration set to 10s ({selected})")
+
+        except Exception as e:
+            logger.warning(f"Duration setup failed: {e}")
 
     async def _click_change_button(self) -> bool:
         """Кликнуть кнопку Change чтобы заменить изображение"""
@@ -623,128 +1090,131 @@ class SimpleVideoGenerator:
             return False
 
     async def _upload_image(self, image_path: Path) -> None:
-        """Загрузить изображение (с поддержкой нового Higgsfield UI)"""
+        """
+        Upload image to Higgsfield.
+
+        Page is guaranteed to be clean after _ensure_video_page() which
+        clears all browser storage. File input should always be present.
+
+        Uses send_keys + React internal onChange handler to ensure
+        the file is actually processed by React's synthetic event system.
+
+        Retries on StaleElementReferenceException (page may re-render
+        after model selection).
+        """
         logger.debug(f"Uploading: {image_path}")
+        abs_path = str(image_path.absolute())
 
-        # 1. Check if file input already exists (clean page after about:blank navigation)
-        file_inputs = await asyncio.to_thread(
-            self.driver.find_elements,
-            By.CSS_SELECTOR,
-            'input[type="file"]'
-        )
-
-        if file_inputs:
-            logger.info("File input found immediately - clean page")
-        else:
-            # 2. Page has cached image — need to clear it
-            logger.info("No file input - page has cached image, clearing...")
-
-            # Method A: Try pixel-based X button (legacy)
-            for attempt in range(3):
-                cleared = await self._clear_preset_image()
-                if cleared:
-                    logger.info(f"Cleared existing image (attempt {attempt + 1})")
-                    await asyncio.sleep(2)
-                    file_inputs = await asyncio.to_thread(
-                        self.driver.find_elements,
-                        By.CSS_SELECTOR,
-                        'input[type="file"]'
-                    )
-                    if file_inputs:
-                        logger.info("File input appeared after clearing!")
-                        break
-                else:
-                    break
-
-            # Method B: Try JavaScript to find and click ANY close/remove button near image preview
-            if not file_inputs:
-                logger.info("Trying JS-based image removal...")
-                cleared_js = await self._clear_image_via_js()
-                if cleared_js:
-                    await asyncio.sleep(2)
-                    file_inputs = await asyncio.to_thread(
-                        self.driver.find_elements,
-                        By.CSS_SELECTOR,
-                        'input[type="file"]'
-                    )
-
-            # Method C: Try "Change" button
-            if not file_inputs:
-                change_btns = await asyncio.to_thread(
+        # Retry loop — handles stale element references from delayed re-renders
+        for retry in range(3):
+            try:
+                # Step 1: Find file input (fresh search each retry)
+                file_inputs = await asyncio.to_thread(
                     self.driver.find_elements,
-                    By.XPATH,
-                    "//button[contains(., 'Change')]"
+                    By.CSS_SELECTOR,
+                    'input[type="file"]'
                 )
-                if change_btns:
-                    logger.debug("Clicking 'Change' button...")
-                    await asyncio.to_thread(
-                        self.driver.execute_script,
-                        "arguments[0].click();",
-                        change_btns[0]
-                    )
-                    await asyncio.sleep(2)
-                    file_inputs = await asyncio.to_thread(
-                        self.driver.find_elements,
-                        By.CSS_SELECTOR,
-                        'input[type="file"]'
-                    )
 
-            # Method D: Wait for file input (maybe clearing is async)
-            if not file_inputs:
-                logger.debug("Waiting for file input to appear...")
-                for attempt in range(10):
-                    file_inputs = await asyncio.to_thread(
-                        self.driver.find_elements,
-                        By.CSS_SELECTOR,
-                        'input[type="file"]'
-                    )
-                    if file_inputs:
-                        logger.debug(f"File input appeared after {attempt}s")
-                        break
-                    await asyncio.sleep(1)
+                if not file_inputs:
+                    logger.warning("File input not found — waiting...")
+                    for i in range(10):
+                        await asyncio.sleep(1)
+                        file_inputs = await asyncio.to_thread(
+                            self.driver.find_elements,
+                            By.CSS_SELECTOR,
+                            'input[type="file"]'
+                        )
+                        if file_inputs:
+                            break
 
-            # Method E (last resort): Force page reload via JS and try again
-            if not file_inputs:
-                logger.warning("All clearing methods failed — force reloading page...")
+                if not file_inputs:
+                    raise Exception("File input not found on page — cannot upload image")
+
+                # Step 2: Send file path via Selenium
+                logger.debug(f"Sending file to input: {image_path.name}")
+                await asyncio.to_thread(file_inputs[0].send_keys, abs_path)
+
+                # Step 3: Trigger React's onChange handler
+                # React 17+ uses event delegation and may not catch native DOM events.
                 await asyncio.to_thread(
                     self.driver.execute_script,
-                    "window.localStorage.clear(); window.sessionStorage.clear();"
+                    """
+                    var input = arguments[0];
+
+                    // Approach 1: React internal onChange (most reliable for React 17+)
+                    var reactPropsKey = Object.keys(input).find(function(key) {
+                        return key.startsWith('__reactProps$') ||
+                               key.startsWith('__reactEventHandlers$');
+                    });
+                    if (reactPropsKey) {
+                        var props = input[reactPropsKey];
+                        if (props && props.onChange) {
+                            props.onChange({ target: input, currentTarget: input });
+                            return 'react_onChange';
+                        }
+                    }
+
+                    // Approach 2: Native change event (bubbles up for React event delegation)
+                    var changeEvent = new Event('change', { bubbles: true });
+                    input.dispatchEvent(changeEvent);
+
+                    // Approach 3: InputEvent
+                    var inputEvent = new Event('input', { bubbles: true });
+                    input.dispatchEvent(inputEvent);
+
+                    return 'native_events';
+                    """,
+                    file_inputs[0]
                 )
-                await asyncio.to_thread(self.driver.get, "about:blank")
-                await asyncio.sleep(1)
-                await asyncio.to_thread(self.driver.get, HIGGSFIELD_VIDEO_URL)
-                await asyncio.sleep(5)
-                for attempt in range(15):
-                    file_inputs = await asyncio.to_thread(
-                        self.driver.find_elements,
-                        By.CSS_SELECTOR,
-                        'input[type="file"]'
-                    )
-                    if file_inputs:
-                        logger.info(f"File input found after localStorage clear + reload")
-                        break
-                    await asyncio.sleep(1)
 
-        # Final check
-        if not file_inputs:
-            raise Exception("File input not found after all attempts (5 methods tried)")
+                # If we got here without StaleElementReferenceException, break retry loop
+                break
 
-        # 5. Загрузить файл
-        logger.debug(f"Sending file to input...")
-        await asyncio.to_thread(file_inputs[0].send_keys, str(image_path.absolute()))
+            except StaleElementReferenceException:
+                if retry < 2:
+                    logger.warning(f"Stale element on upload attempt {retry + 1} — page re-rendered, retrying...")
+                    await asyncio.sleep(2)
+                else:
+                    raise Exception("File input keeps going stale — page unstable")
 
-        # 6. Ждать завершения загрузки
-        logger.debug("Waiting for upload...")
-        for i in range(120):
+        # Step 4: Wait for upload processing
+        logger.debug("Waiting for upload processing...")
+        for i in range(60):
             body_text = await asyncio.to_thread(
                 lambda: self.driver.find_element(By.TAG_NAME, 'body').text.lower()
             )
             if 'uploading' not in body_text:
-                logger.debug(f"Upload complete ({i}s)")
+                logger.debug(f"Upload processing done ({i}s)")
                 break
             await asyncio.sleep(1)
 
-        await asyncio.sleep(3)
+        # Step 5: Verify — wait for file input to disappear (replaced by preview)
+        for i in range(20):
+            remaining = await asyncio.to_thread(
+                self.driver.find_elements,
+                By.CSS_SELECTOR,
+                'input[type="file"]'
+            )
+            if not remaining:
+                logger.info(f"Image upload VERIFIED — file input removed after {i}s")
+                return
+            # Also check if hidden (some UIs hide rather than remove)
+            try:
+                is_hidden = await asyncio.to_thread(
+                    self.driver.execute_script,
+                    "var el = arguments[0]; return el.offsetParent === null && el.offsetWidth === 0;",
+                    remaining[0]
+                )
+                if is_hidden:
+                    logger.info(f"Image upload VERIFIED — file input hidden after {i}s")
+                    return
+            except StaleElementReferenceException:
+                # Element went stale during check — likely removed, which means success
+                logger.info(f"Image upload VERIFIED — file input went stale (removed) after {i}s")
+                return
+            await asyncio.sleep(1)
+
+        logger.warning("Image upload verification inconclusive — continuing anyway")
 
     async def _enter_prompt(self, prompt: str) -> None:
         """Ввести prompt"""
@@ -758,13 +1228,20 @@ class SimpleVideoGenerator:
         await asyncio.sleep(1)
 
     async def _click_generate(self) -> None:
-        """Нажать Generate"""
+        """Нажать Generate (JavaScript click to bypass overlay elements)"""
         gen_btn = await asyncio.to_thread(
             self.driver.find_element,
             By.XPATH,
             "//button[contains(., 'Generate')]"
         )
-        await asyncio.to_thread(gen_btn.click)
+        # Scroll button into view and use JS click — the prompt label
+        # overlaps the button in the current Higgsfield UI, causing
+        # ElementClickInterceptedException with native Selenium click
+        await asyncio.to_thread(
+            self.driver.execute_script,
+            "arguments[0].scrollIntoView({block: 'center'}); arguments[0].click();",
+            gen_btn
+        )
         await asyncio.sleep(3)
 
         # Проверить что генерация началась
@@ -819,69 +1296,203 @@ class SimpleVideoGenerator:
         logger.warning(f"Generation timeout after {timeout}s")
 
     async def _get_latest_video_url(self, max_attempts: int = 10) -> Optional[str]:
-        """Получить URL последнего видео через History panel"""
+        """
+        Get the URL of the generated video.
+
+        Strategy (in order):
+        1. Look for <video> elements directly on the page (inline player after generation)
+        2. Search all DOM attributes for video URLs via JS (covers lazy-loaded/data-* attrs)
+        3. Click History panel items to open modal with video
+        """
 
         for attempt in range(max_attempts):
             try:
-                # 1. Click History button to ensure panel is open
-                history_btns = await asyncio.to_thread(
-                    self.driver.find_elements,
-                    By.XPATH,
-                    "//button[contains(., 'History')]"
+                # --- Strategy 1: Direct <video> elements on page ---
+                video_url = await asyncio.to_thread(
+                    self.driver.execute_script,
+                    """
+                    var validUrl = function(url) {
+                        if (!url || !url.startsWith('http')) return false;
+                        // Accept .mp4, cloudfront CDN, higgsfield CDN
+                        return url.includes('.mp4') ||
+                               url.includes('cloudfront') ||
+                               url.includes('cdn.higgsfield');
+                    };
+
+                    // Check all <video> elements — src and <source> children
+                    var videos = document.querySelectorAll('video');
+                    for (var v of videos) {
+                        if (validUrl(v.src)) return v.src;
+                        if (validUrl(v.currentSrc)) return v.currentSrc;
+                        var sources = v.querySelectorAll('source');
+                        for (var s of sources) {
+                            if (validUrl(s.src)) return s.src;
+                        }
+                    }
+
+                    // Check <a> download links
+                    var links = document.querySelectorAll('a[download], a[href*=".mp4"]');
+                    for (var a of links) {
+                        var href = a.getAttribute('href');
+                        if (validUrl(href)) return href;
+                    }
+
+                    // Check data-* attributes
+                    var dataEls = document.querySelectorAll(
+                        '[data-url], [data-video-url], [data-src], [data-video]'
+                    );
+                    for (var el of dataEls) {
+                        var attrs = ['data-url', 'data-video-url', 'data-src', 'data-video'];
+                        for (var attr of attrs) {
+                            var val = el.getAttribute(attr);
+                            if (validUrl(val)) return val;
+                        }
+                    }
+
+                    // Scan ALL attributes for video URLs (covers edge cases)
+                    var allEls = document.querySelectorAll('*');
+                    for (var el of allEls) {
+                        for (var attr of el.attributes) {
+                            if (attr.value && attr.value.startsWith('http') &&
+                                (attr.value.includes('.mp4') || attr.value.includes('kling_motion'))) {
+                                return attr.value;
+                            }
+                        }
+                    }
+
+                    return null;
+                    """
                 )
-                if history_btns:
-                    await asyncio.to_thread(history_btns[0].click)
-                    await asyncio.sleep(2)
 
-                # 2. Click on first history item (most recent video)
-                overlay_btns = await asyncio.to_thread(
-                    self.driver.find_elements,
-                    By.CSS_SELECTOR,
-                    'button.absolute.inset-0.cursor-pointer'
-                )
-                if overlay_btns:
-                    logger.debug(f"Clicking first history item...")
-                    await asyncio.to_thread(overlay_btns[0].click)
-                    await asyncio.sleep(3)
+                if video_url:
+                    logger.info(f"Found video URL (strategy 1, attempt {attempt + 1}): {video_url[:80]}...")
+                    return video_url
 
-                    # 3. Get cloudfront video URL from modal
-                    videos = await asyncio.to_thread(
-                        self.driver.find_elements,
-                        By.TAG_NAME,
-                        'video'
-                    )
-                    for v in videos:
-                        src = await asyncio.to_thread(v.get_attribute, 'src')
-                        if src and 'cloudfront' in src:
-                            logger.debug(f"Found cloudfront video URL")
-                            # Close modal by pressing ESC
-                            await asyncio.to_thread(
-                                self.driver.find_element,
-                                By.TAG_NAME, 'body'
-                            )
-                            body = await asyncio.to_thread(
-                                self.driver.find_element,
-                                By.TAG_NAME, 'body'
-                            )
-                            await asyncio.to_thread(body.send_keys, Keys.ESCAPE)
-                            await asyncio.sleep(1)
-                            return src
-
-                    # Close modal if no cloudfront found
-                    body = await asyncio.to_thread(
-                        self.driver.find_element,
-                        By.TAG_NAME, 'body'
-                    )
-                    await asyncio.to_thread(body.send_keys, Keys.ESCAPE)
-                    await asyncio.sleep(1)
+                # --- Strategy 2: Click History panel → open modal → find video ---
+                if attempt >= 2:  # Give inline video 2 attempts before trying History
+                    url_from_history = await self._get_video_url_from_history()
+                    if url_from_history:
+                        logger.info(f"Found video URL (history, attempt {attempt + 1}): {url_from_history[:80]}...")
+                        return url_from_history
 
             except Exception as e:
                 logger.debug(f"Attempt {attempt + 1} error: {e}")
 
             logger.debug(f"Video not found yet, attempt {attempt + 1}/{max_attempts}")
-            await asyncio.sleep(3)
+            await asyncio.sleep(5)
 
         return None
+
+    async def _get_video_url_from_history(self) -> Optional[str]:
+        """
+        Fallback: open History panel, click the newest card, extract video URL from modal.
+        """
+        try:
+            # Click History button/tab
+            clicked_history = await asyncio.to_thread(
+                self.driver.execute_script,
+                """
+                var candidates = document.querySelectorAll('button, [role="tab"], a');
+                for (var el of candidates) {
+                    var text = (el.textContent || '').trim().toLowerCase();
+                    if (text === 'history' || text.includes('history')) {
+                        if (el.offsetParent === null) continue;
+                        el.click();
+                        return true;
+                    }
+                }
+                return false;
+                """
+            )
+            if not clicked_history:
+                logger.debug("History button not found")
+                return None
+
+            await asyncio.sleep(2)
+
+            # Click the first video card/thumbnail in history
+            clicked_card = await asyncio.to_thread(
+                self.driver.execute_script,
+                """
+                // Look for clickable cards with video thumbnails
+                var selectors = [
+                    '[data-asset-id]',
+                    'button.absolute.inset-0',
+                    'button[class*="cursor-pointer"]',
+                    'div[class*="card"] button',
+                    'div[class*="history"] button',
+                    'div[class*="grid"] > div'
+                ];
+                for (var sel of selectors) {
+                    var items = document.querySelectorAll(sel);
+                    if (items.length > 0) {
+                        items[0].click();
+                        return sel + ':' + items.length;
+                    }
+                }
+                return null;
+                """
+            )
+            if not clicked_card:
+                logger.debug("No history cards found")
+                return None
+
+            logger.debug(f"Clicked history card: {clicked_card}")
+            await asyncio.sleep(3)
+
+            # Extract video URL from modal
+            video_url = await asyncio.to_thread(
+                self.driver.execute_script,
+                """
+                var validUrl = function(url) {
+                    if (!url || !url.startsWith('http')) return false;
+                    return url.includes('.mp4') ||
+                           url.includes('cloudfront') ||
+                           url.includes('cdn.higgsfield');
+                };
+                // Check modal video elements
+                var modalSelectors = [
+                    'div[role="dialog"] video',
+                    '[class*="modal"] video',
+                    '[class*="Modal"] video',
+                    '[class*="preview"] video',
+                    'video'
+                ];
+                for (var sel of modalSelectors) {
+                    var videos = document.querySelectorAll(sel);
+                    for (var v of videos) {
+                        if (validUrl(v.src)) return v.src;
+                        if (validUrl(v.currentSrc)) return v.currentSrc;
+                        var sources = v.querySelectorAll('source');
+                        for (var s of sources) {
+                            if (validUrl(s.src)) return s.src;
+                        }
+                    }
+                }
+                return null;
+                """
+            )
+
+            # Close modal
+            await asyncio.to_thread(
+                self.driver.execute_script,
+                "document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}));"
+            )
+            await asyncio.sleep(1)
+
+            return video_url
+
+        except Exception as e:
+            logger.debug(f"History fallback error: {e}")
+            # Try to close any open modal
+            try:
+                await asyncio.to_thread(
+                    self.driver.execute_script,
+                    "document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}));"
+                )
+            except Exception:
+                pass
+            return None
 
     async def _download_video(self, url: str, output_path: Path) -> None:
         """Скачать видео"""
