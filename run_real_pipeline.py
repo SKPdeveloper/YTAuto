@@ -28,6 +28,8 @@ from typing import Optional
 # Add project to path
 sys.path.insert(0, str(Path(__file__).parent))
 
+import uvicorn
+
 from app.core.config import settings
 from app.core.state_manager import state_manager
 from app.core.orchestrator import ProjectOrchestrator
@@ -48,6 +50,47 @@ BANNER = """
 
 ========================================================================
 """
+
+
+# ============================================================================
+# WEB SERVER (background task in same event loop)
+# ============================================================================
+
+async def start_web_server_background() -> uvicorn.Server:
+    """
+    Запускає uvicorn веб-сервер як фонову asyncio задачу.
+
+    Працює в тому ж event loop що й pipeline — вони шерять один control_state,
+    тому asyncio.Event() для video approval працює коректно.
+
+    Returns:
+        uvicorn.Server instance (для graceful shutdown)
+    """
+    config = uvicorn.Config(
+        "app.api.routes:app",
+        host=settings.WEB_HOST,
+        port=settings.WEB_PORT,
+        log_level="warning",  # Менше шуму в консолі — pipeline логи важливіші
+        install_signal_handlers=False,  # Pipeline сам обробляє Ctrl+C
+    )
+    server = uvicorn.Server(config)
+
+    # Запускаємо як фонову задачу
+    asyncio.create_task(server.serve())
+
+    # Чекаємо поки сервер дійсно стартує
+    for _ in range(50):  # max 5 секунд
+        if server.started:
+            break
+        await asyncio.sleep(0.1)
+
+    if server.started:
+        logger.success(f"Web UI started: http://{settings.WEB_HOST}:{settings.WEB_PORT}")
+        logger.info(f"Control panel: http://{settings.WEB_HOST}:{settings.WEB_PORT}/control")
+    else:
+        logger.warning("Web UI server did not start in time — approval via web may not work")
+
+    return server
 
 
 # ============================================================================
@@ -212,8 +255,10 @@ async def run_pipeline(topic: Optional[str] = None, num_scenes: int = 8, auto_ap
     logger.success(f"Project created: {project_id}")
     logger.info(f"Directory: projects/{project_id}")
 
-    # STEP 4: Start Background Tasks
-    logger.info("\n[STEP 4] Starting background tasks...")
+    # STEP 4: Start Web Server + Background Tasks
+    logger.info("\n[STEP 4] Starting web server & background tasks...")
+
+    web_server = await start_web_server_background()
 
     monitor = PipelineMonitor(orchestrator, project_id)
     monitor_task = asyncio.create_task(monitor.monitor())
@@ -273,6 +318,9 @@ async def run_pipeline(topic: Optional[str] = None, num_scenes: int = 8, auto_ap
         # Shutdown visual engine
         await orchestrator.shutdown_visual_engine()
 
+        # Shutdown web server
+        web_server.should_exit = True
+
 
 # ============================================================================
 # RESUME PIPELINE
@@ -288,6 +336,9 @@ async def resume_pipeline(project_id: str):
     logger.info("\n[STEP 2] Creating Orchestrator...")
     orchestrator = ProjectOrchestrator()
     logger.success("Orchestrator ready")
+
+    logger.info("\n[STEP 3] Starting web server & background tasks...")
+    web_server = await start_web_server_background()
 
     monitor = PipelineMonitor(orchestrator, project_id)
     monitor_task = asyncio.create_task(monitor.monitor())
@@ -337,6 +388,9 @@ async def resume_pipeline(project_id: str):
             logger.info("=" * 70)
 
         await orchestrator.shutdown_visual_engine()
+
+        # Shutdown web server
+        web_server.should_exit = True
 
 
 # ============================================================================

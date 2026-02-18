@@ -453,9 +453,35 @@ class ProjectOrchestrator:
         awaiting_scenes = [s for s in project.scenes if s.status == SceneStatus.AWAITING_APPROVAL]
         approved_scenes = [s for s in project.scenes if s.status == SceneStatus.APPROVED]
 
+        logger.info(f"  Stage: {project.current_stage}")
         logger.info(f"  Pending (need image+video): {len(pending_scenes)}")
         logger.info(f"  Awaiting (need video): {len(awaiting_scenes)}")
         logger.info(f"  Approved (ready): {len(approved_scenes)}")
+
+        # If project is already waiting for render approval — go straight to approval
+        if project.current_stage == PipelineStage.AWAITING_RENDER_APPROVAL:
+            logger.info("Project at AWAITING_RENDER_APPROVAL — waiting for user decision...")
+            approval = await self._wait_for_render_approval(project)
+
+            if approval == "approved":
+                final_path = project.project_dir / "final.mp4"
+                if not final_path.exists():
+                    final_path = project.project_dir / "final_video.mp4"
+                if final_path.exists():
+                    await self._add_to_topaz_queue(project, final_path)
+                else:
+                    logger.error(f"No final video found for Topaz: {project.project_dir}")
+            elif approval == "skip_upscale":
+                project.status = ProjectStatus.COMPLETED
+                project.completed_at = datetime.now()
+                await self._save_project_state(project)
+                logger.success(f"[{project_id}] PROJECT COMPLETED (Topaz skipped)")
+            else:
+                project.status = ProjectStatus.PAUSED
+                project.error_message = f"Video rejected: {approval}"
+                await self._save_project_state(project)
+
+            return project
 
         # If all scenes approved - go to post-processing
         if len(approved_scenes) == len(project.scenes):
@@ -1977,6 +2003,24 @@ class ProjectOrchestrator:
                 await self._save_project_state(project)
                 logger.info(f"[FALLBACK] Assembly complete! Waiting for approval before Topaz...")
                 logger.info(f"[FALLBACK] Review video at: {final_video_path}")
+
+                # Wait for user approval via web UI
+                approval = await self._wait_for_render_approval(project)
+
+                if approval == "approved":
+                    logger.success(f"[FALLBACK] Video approved! Starting Topaz...")
+                    await self._add_to_topaz_queue(project, final_video_path)
+                elif approval == "skip_upscale":
+                    logger.info(f"[FALLBACK] Topaz skipped by user")
+                    await self._update_stage(project, PipelineStage.COMPLETED)
+                    project.status = ProjectStatus.COMPLETED
+                    project.completed_at = datetime.now()
+                    await self._save_project_state(project)
+                else:  # rejected / needs_editing
+                    logger.warning(f"[FALLBACK] Video rejected: {approval}")
+                    project.status = ProjectStatus.PAUSED
+                    project.error_message = f"Video rejected: {approval}"
+                    await self._save_project_state(project)
             else:
                 await self._update_stage(project, PipelineStage.COMPLETED)
                 await self._mark_stage_complete(project, PipelineStage.COMPLETED)
@@ -2465,6 +2509,61 @@ class ProjectOrchestrator:
             "is_running": self.topaz_queue.is_running,
         }
 
+    async def _wait_for_render_approval(self, project: ProjectData) -> str:
+        """
+        Block until user approves/rejects the rendered video via web UI.
+
+        Uses the same control_state as the /api/control/video-approval endpoint,
+        so the web server must be running in the same event loop.
+
+        Returns:
+            'approved' | 'rejected' | 'skip_upscale' | 'needs_editing'
+        """
+        from app.api.control_routes import get_control_state, broadcast_event
+
+        state = get_control_state()
+
+        # Set up approval state (same fields the endpoint checks)
+        state.awaiting_video_approval = True
+        state.video_approval_project_id = project.project_id
+        state.video_approval_result = None
+        state.video_approval_event = asyncio.Event()
+
+        # Find and store video URL for the web UI
+        video_path, video_url = None, None
+        for name in ["final.mp4", "final_video.mp4", "assembled_video.mp4"]:
+            p = project.project_dir / name
+            if p.exists():
+                video_path = p
+                video_url = f"/projects/{project.project_id}/{name}"
+                break
+
+        state.final_video_path = video_url
+        state.current_project_id = project.project_id
+
+        # Broadcast event so the web UI shows the approval dialog
+        await broadcast_event("video_approval_required", {
+            "type": "video_approval",
+            "project_id": project.project_id,
+            "video_url": video_url,
+            "video_size_mb": round(video_path.stat().st_size / (1024 * 1024), 1) if video_path else 0,
+            "message": "Review video before Topaz upscaling",
+        })
+
+        logger.info(f"[{project.project_id}] Awaiting approval via web UI "
+                     f"(http://{settings.WEB_HOST}:{settings.WEB_PORT}/control)")
+
+        # Block until user makes a decision
+        await state.video_approval_event.wait()
+
+        result = state.video_approval_result or "approved"
+
+        # Cleanup
+        state.awaiting_video_approval = False
+        state.video_approval_project_id = None
+
+        return result
+
     async def approve_and_run_topaz(self, project_id: str) -> bool:
         """
         Approve rendered video and start Topaz upscaling.
@@ -2687,7 +2786,25 @@ class ProjectOrchestrator:
                     await self._save_project_state(project)
                     logger.info(f"[{project.project_id}] Render complete! Waiting for approval before Topaz upscaling...")
                     logger.info(f"[{project.project_id}] Review video at: {project.project_dir / 'final.mp4'}")
-                    logger.info(f"[{project.project_id}] To approve and run Topaz, use: approve_and_run_topaz('{project.project_id}')")
+
+                    # Wait for user approval via web UI
+                    approval = await self._wait_for_render_approval(project)
+
+                    if approval == "approved":
+                        logger.success(f"[{project.project_id}] Video approved! Starting Topaz...")
+                        await self._add_to_topaz_queue(project, project.project_dir / "final.mp4")
+                    elif approval == "skip_upscale":
+                        logger.info(f"[{project.project_id}] Topaz skipped by user")
+                        await self._update_stage(project, PipelineStage.COMPLETED)
+                        project.status = ProjectStatus.COMPLETED
+                        project.completed_at = datetime.now()
+                        await self._save_project_state(project)
+                        logger.success(f"[{project.project_id}] PROJECT COMPLETED (without Topaz)!")
+                    else:  # rejected / needs_editing
+                        logger.warning(f"[{project.project_id}] Video rejected by user: {approval}")
+                        project.status = ProjectStatus.PAUSED
+                        project.error_message = f"Video rejected: {approval}"
+                        await self._save_project_state(project)
                 else:
                     # Mark as completed (no Topaz)
                     await self._update_stage(project, PipelineStage.COMPLETED)
