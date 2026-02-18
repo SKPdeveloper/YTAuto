@@ -251,6 +251,7 @@ class Publisher:
                 project_id=project_id,
                 video_id=video_id,
                 channel_id=target_channel,
+                scheduled_datetime=scheduled_datetime,
             )
 
             # Update scheduler queue if scheduled
@@ -364,6 +365,7 @@ class Publisher:
         project_id: str,
         video_id: str,
         channel_id: str,
+        scheduled_datetime: Optional[datetime] = None,
     ) -> None:
         """
         Register a freshly uploaded video for A/B metadata rotation.
@@ -371,10 +373,15 @@ class Publisher:
         Loads gen1_output.json from the project directory, extracts
         metadata_variants, and registers if all 4 variants present.
 
+        If scheduled_datetime is set (future publication), variant_start_time
+        is set to that moment so the A/B timer starts when the video goes live,
+        not when it was uploaded.
+
         Non-fatal: if anything fails, just log a warning. Upload already succeeded.
         """
         try:
             import json
+            from datetime import timezone
 
             # Find gen1_output.json
             project_dir = self.config.get_project_dir(project_id)
@@ -399,6 +406,11 @@ class Publisher:
             # Use first available variant (usually "A")
             first_variant = sorted(variants.keys())[0]
 
+            # If scheduled for future — timer starts at go-live, not now
+            now = datetime.now(timezone.utc)
+            go_live = scheduled_datetime if scheduled_datetime and scheduled_datetime > now else None
+            start_time = go_live or now
+
             # Create and register record
             record = VideoABRecord(
                 video_id=video_id,
@@ -407,11 +419,20 @@ class Publisher:
                 current_variant=first_variant,
                 variants=variants,
                 gen1_output_path=str(gen1_path),
+                scheduled_go_live=go_live,
+                variant_start_time=start_time,
             )
 
             store = ABStore(config_dir=self.config.config_dir)
             store.register_video(record)
-            logger.info(f"Registered {video_id} for AB monitoring ({len(variants)} variants)")
+
+            if go_live:
+                logger.info(
+                    f"Registered {video_id} for AB monitoring "
+                    f"({len(variants)} variants, timer starts at {go_live.isoformat()})"
+                )
+            else:
+                logger.info(f"Registered {video_id} for AB monitoring ({len(variants)} variants)")
 
         except Exception as e:
             logger.warning(f"Failed to register for AB monitoring: {e}")

@@ -160,6 +160,15 @@ class ABMonitor:
             video.metrics_log.append(snapshot)
 
             now = datetime.now(timezone.utc)
+
+            # Skip evaluation if video is scheduled for future publication
+            if video.scheduled_go_live and now < video.scheduled_go_live:
+                hours_until = (video.scheduled_go_live - now).total_seconds() / 3600
+                logger.debug(
+                    f"{video.video_id}: scheduled go-live in {hours_until:.1f}h, skipping"
+                )
+                return "waiting_for_go_live"
+
             hours_elapsed = (now - video.variant_start_time).total_seconds() / 3600
 
             if hours_elapsed < 0:

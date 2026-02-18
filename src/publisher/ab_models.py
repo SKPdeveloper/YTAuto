@@ -58,6 +58,10 @@ class VideoABRecord(BaseModel):
         default_factory=lambda: datetime.now(timezone.utc),
         description="UTC time of initial upload",
     )
+    scheduled_go_live: Optional[datetime] = Field(
+        default=None,
+        description="UTC time when video is scheduled to go public (None = already live)",
+    )
     variant_start_time: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         description="UTC time when current variant started (resets on swap)",
