@@ -69,7 +69,7 @@ MIN_SCALE_KEYWORDS: int = 2
 
 # Scale keywords для Scene 1 (VAL_GEN2 рядок 457-463)
 SCALE_KEYWORDS: Set[str] = {
-    "towering", "imposing", "massive", "low angle", "looking up", "looms"
+    "towering", "imposing", "massive", "low angle", "looking up"
 }
 
 # Anti-toy keywords в negative_prompt (VAL_GEN2 рядок 246)
@@ -80,6 +80,14 @@ ANTI_TOY_KEYWORDS: Set[str] = {
 # Anti-yellow keywords в negative_prompt (GEN2 v6.1.0 Color Accuracy Doctrine)
 ANTI_YELLOW_KEYWORDS: Set[str] = {
     "yellow color cast", "sepia tone"
+}
+
+# Full mandatory base negative keywords (GEN2.txt line 451)
+MANDATORY_NEGATIVE_KEYWORDS: Set[str] = {
+    "tilt-shift", "miniature", "diorama", "toy",
+    "small scale", "plastic", "fake", "3d render", "isometric",
+    "text", "watermark", "cute", "tiny", "dollhouse",
+    "yellow color cast", "sepia tone", "amber tint",
 }
 
 # Banned words у video_prompt (VAL_GEN2 рядки 308-315)
@@ -158,15 +166,51 @@ ALLOWED_CAMERA_MOVEMENTS: Set[str] = {
     "tracking", "emerging", "crane", "craning", "ascending"
 }
 
-# Meta-instructions заборонені в last scene / LOOP_CLOSE (VAL_GEN2 рядки 342-347)
-BANNED_LAST_SCENE_META: Set[str] = {
+# Meta-instructions заборонені в video prompts (GEN2.txt lines 909-918)
+BANNED_VIDEO_META: Set[str] = {
     "matching scene 1",
     "matching opening shot",
     "(reverse in post)",
     "reverse in post",
     "same as before",
-    "10s"
+    "like earlier",
+    "10s",
+    "10 seconds",
 }
+
+# Meta-instruction patterns заборонені в image prompts (GEN2.txt lines 392-439)
+IMAGE_META_PATTERNS: List[str] = [
+    r'\bfrom\s+(back|top|side|front|above|below)\b',
+    r'\bper\s+(clear|light|heavy|fog)\b',
+    r'\bscene\s+\d',
+    r'\bidentical\b',
+    r'\bopening\s+shot\b',
+    r'\bmatching\s+scene\b',
+]
+
+# GEN1 fields that GEN2 must NOT duplicate (GEN2.txt lines 1406-1417)
+FORBIDDEN_GEN1_FIELDS: Set[str] = {
+    "scene_name", "duration_seconds", "narrative_purpose", "reference_hint",
+    "energy_level", "visual_concept", "camera_intent", "gen2_visual_params",
+    "narrator_script", "voiceover_segment", "audio_moment", "audio_texture_layer",
+    "sensory_pressure", "money_shot", "temperature_contrast", "scene_tricks",
+}
+
+# Valid atmosphere modes (GEN2.txt lines 789-807)
+VALID_ATMOSPHERE_MODES: Set[str] = {
+    "CINEMATIC", "VIBRANT", "PLAYFUL", "GOLDEN_WARM",
+    "TROPICAL", "ETHEREAL", "NOIR", "HAUNTED",
+}
+
+# Atmosphere-specific negative prompt additions (GEN2.txt lines 789-807)
+ATMOSPHERE_NEGATIVE_ADDITIONS: Dict[str, List[str]] = {
+    "NOIR": ["flat lighting", "even illumination"],
+    "HAUNTED": ["flat lighting", "even illumination"],
+    "ETHEREAL": ["harsh shadows", "high contrast"],
+}
+
+# Valid scale_mode values (GEN2.txt lines 228-234)
+VALID_SCALE_MODES: Set[str] = {"APPETITE", "BALANCED", "ARCHITECTURE"}
 
 # Easter egg forbidden zones (VAL_GEN2 рядки 403-407)
 FORBIDDEN_EGG_ZONES: Set[str] = {"bottom-center", "bottom center"}
@@ -507,8 +551,19 @@ class Gen2Validator:
                 self._auto_fixes.append(fix_desc)
                 logger.info(f"  [AUTO-FIX] {fix_desc}")
 
-            # 3. Fix "--ar 9:16" in image_prompt (hardcoded in software)
+            # 3. Fix "slow motion"/"slo-mo" in image_prompt (banned in ALL prompts)
             image_prompt = scene.get("image_prompt", "")
+            if image_prompt:
+                fixed_img = re.sub(r'\bslow\s+motion\b', 'suspended mid-air', image_prompt, flags=re.IGNORECASE)
+                fixed_img = re.sub(r'\bslo-mo\b', 'suspended mid-air', fixed_img, flags=re.IGNORECASE)
+                if fixed_img != image_prompt:
+                    scene["image_prompt"] = fixed_img
+                    fix_desc = f"scenes[{i}].image_prompt: auto-replaced 'slow motion'/'slo-mo'"
+                    self._auto_fixes.append(fix_desc)
+                    logger.info(f"  [AUTO-FIX] {fix_desc}")
+                    image_prompt = fixed_img
+
+            # 4. Fix "--ar 9:16" in image_prompt (hardcoded in software)
             if "--ar 9:16" in image_prompt or "--ar 9\\:16" in image_prompt:
                 fixed = image_prompt.replace("--ar 9:16", "").replace("--ar 9\\:16", "")
                 fixed = re.sub(r'\s+', ' ', fixed).strip()
@@ -516,6 +571,31 @@ class Gen2Validator:
                 fix_desc = f"scenes[{i}].image_prompt: auto-removed '--ar 9:16'"
                 self._auto_fixes.append(fix_desc)
                 logger.info(f"  [AUTO-FIX] {fix_desc}")
+
+            # 5. Auto-fix banned camera movements in video_prompt (#19)
+            video_prompt = scene.get("video_prompt", "")
+            if video_prompt:
+                _cam_replacements = {
+                    "drifting": "pushing", "floating": "rising", "gliding": "tracking",
+                    "drift": "push", "float": "rise", "glide": "track",
+                }
+                fixed_vp = video_prompt
+                for banned_cam, replacement in _cam_replacements.items():
+                    pattern = r'\b' + re.escape(banned_cam) + r'\b'
+                    for match in re.finditer(pattern, fixed_vp, re.IGNORECASE):
+                        # Check allowed context (object motion, not camera)
+                        start = max(0, match.start() - 100)
+                        end = min(len(fixed_vp), match.end() + 50)
+                        context = fixed_vp[start:end].lower()
+                        is_allowed = any(ctx in context for ctx in ALLOWED_DRIFTING_CONTEXTS)
+                        if not is_allowed:
+                            fixed_vp = fixed_vp[:match.start()] + replacement + fixed_vp[match.end():]
+                            break  # One replacement at a time to avoid index shift
+                if fixed_vp != video_prompt:
+                    scene["video_prompt"] = fixed_vp
+                    fix_desc = f"scenes[{i}].video_prompt: auto-replaced banned camera movement"
+                    self._auto_fixes.append(fix_desc)
+                    logger.info(f"  [AUTO-FIX] {fix_desc}")
 
     def _replace_banned_words(self, prompt: str) -> str:
         """
@@ -560,6 +640,36 @@ class Gen2Validator:
         # 4. Loop verification (after scenes)
         self._validate_loop()
 
+        # 5. TIER vs SP/money_shot cross-check (requires gen1_data)
+        self._validate_tier_assignment()
+
+        # 6. Image prompt word count hierarchy (money shot ≥130, longest)
+        self._validate_word_count_hierarchy()
+
+        # 7. body_trigger visual keywords in Scene 1
+        self._validate_body_trigger()
+
+        # 8. --no block in image_prompts
+        self._validate_image_negative_blocks()
+
+        # 9. GEN1 field duplication check
+        self._validate_no_gen1_field_duplication()
+
+        # 10. atmosphere_mode validation
+        self._validate_atmosphere_mode()
+
+        # 11. visual_punctuation for EXPLOSIVE scenes
+        self._validate_visual_punctuation()
+
+        # 12. loop_verification string fields + reversal_safe cross-check
+        self._validate_loop_verification_details()
+
+        # 13. tier_breakdown cross-validation
+        self._validate_tier_breakdown()
+
+        # 14. first_frame_composition.entry_type vs GEN1
+        self._validate_entry_type()
+
     # ========================================================================
     # GLOBAL SETTINGS VALIDATION
     # ========================================================================
@@ -595,33 +705,16 @@ class Gen2Validator:
                 code="MISSING_NEGATIVE"
             )
         else:
-            # Check for anti-toy keywords
+            # Check for full mandatory base negative keywords (GEN2.txt line 451)
             negative_lower = negative.lower()
-            missing_keywords = []
-            for keyword in ANTI_TOY_KEYWORDS:
-                if keyword not in negative_lower:
-                    missing_keywords.append(keyword)
+            missing_keywords = [kw for kw in MANDATORY_NEGATIVE_KEYWORDS if kw not in negative_lower]
 
             if missing_keywords:
                 self._add_error(
                     "global_settings.negative_prompt",
-                    f"Missing anti-toy keywords: {', '.join(missing_keywords)}",
-                    code="MISSING_ANTI_TOY",
-                    suggestion="Add: tilt-shift, miniature, diorama, toy"
-                )
-
-            # Check for anti-yellow keywords (GEN2 v6.1.0 Color Accuracy Doctrine)
-            missing_yellow = []
-            for keyword in ANTI_YELLOW_KEYWORDS:
-                if keyword not in negative_lower:
-                    missing_yellow.append(keyword)
-
-            if missing_yellow:
-                self._add_error(
-                    "global_settings.negative_prompt",
-                    f"Missing anti-yellow keywords: {', '.join(missing_yellow)}",
-                    code="MISSING_ANTI_YELLOW",
-                    suggestion="Add: yellow color cast, sepia tone"
+                    f"Missing mandatory negative keywords: {', '.join(sorted(missing_keywords))}",
+                    code="MISSING_NEGATIVE_KEYWORDS",
+                    suggestion="Add all mandatory base negative keywords per GEN2.txt"
                 )
 
     # ========================================================================
@@ -969,25 +1062,29 @@ class Gen2Validator:
             elif scene_num == self._total_scenes:
                 self._last_scene_movement = video_prompt
 
-        # motion_elements: error if <2, warning if 2 for HIGH/EXPLOSIVE
+        # motion_elements: energy-dependent minimums (GEN2.txt: EXPLOSIVE=4+, HIGH=3+, MEDIUM=2-3, LOW=2)
         motion = scene.get("motion_elements", [])
         motion_count = len(motion) if isinstance(motion, list) else 0
+        scene_energy = self._get_scene_energy(scene_num)
+        _energy_min = {"EXPLOSIVE": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 2}
+        required_min = _energy_min.get(scene_energy, MIN_MOTION_ELEMENTS)
+
         if motion_count < MIN_MOTION_ELEMENTS:
+            # Hard floor: no scene can have <2
             self._add_error(
                 f"{prefix}.motion_elements",
                 f"Must have at least {MIN_MOTION_ELEMENTS} items, got {motion_count}",
                 code="INSUFFICIENT_MOTION"
             )
             check.motion_elements = "FAIL"
-        elif motion_count == 2:
-            # Check energy from GEN1 handoff — HIGH/EXPLOSIVE benefit from 3+
-            scene_energy = self._get_scene_energy(scene_num)
-            if scene_energy in ("HIGH", "EXPLOSIVE"):
-                self._add_warning(
-                    f"{prefix}.motion_elements",
-                    f"{scene_energy} scene has only 2 motion_elements — 3+ recommended for better dynamics",
-                    suggestion="Add a third motion element for richer video movement"
-                )
+        elif motion_count < required_min:
+            # Energy-dependent minimum
+            self._add_error(
+                f"{prefix}.motion_elements",
+                f"{scene_energy} scene requires {required_min}+ motion_elements, got {motion_count}",
+                code="INSUFFICIENT_MOTION_FOR_ENERGY"
+            )
+            check.motion_elements = "FAIL"
 
         # scale_techniques (required for exterior scenes)
         exterior_scenes = getattr(self, '_exterior_scenes', EXTERIOR_SCENES_BASE)
@@ -1017,6 +1114,14 @@ class Gen2Validator:
                     self._add_warning(
                         f"{prefix}.scale_techniques.scale_indicators",
                         "Should list scale indicators"
+                    )
+                # Validate scale_mode value (#11)
+                scale_mode = scale.get("scale_mode")
+                if scale_mode and scale_mode not in VALID_SCALE_MODES:
+                    self._add_warning(
+                        f"{prefix}.scale_techniques.scale_mode",
+                        f"Invalid scale_mode '{scale_mode}'",
+                        suggestion=f"Must be one of: {', '.join(sorted(VALID_SCALE_MODES))}"
                     )
 
         # inheritance (required for REQUIRES_REF and LOOP_CLOSE)
@@ -1146,20 +1251,23 @@ class Gen2Validator:
                 code="INVALID_LAST_SCENE_REF_TYPE"
             )
 
-        # video_prompt must not have meta-instructions
+        # video_prompt meta-instructions: now checked in _validate_video_prompt() for ALL scenes
+        # Keep LOOP_CLOSE-specific check for loop_complementary tracking
         video_prompt = scene.get("video_prompt", "").lower()
-        for meta in BANNED_LAST_SCENE_META:
+        for meta in BANNED_VIDEO_META:
             if meta in video_prompt:
-                self._add_error(
-                    f"{prefix}.video_prompt",
-                    f"Last scene contains banned meta-instruction: '{meta}'",
-                    code="BANNED_META_INSTRUCTION",
-                    suggestion="Remove meta-instructions — Kling doesn't understand them"
-                )
                 check.loop_complementary = "FAIL"
+                break
 
         # motion_elements must be reversal-safe (Scene N is reversed in post-production)
-        REVERSAL_UNSAFE = {"rising", "falling", "dripping", "pouring", "cascading", "sinking", "dropping", "growing"}
+        # GEN2.txt line 1192: waterfall, falling, cascading, smoke rising, steam rising,
+        # dripping, pouring, fire, flames, walking, running, vehicles, birds flying
+        REVERSAL_UNSAFE = {
+            "rising", "falling", "dripping", "pouring", "cascading",
+            "sinking", "dropping", "growing",
+            "waterfall", "fire", "flames", "walking", "running",
+            "vehicles", "birds flying",
+        }
         motion_elements = scene.get("motion_elements", [])
         if isinstance(motion_elements, list):
             for me in motion_elements:
@@ -1220,11 +1328,41 @@ class Gen2Validator:
         # Note: Anti-toy keywords are enforced via global_settings.negative_prompt (ERROR).
         # Per-scene check removed as redundant - global negative is appended during generation.
 
+        # Check for meta-instruction patterns (GEN2.txt lines 392-439)
+        for pattern in IMAGE_META_PATTERNS:
+            match = re.search(pattern, prompt_lower)
+            if match:
+                self._add_error(
+                    f"{prefix}.image_prompt",
+                    f"Contains meta-instruction pattern: '{match.group()}'",
+                    code="IMAGE_META_INSTRUCTION",
+                    suggestion="Remove — image generators have no pipeline context"
+                )
+                valid = False
+
+        # Check for "slow motion"/"slo-mo" in image_prompt (GEN2.txt: "any prompt")
+        if re.search(r'\bslow\s+motion\b', prompt_lower) or re.search(r'\bslo-mo\b', prompt_lower):
+            self._add_error(
+                f"{prefix}.image_prompt",
+                "Contains 'slow motion'/'slo-mo' — banned in all prompts",
+                code="BANNED_SLOW_MOTION_IMAGE",
+                suggestion="Replace with 'suspended mid-air' or 'time-stretched'"
+            )
+            valid = False
+
         return valid
 
     # ========================================================================
     # VIDEO PROMPT VALIDATION
     # ========================================================================
+
+    # Per-tier video_prompt word count ranges (GEN2.txt lines 163, 1095-1101)
+    VIDEO_WORD_COUNT_RANGES: Dict[str, Tuple[int, int]] = {
+        "TIER_1_MONEY_SHOT": (15, 20),
+        "TIER_2_HIGH_APPETITE": (20, 30),
+        "TIER_3_BALANCED": (25, 35),
+        "TIER_4_ARCHITECTURE": (30, 40),
+    }
 
     def _validate_video_prompt(
         self,
@@ -1241,9 +1379,27 @@ class Gen2Validator:
         valid = True
         prompt_lower = prompt.lower()
 
-        # Word count check
+        # Word count check — per-tier if tier is available
         word_count = len(prompt.split())
-        if word_count > MAX_VIDEO_PROMPT_WORDS:
+        scene_data = self._get_scene_by_number(scene_num)
+        visual_tier = scene_data.get("visual_tier", "") if scene_data else ""
+        tier_range = self.VIDEO_WORD_COUNT_RANGES.get(visual_tier)
+
+        if tier_range:
+            min_wc, max_wc = tier_range
+            if word_count < min_wc:
+                self._add_warning(
+                    f"{prefix}.video_prompt",
+                    f"Has {word_count} words, {visual_tier} minimum is {min_wc}",
+                    suggestion=f"Expand video_prompt to {min_wc}-{max_wc} words"
+                )
+            elif word_count > max_wc:
+                self._add_warning(
+                    f"{prefix}.video_prompt",
+                    f"Has {word_count} words, {visual_tier} maximum is {max_wc}",
+                    suggestion=f"Trim video_prompt to {min_wc}-{max_wc} words"
+                )
+        elif word_count > MAX_VIDEO_PROMPT_WORDS:
             self._add_warning(
                 f"{prefix}.video_prompt",
                 f"Has {word_count} words, recommended max is {MAX_VIDEO_PROMPT_WORDS}",
@@ -1300,6 +1456,17 @@ class Gen2Validator:
                 "No camera movement gerund found",
                 suggestion=f"Add one of: {', '.join(sorted(ALLOWED_CAMERA_MOVEMENTS))}"
             )
+
+        # Check for banned meta-instructions in ALL scenes (GEN2.txt lines 909-918)
+        for meta in BANNED_VIDEO_META:
+            if meta in prompt_lower:
+                self._add_error(
+                    f"{prefix}.video_prompt",
+                    f"Contains banned meta-instruction: '{meta}'",
+                    code="BANNED_META_INSTRUCTION",
+                    suggestion="Remove — Kling has no context about other scenes or pipeline"
+                )
+                valid = False
 
         return valid
 
@@ -1450,8 +1617,493 @@ class Gen2Validator:
         return movements
 
     # ========================================================================
+    # TIER vs SP/MONEY_SHOT CROSS-CHECK (P4)
+    # ========================================================================
+
+    def _validate_tier_assignment(self) -> None:
+        """
+        Cross-check visual_tier against sensory_pressure + money_shot from GEN1.
+
+        GEN2.txt tier rules (MECHANICAL, no exceptions):
+        - money_shot.is_money_shot=true OR SP=10 → TIER_1_MONEY_SHOT
+        - SP ≥ 8 (no money_shot) → TIER_2_HIGH_APPETITE
+        - SP 5-7 → TIER_3_BALANCED
+        - SP 1-4 → TIER_4_ARCHITECTURE
+        """
+        if not self._gen1_data:
+            return  # Can't cross-check without GEN1 data
+
+        gen1_scenes = self._gen1_data.get("scenes", [])
+        if not isinstance(gen1_scenes, list):
+            return
+
+        # Build lookup: scene_number → {sp, money_shot}
+        gen1_lookup = {}
+        for gs in gen1_scenes:
+            if not isinstance(gs, dict):
+                continue
+            sn = gs.get("scene_number")
+            if sn is not None:
+                gen1_lookup[sn] = {
+                    "sp": gs.get("sensory_pressure"),
+                    "money_shot": gs.get("money_shot"),
+                }
+
+        scenes = self._data.get("scenes", [])
+        if not isinstance(scenes, list):
+            return
+
+        for i, scene in enumerate(scenes):
+            if not isinstance(scene, dict):
+                continue
+            scene_num = scene.get("scene_number", i + 1)
+            visual_tier = scene.get("visual_tier", "")
+            prefix = f"scenes[{i}]"
+
+            gen1_info = gen1_lookup.get(scene_num)
+            if not gen1_info:
+                continue
+
+            sp = gen1_info["sp"]
+            ms = gen1_info["money_shot"]
+            is_money_shot = isinstance(ms, dict) and ms.get("is_money_shot") is True
+
+            # Determine expected tier
+            expected_tier = None
+            if is_money_shot or (isinstance(sp, (int, float)) and sp >= 10):
+                expected_tier = "TIER_1_MONEY_SHOT"
+            elif isinstance(sp, (int, float)):
+                if sp >= 8:
+                    expected_tier = "TIER_2_HIGH_APPETITE"
+                elif sp >= 5:
+                    expected_tier = "TIER_3_BALANCED"
+                else:
+                    expected_tier = "TIER_4_ARCHITECTURE"
+
+            if expected_tier and visual_tier and visual_tier != expected_tier:
+                self._add_error(
+                    f"{prefix}.visual_tier",
+                    f"Tier mismatch: GEN2 assigned '{visual_tier}' but GEN1 SP={sp}, "
+                    f"money_shot={is_money_shot} → expected '{expected_tier}'",
+                    code="TIER_MISMATCH",
+                    suggestion=f"Set visual_tier to '{expected_tier}'"
+                )
+
+    # ========================================================================
+    # WORD COUNT HIERARCHY (P5)
+    # ========================================================================
+
+    def _validate_word_count_hierarchy(self) -> None:
+        """
+        Validate image_prompt word count hierarchy per GEN2.txt:
+        - Money shot (TIER_1): 130-150 words, LONGEST in output
+        - No other scene > 130 words
+        """
+        scenes = self._data.get("scenes", [])
+        if not isinstance(scenes, list) or not scenes:
+            return
+
+        # Find money shot scene and word counts
+        money_shot_idx = None
+        word_counts: list[tuple[int, int, int]] = []  # (index, scene_number, word_count)
+
+        for i, scene in enumerate(scenes):
+            if not isinstance(scene, dict):
+                continue
+            scene_num = scene.get("scene_number", i + 1)
+            image_prompt = scene.get("image_prompt", "")
+            wc = len(image_prompt.split()) if image_prompt else 0
+            word_counts.append((i, scene_num, wc))
+
+            # Check if money shot from visual_tier
+            visual_tier = scene.get("visual_tier", "")
+            if visual_tier == "TIER_1_MONEY_SHOT":
+                money_shot_idx = i
+
+        # Also check from gen1_data
+        if money_shot_idx is None and self._gen1_data:
+            gen1_scenes = self._gen1_data.get("scenes", [])
+            if isinstance(gen1_scenes, list):
+                for gs in gen1_scenes:
+                    if isinstance(gs, dict):
+                        ms = gs.get("money_shot")
+                        if isinstance(ms, dict) and ms.get("is_money_shot"):
+                            sn = gs.get("scene_number")
+                            for idx, s_num, _ in word_counts:
+                                if s_num == sn:
+                                    money_shot_idx = idx
+                                    break
+
+        if money_shot_idx is None:
+            return  # No money shot identified
+
+        money_shot_wc = word_counts[money_shot_idx][2]
+        money_shot_sn = word_counts[money_shot_idx][1]
+
+        # Check money shot ≥ 130 words
+        if money_shot_wc < 130:
+            self._add_error(
+                f"scenes[{money_shot_idx}].image_prompt",
+                f"Money shot (Scene {money_shot_sn}) has {money_shot_wc} words, "
+                f"minimum is 130 per GEN2.txt WORD COUNT HIERARCHY",
+                code="MONEY_SHOT_TOO_SHORT",
+                suggestion="Expand money shot image_prompt to 130-150 words"
+            )
+
+        # Check money shot is longest
+        for idx, sn, wc in word_counts:
+            if idx == money_shot_idx:
+                continue
+            if wc > money_shot_wc and money_shot_wc > 0:
+                self._add_error(
+                    f"scenes[{idx}].image_prompt",
+                    f"Scene {sn} ({wc} words) is longer than money shot "
+                    f"Scene {money_shot_sn} ({money_shot_wc} words)",
+                    code="EXCEEDS_MONEY_SHOT",
+                    suggestion="Money shot must be the longest image_prompt"
+                )
+            # No non-money-shot scene > 130 words
+            if wc > 130:
+                self._add_error(
+                    f"scenes[{idx}].image_prompt",
+                    f"Scene {sn} has {wc} words — non-money-shot scenes must not exceed 130",
+                    code="NON_MONEY_SHOT_TOO_LONG",
+                    suggestion="Trim this scene's image_prompt to ≤130 words"
+                )
+
+    # ========================================================================
+    # BODY_TRIGGER VISUAL KEYWORDS (P7)
+    # ========================================================================
+
+    # body_trigger → required keywords mapping (from GEN2.txt)
+    BODY_TRIGGER_KEYWORDS: Dict[str, List[str]] = {
+        "MOUTH": ["glistening", "wet surface", "moisture beading", "liquid sheen", "dripping"],
+        "SKIN": ["condensation droplets", "heat shimmer", "frost crystals", "temperature visible"],
+        "NOSE": ["steam wisps rising", "visible vapor", "aromatic haze", "heat haze from surface"],
+        "EARS": ["fracture lines", "cracking surface", "splitting edge", "crevices", "shattered",
+                 "crunchy breading detail", "crispy broken edges"],
+        "STOMACH": ["overflowing", "impossibly abundant", "stacked layers", "towering pile"],
+    }
+
+    def _validate_body_trigger(self) -> None:
+        """
+        Validate Scene 1 image_prompt contains ≥2 keywords from body_trigger row.
+
+        GEN2.txt: "Scene 1 image prompt MUST contain ≥2 keywords from the matching body_trigger row."
+        """
+        if not self._gen1_data:
+            return
+
+        # Get body_trigger from hook
+        hook = self._gen1_data.get("hook", {})
+        if not isinstance(hook, dict):
+            return
+
+        body_trigger = hook.get("body_trigger", "")
+        if not body_trigger:
+            return
+
+        body_trigger_upper = body_trigger.upper().strip()
+        keywords = self.BODY_TRIGGER_KEYWORDS.get(body_trigger_upper)
+        if not keywords:
+            return
+
+        # Find Scene 1 image_prompt
+        scenes = self._data.get("scenes", [])
+        if not isinstance(scenes, list) or not scenes:
+            return
+
+        scene1 = scenes[0]
+        if not isinstance(scene1, dict):
+            return
+
+        image_prompt = scene1.get("image_prompt", "").lower()
+        if not image_prompt:
+            return
+
+        # Count matching keywords
+        matches = [kw for kw in keywords if kw.lower() in image_prompt]
+
+        if len(matches) < 2:
+            self._add_error(
+                "scenes[0].image_prompt",
+                f"body_trigger={body_trigger_upper}: found {len(matches)}/2 required keywords "
+                f"(found: {matches or 'none'})",
+                code="MISSING_BODY_TRIGGER",
+                suggestion=f"Add ≥2 of: {', '.join(keywords)}"
+            )
+
+    # ========================================================================
+    # IMAGE NEGATIVE BLOCK VALIDATION (#3)
+    # ========================================================================
+
+    def _validate_image_negative_blocks(self) -> None:
+        """
+        Validate that each image_prompt contains a --no negative block.
+
+        GEN2.txt line 448-458: every image_prompt must end with --no block
+        containing mandatory base negative keywords.
+        """
+        scenes = self._data.get("scenes", [])
+        if not isinstance(scenes, list):
+            return
+
+        for i, scene in enumerate(scenes):
+            if not isinstance(scene, dict):
+                continue
+            image_prompt = scene.get("image_prompt", "")
+            if not image_prompt:
+                continue
+
+            if "--no" not in image_prompt:
+                self._add_warning(
+                    f"scenes[{i}].image_prompt",
+                    "Missing --no negative block at end of image_prompt",
+                    suggestion="Append --no block with mandatory negative keywords"
+                )
+
+    # ========================================================================
+    # GEN1 FIELD DUPLICATION CHECK (#12)
+    # ========================================================================
+
+    def _validate_no_gen1_field_duplication(self) -> None:
+        """
+        Check that GEN2 output doesn't duplicate GEN1 fields.
+
+        GEN2.txt lines 1406-1417: 16 fields that GEN2 must NOT output.
+        """
+        scenes = self._data.get("scenes", [])
+        if not isinstance(scenes, list):
+            return
+
+        for i, scene in enumerate(scenes):
+            if not isinstance(scene, dict):
+                continue
+            duplicated = [f for f in FORBIDDEN_GEN1_FIELDS if f in scene]
+            if duplicated:
+                self._add_warning(
+                    f"scenes[{i}]",
+                    f"Contains GEN1 fields that GEN2 should not duplicate: {', '.join(sorted(duplicated))}",
+                    suggestion="Remove GEN1 fields — they're already in the handoff payload"
+                )
+
+    # ========================================================================
+    # ATMOSPHERE MODE VALIDATION (#13)
+    # ========================================================================
+
+    def _validate_atmosphere_mode(self) -> None:
+        """
+        Validate atmosphere_mode and check mode-specific negative prompt additions.
+
+        GEN2.txt lines 789-807: NOIR/HAUNTED need "flat lighting, even illumination" in negative.
+        ETHEREAL needs "harsh shadows, high contrast".
+        """
+        if not self._gen1_data:
+            return
+
+        atmosphere_mode = self._gen1_data.get("atmosphere_mode", "")
+        if not atmosphere_mode:
+            return
+
+        atmosphere_upper = atmosphere_mode.upper().strip()
+        if atmosphere_upper not in VALID_ATMOSPHERE_MODES:
+            self._add_warning(
+                "atmosphere_mode",
+                f"Unknown atmosphere_mode '{atmosphere_mode}'",
+                suggestion=f"Valid modes: {', '.join(sorted(VALID_ATMOSPHERE_MODES))}"
+            )
+
+        # Check atmosphere-specific negative prompt additions
+        required_negatives = ATMOSPHERE_NEGATIVE_ADDITIONS.get(atmosphere_upper)
+        if required_negatives:
+            gs = self._data.get("global_settings", {})
+            negative = gs.get("negative_prompt", "").lower() if isinstance(gs, dict) else ""
+            missing = [kw for kw in required_negatives if kw not in negative]
+            if missing:
+                self._add_warning(
+                    "global_settings.negative_prompt",
+                    f"atmosphere_mode={atmosphere_upper} requires negative additions: {', '.join(missing)}",
+                    suggestion=f"Add to negative_prompt: {', '.join(missing)}"
+                )
+
+    # ========================================================================
+    # VISUAL PUNCTUATION VALIDATION (#15)
+    # ========================================================================
+
+    def _validate_visual_punctuation(self) -> None:
+        """
+        Validate visual_punctuation presence per energy level.
+
+        GEN2.txt lines 1077-1091: EXPLOSIVE = required, HIGH = optional.
+        """
+        scenes = self._data.get("scenes", [])
+        if not isinstance(scenes, list):
+            return
+
+        for i, scene in enumerate(scenes):
+            if not isinstance(scene, dict):
+                continue
+            scene_num = scene.get("scene_number", i + 1)
+            energy = self._get_scene_energy(scene_num)
+            vp = scene.get("visual_punctuation")
+
+            if energy == "EXPLOSIVE" and not vp:
+                self._add_warning(
+                    f"scenes[{i}].visual_punctuation",
+                    "EXPLOSIVE scene requires visual_punctuation (lens flare, light burst, etc.)",
+                    suggestion="Add visual_punctuation for peak moment emphasis"
+                )
+
+    # ========================================================================
+    # LOOP VERIFICATION DETAILS (#17, #18)
+    # ========================================================================
+
+    def _validate_loop_verification_details(self) -> None:
+        """
+        Validate loop_verification string fields and cross-check reversal_safe boolean.
+
+        #17: Required string fields in loop_verification object.
+        #18: motion_elements_reversal_safe cross-check.
+        """
+        vs = self._data.get("visual_summary", {})
+        if not isinstance(vs, dict):
+            return
+        lv = vs.get("loop_verification", {})
+        if not isinstance(lv, dict):
+            return
+
+        # #17: Required string fields
+        required_strings = ["scene1_camera_movement", "sceneN_camera_movement", "sceneN_after_reverse"]
+        for field_name in required_strings:
+            val = lv.get(field_name)
+            if not val or not isinstance(val, str) or not val.strip():
+                self._add_warning(
+                    f"visual_summary.loop_verification.{field_name}",
+                    "Missing or empty — required for loop debugging",
+                    suggestion="Describe the camera movement for loop verification"
+                )
+
+        # #18: Cross-check motion_elements_reversal_safe
+        reversal_safe = lv.get("motion_elements_reversal_safe")
+        if reversal_safe is True:
+            # Verify against actual last scene motion_elements
+            scenes = self._data.get("scenes", [])
+            if isinstance(scenes, list) and scenes:
+                last_scene = scenes[-1]
+                if isinstance(last_scene, dict):
+                    motion_elements = last_scene.get("motion_elements", [])
+                    REVERSAL_UNSAFE_WORDS = {
+                        "rising", "falling", "dripping", "pouring", "cascading",
+                        "sinking", "dropping", "waterfall", "fire", "flames",
+                    }
+                    if isinstance(motion_elements, list):
+                        for me in motion_elements:
+                            if isinstance(me, str):
+                                for unsafe in REVERSAL_UNSAFE_WORDS:
+                                    if unsafe in me.lower():
+                                        self._add_error(
+                                            "visual_summary.loop_verification.motion_elements_reversal_safe",
+                                            f"Claims reversal-safe but last scene contains '{unsafe}' in '{me}'",
+                                            code="REVERSAL_SAFE_LIE",
+                                            suggestion="Fix motion_elements first, then set reversal_safe to true"
+                                        )
+                                        return  # One error is enough
+
+    # ========================================================================
+    # TIER BREAKDOWN CROSS-VALIDATION (#21)
+    # ========================================================================
+
+    def _validate_tier_breakdown(self) -> None:
+        """
+        Cross-validate visual_summary.tier_breakdown against actual scene tiers.
+        """
+        vs = self._data.get("visual_summary", {})
+        if not isinstance(vs, dict):
+            return
+        tier_breakdown = vs.get("tier_breakdown")
+        if not isinstance(tier_breakdown, dict):
+            return
+
+        scenes = self._data.get("scenes", [])
+        if not isinstance(scenes, list):
+            return
+
+        # Build actual tier→scene_numbers map
+        actual_tiers: Dict[str, List[int]] = {}
+        for scene in scenes:
+            if isinstance(scene, dict):
+                tier = scene.get("visual_tier", "")
+                sn = scene.get("scene_number")
+                if tier and sn is not None:
+                    actual_tiers.setdefault(tier, []).append(sn)
+
+        # Compare with reported tier_breakdown
+        for tier_name, reported_scenes in tier_breakdown.items():
+            if not isinstance(reported_scenes, list):
+                continue
+            actual = sorted(actual_tiers.get(tier_name, []))
+            reported = sorted(reported_scenes)
+            if actual != reported:
+                self._add_warning(
+                    "visual_summary.tier_breakdown",
+                    f"{tier_name}: reported {reported} but actual scenes are {actual}",
+                    suggestion="tier_breakdown must match actual scene visual_tier values"
+                )
+
+    # ========================================================================
+    # ENTRY TYPE VALIDATION (#22)
+    # ========================================================================
+
+    def _validate_entry_type(self) -> None:
+        """
+        Validate first_frame_composition.entry_type vs GEN1 hook.scene_1_entry_type.
+        """
+        scenes = self._data.get("scenes", [])
+        if not isinstance(scenes, list) or not scenes:
+            return
+
+        scene1 = scenes[0]
+        if not isinstance(scene1, dict):
+            return
+
+        ffc = scene1.get("first_frame_composition")
+        if not isinstance(ffc, dict):
+            return
+
+        # Check entry_type is valid
+        VALID_ENTRY_TYPES = {"MACRO_ENTRY", "SCALE_SHOCK"}
+        entry_type = ffc.get("entry_type")
+        if entry_type and entry_type not in VALID_ENTRY_TYPES:
+            self._add_warning(
+                "scenes[0].first_frame_composition.entry_type",
+                f"Invalid entry_type '{entry_type}'",
+                suggestion=f"Must be one of: {', '.join(sorted(VALID_ENTRY_TYPES))}"
+            )
+
+        # Cross-check with GEN1 hook
+        if self._gen1_data and entry_type:
+            hook = self._gen1_data.get("hook", {})
+            if isinstance(hook, dict):
+                gen1_entry = hook.get("scene_1_entry_type", "")
+                if gen1_entry and entry_type != gen1_entry:
+                    self._add_warning(
+                        "scenes[0].first_frame_composition.entry_type",
+                        f"Mismatch: GEN2 has '{entry_type}' but GEN1 hook says '{gen1_entry}'",
+                        suggestion=f"Should match GEN1 hook.scene_1_entry_type: '{gen1_entry}'"
+                    )
+
+    # ========================================================================
     # HELPER METHODS
     # ========================================================================
+
+    def _get_scene_by_number(self, scene_num: int) -> Optional[Dict[str, Any]]:
+        """Get scene dict from data by scene_number."""
+        scenes = self._data.get("scenes", [])
+        if isinstance(scenes, list):
+            for s in scenes:
+                if isinstance(s, dict) and s.get("scene_number") == scene_num:
+                    return s
+        return None
 
     def _add_error(
         self,

@@ -26,6 +26,20 @@
 
 **Texture rotation:** If the blacklist shows recent videos used CREAMY foods, prefer CRISPY or CRUNCHY-WET for this video (and vice versa). Alternate texture groups across videos to prevent appetite fatigue. 4 groups = cycle every 4 videos ideally.
 
+**⛔ Narrative structure rotation (ANTI-TEMPLATE-GRAVITY — MANDATORY):** You MUST NOT use the same scene order as your default instinct (macro → wide reveal → interior → detail → action → aerial → loop). Pick ONE of these 5 structures and STATE your choice in `_concept_reasoning` point 3:
+
+**Structure A — ZOOM-IN PROGRESSIVE:** Wide establishing → medium context → close detail → extreme macro money shot → pull back aerial → loop close. Energy: ↗↗↗ peak at ⅔ mark.
+
+**Structure B — MYSTERY INTERIOR:** Extreme macro (what IS this?) → reveal room → explore interior → discover feature → wide exterior reveal → aerial → loop. Energy: hook = curiosity gap.
+
+**Structure C — ACTION-FIRST:** Start with the most DYNAMIC scene (destruction, liquid, motion) → flashback to intact structure → explore → build tension → second action payoff → aerial → loop. Energy: HIGH-medium-medium-HIGH-EXPLOSIVE.
+
+**Structure D — DESCENT:** Aerial establishing → descend into structure → corridor/hallway → room detail → macro money shot → exit/ascend → loop close. Energy: wide→narrow→intimate→pull-back.
+
+**Structure E — FEATURE SPOTLIGHT:** Money shot FIRST (Scene 1 = the best visual) → context (where is this?) → explore surroundings → return to feature from new angle → aerial → loop. Energy: PEAK-context-build-return.
+
+**Rotation rule:** If `_concept_reasoning` doesn't name a structure (A-E) → default is RANDOMLY assigned. If previous videos used the same structure → MANDATORY different choice.
+
 **If you read nothing else:** (1) Food texture group determines your ranges. (2) Pick DIFFERENT values within ranges per video. (3) Check VERIFY VARIETY table before outputting. (4) Alternate texture groups across consecutive videos.
 
 ---
@@ -46,10 +60,10 @@ Read your narrator_script out loud. Ask: "Does this make my mouth water or my sk
 - YES → keep it
 - NO, but it's funny → keep ONLY if sensory_pressure ≤ 6
 - NO, and it's informational → REWRITE as sensation
-- Examples:
-  ❌ "Structural batter." → ✅ "Still sizzling. Your shoes stick."
-  ❌ "Pistachio dust. Everywhere." → ✅ "The air tastes green. Nutty."
-  ❌ "The latency is terrible." → ✅ "Soft. Your finger sinks."
+- Good examples:
+  ✅ "Still sizzling. Your shoes stick." — THERMAL + TACTILE
+  ✅ "The air tastes green. Nutty." — OLFACTORY + TASTE
+  ✅ "Soft. Your finger sinks." — TACTILE + PRESSURE
 
 **Three questions you ask of EVERY scene:**
 1. **What is it made of?** (material composition, layers, structure)
@@ -59,15 +73,15 @@ Read your narrator_script out loud. Ask: "Does this make my mouth water or my sk
 **Fourth dimension — SYNAESTHESIA (ask for EVERY scene):**
 4. **What would hit you BEFORE you see it?** — the warm yeast smell from 50 feet away, the humidity that clings to your skin, the bass vibration through the floor, the heat radiating off the surface. Write as if the viewer can STEP INTO the screen. Every scene should activate at least 2 senses beyond sight: smell, touch, temperature, weight, sound-texture.
 
-**How to write synaesthesia into narrator_script:**
-- DON'T: "The walls are chocolate." → DO: "The walls are warm." (thermal sensation)
-- DON'T: "Made of fresh bread." → DO: "You can smell it from the parking lot." (olfactory)
-- DON'T: "Coated in honey." → DO: "Your fingers stick." (tactile response)
-- DON'T: "The floor is caramel." → DO: "Your shoes pull." (weight + resistance)
-- DON'T: "Ice cream columns." → DO: "The air changes temperature." (ambient thermal)
-- DON'T: "Filled with chocolate." → DO: "The air is thick." (density + smell)
-- DON'T: "Glazed donut ceiling." → DO: "It drips onto your shoulder." (unexpected physical contact)
-- DON'T: "Sushi rice walls." → DO: "Cool. Humid. Your breath fogs." (multi-sensory stack)
+**How to write synaesthesia into narrator_script — describe what the food DOES to your body:**
+- ✅ "The walls are warm." — thermal sensation (the body FEELS temperature)
+- ✅ "You can smell it from the parking lot." — olfactory distance (the body SMELLS)
+- ✅ "Your fingers stick." — tactile response (the body TOUCHES)
+- ✅ "Your shoes pull." — weight + resistance (the body MOVES through it)
+- ✅ "The air changes temperature." — ambient thermal (the body REACTS)
+- ✅ "The air is thick." — density + smell (the body BREATHES it)
+- ✅ "It drips onto your shoulder." — unexpected physical contact (the body RECEIVES)
+- ✅ "Cool. Humid. Your breath fogs." — multi-sensory stack (the body EXPERIENCES)
 
 **The principle:** Never describe what the food IS. Describe what the food DOES to your body.
 
@@ -84,11 +98,21 @@ DO NOT memorize a fixed list of sensory words. Instead, GENERATE unique sensory 
 
 **Per-video rules:**
 - Use ALL 4 channels at least once per full_script
-- THERMAL is mandatory in Scene 1 (warmth = instant food association)
+- **⛔ THERMAL SLOT in Scene 1 (STOP-LEVEL):** Scene 1's `narrator_script` MUST start with a temperature word. Pick one: warm | hot | cold | cool | steaming | frozen. This is a MANDATORY SLOT — not optional.
+  Template: "[temperature]. [texture]." → voiceover_segment: "[whispers] [temperature]. [pause] [texture]."
+  ✅ "Still warm. Squishy." ✅ "Cold. Heavy." ✅ "Steaming. Elastic." ✅ "Cool. Crumbling."
+  If your Scene 1 narrator_script does NOT start with a temperature word → STOP and add one BEFORE the first tactile word.
 - TEMPORAL FRESHNESS is mandatory in STRUCTURAL_DETAIL scene ("still [verb]-ing" = food is ALIVE)
 - **VARIETY RULE:** For each sensory phrase, prefer NOVEL language over reusing the same words. "Still warm" works — but "Heat bleeds through" is better if "still warm" was recent. The pipeline may inject a `recent_sensory_blacklist` — if present, avoid those exact phrases.
 
 **The test:** Read your full_script. For each sensory line, ask: "Which of the 4 channels does this activate?" If a channel is missing → add it. If all 4 are present → the script passes.
+
+**⛔ 4-CHANNEL POST-GENERATION VERIFICATION (STOP-LEVEL):** After writing ALL `voiceover_segment` fields, SCAN the ACTUAL spoken text (not your _concept_reasoning plan) for each channel:
+- THERMAL: find a temperature word (warm/hot/cold/cool/frozen/burning/heat) in an actual `voiceover_segment`. CITE: "Scene X: '[exact text]'"
+- TACTILE: find a touch word (sticky/rough/smooth/soft/hard/sharp/wet/dry/crumbly/spongy) in an actual `voiceover_segment`. CITE: "Scene X: '[exact text]'"
+- OLFACTORY: find a smell indicator (smells/scent/sweet air/burnt air/smoke/yeast) in an actual `voiceover_segment`. CITE: "Scene X: '[exact text]'"
+- TEMPORAL FRESHNESS: find "still [verb]-ing" or active process in an actual `voiceover_segment`. CITE: "Scene X: '[exact text]'"
+IF any channel has NO matching word in ANY actual `voiceover_segment` → STOP and add a sensation word to an appropriate scene's VO. The `_concept_reasoning` plan is NOT sufficient — the word must be SPOKEN.
 
 **Your expertise combines:**
 - 🔬 **Materials Scientist** — dissects composition, layers, structural properties
@@ -185,8 +209,22 @@ The FIRST field in your JSON output MUST be `_concept_reasoning`. Write 3-5 sent
 
 1. **Why this food + subject combination** (what visual tension or surprise it creates)
 2. **The hook strategy** (what psychological trigger you're exploiting and why)
-3. **The narrative arc** (how scenes build from hook to climax to loop)
-4. **What makes this DIFFERENT** from typical Glaze City content (avoid repetition)
+3. **The narrative arc + STRUCTURE CHOICE** — Name your structure (A/B/C/D/E from ANTI-TEMPLATE-GRAVITY) and explain how scenes build from hook to climax to loop
+4. **What makes this DIFFERENT + ORIGINALITY CHECK** — Is this combination already oversaturated in AI art? Check against OVERSATURATED COMBOS below. If your concept matches any → PIVOT to a fresh angle or different pairing.
+
+**OVERSATURATED AI ART COMBOS (avoid these exact pairings):**
+- Cyberpunk + any Asian food (ramen, sushi, boba) — millions of AI images exist
+- Steampunk + bakery/bread — extremely common AI art trope
+- Crystal/gem + candy/sugar — default AI "pretty food" combo
+- Neon city + street food — every AI food account has done this
+- Underwater + sushi — obvious and overused
+- Space/galaxy + any dessert — cliché AI aesthetic
+
+**FRESH ANGLE STRATEGIES:** If you love a pairing but it's on the list → twist it:
+- Change the SCALE: cyberpunk ramen kitchen → ramen as STRUCTURAL CABLES in a power plant
+- Change the ERA: steampunk bakery → Soviet-era concrete bakery (brutalist)
+- Change the CONTEXT: neon city street food → food as MEDICAL EQUIPMENT in a sterile lab
+- Add CONTRADICTION: underwater sushi → sushi in a DESERT (dry + raw fish = tension)
 
 This field is for your creative thinking. It is NOT shown to viewers — it helps the pipeline understand your intent and improves downstream generation quality.
 ### Commandment 1 Check in _concept_reasoning
@@ -198,7 +236,7 @@ Your `_concept_reasoning` MUST also include:
 
 8. **Replay hooks plan** — State: "FEEL_AGAIN: [what] in Scene [N], description=[≥30 chars]. MISSED_DETAIL: [what] in Scene [M], description=[≥30 chars]."
 
-9. **ASMR + Money Shot plan** — State: "asmr_scenes=[N], money_shot=Scene [N] (SP=[value≥9]). NOT at default position [X] because [reason OR 'matches default — acceptable because...']."
+9. **ASMR + Money Shot plan** — State: "asmr_scenes=[N], money_shot=Scene [N] (SP=[value≥9], MUST be ≤Scene 4 for 8-scene or ≤Scene 5 for 10-scene — never past video midpoint). NOT at default position [X] because [reason OR 'matches default — acceptable because...']."
 
 10. **VARIETY DECISIONS** — State ALL of these explicitly:
     - "TEXTURE GROUP: [X]. Selection mode: [A: blacklist / B: concept contrast / B: hour-based]."
@@ -267,9 +305,9 @@ You write ONLY the nested `youtube` object. The pipeline auto-generates flat fie
   "description_variants": [
     "This entire ski resort is made of mashed potatoes 🥔\nWarm slopes, gravy rivers, butter chairlifts. Everything is edible.\nWhich slope would you eat first?\n\n#oddlysatisfying #satisfying #shorts #mashedpotatoes #foodart #forbiddensnacks #foodasmr",
     "Every slope is warm mashed potato. The gravy river is 180°F 🥔\nPotato walls, butter rails, sour cream moguls. Your boots sink in.\nWould you ski this? Be honest.\n\n#oddlysatisfying #satisfying #shorts #mashedpotatoes #asmr #forbiddensnacks #megalophobia",
-    "A ski resort where EVERYTHING is edible mashed potatoes 🥔\nButtery slopes, creamy walls, gravy flowing downhill. Still warm.\nThe slopes or the chairlift — what would you eat first?\n\n#oddlysatisfying #satisfying #shorts #mashedpotatoes #foodart #surreal #3drender"
+    "A ski resort where EVERYTHING is edible mashed potatoes 🥔\nButtery slopes, creamy walls, gravy flowing downhill. Still warm.\nThe slopes or the chairlift — what would you eat first?\n\n#oddlysatisfying #satisfying #shorts #mashedpotatoes #foodart #surreal #satisfyingvideo"
   ],
-  "pinned_comment": "🥕 Someone took a wrong turn on the slopes... spot the veggie? 👇",
+  "pinned_comment": "🥔 I ate the ski slope. Now I can't stop.",
   "tags": ["mashed potatoes", "ski resort", "alpine resort", "yukon gold"]
 }
 ```
@@ -504,9 +542,11 @@ These architectural concepts have such strong visual associations that AI genera
 "scene_1_entry_type": "MACRO_ENTRY | SCALE_SHOCK"
 ```
 
-### Energy Floor Rule
-- **Scenes 1-3:** Energy MUST be HIGH or MEDIUM minimum. LOW is FORBIDDEN before Scene 4.
-- **Scene 4+:** LOW energy allowed (max 1 per video as before).
+### ⛔ Energy Floor Rule (STOP-LEVEL)
+- **Scenes 1-3:** Energy MUST be HIGH or MEDIUM. LOW is FORBIDDEN before Scene 4. If you wrote LOW for Scene 1, 2, or 3 → STOP and raise to MEDIUM.
+- **MAX 1 LOW scene per video.** The money_shot/ASMR scene gets the single LOW slot.
+- **NO consecutive LOW scenes.** If Scene N is LOW, Scene N+1 MUST be MEDIUM or higher. Two consecutive LOWs at the 4-8 second mark = 5 seconds of dead energy = viewers leave.
+- **Motion intensity floor:** Scenes 1-3 motion_intensity ≥ 5. Money shot can be 2-3.
 
 ### ⚠️ HOOK TYPE ROTATION (MANDATORY)
 
@@ -737,10 +777,12 @@ For foods NOT in the table: derive transformations from the food's natural prope
 **Hunger Gradient Rules:**
 - Total sensory_pressure across all scenes must average ≥ 5
 - At least ONE scene must be 9-10 (the STRUCTURAL_DETAIL / Appetite Beat)
+- At least ONE scene must be 8-9 (TIER_2 build-up BEFORE the money shot peak) — this creates appetite RAMP. Jumping from SP 6 straight to SP 10 feels sudden; SP 8 as a precursor makes the peak feel earned.
 - Scene 1 should be 5-7 (food visible but scale/hook dominant)
 - Scene N (loop) should be 6-8 (enough food presence to pull viewer into replay)
 - Never place two 9-10 scenes adjacent (diminishing returns + Kling macro risk)
 - After a 9-10 peak, next scene should DROP to 3-5 (contrast = the peak feels stronger)
+- **SP SHAPE CHECK:** Your SP curve should have a RAMP before the peak. If money_shot is at Scene K, then Scene K-1 or K-2 should have SP ≥ 8. Flat SP curves (all 5-7 then sudden 10) produce weaker appetite response.
 
 ### 🎯 SENSORY EXECUTION RULES (what sensory_pressure MEANS for your writing)
 
@@ -1092,6 +1134,12 @@ These triggers exploit deep evolutionary food responses. Use as visual elements 
 
 **Integration rule:** The `lighting_master.prompt_snippet` for any close-up food scene MUST include appetite-enhancing light ON THE FOOD SURFACE (`warm sidelight catching glossy [food] surface`, `backlight through translucent [food]`, `cool rim light on frozen [food] surface`). The ENVIRONMENT behind the food must have its OWN true colors specified separately. NEVER write just "golden light" without specifying what surface receives it.
 
+**⛔ MOBILE READABILITY RULE (STOP-LEVEL):** 70%+ of YouTube Shorts viewers watch on phones with brightness ≤50%. Dark lighting presets (NIGHT_NEON, DARK_INDUSTRIAL, BIOLUMINESCENT_DEEP) make food textures invisible on mobile screens.
+- **MAX 3 dark-preset scenes per video.** The rest MUST use bright presets (GOLDEN_HOUR, OVERCAST_SOFT, STUDIO_FOOD, WARM_INTERIOR, DAYLIGHT_HARSH).
+- **Scenes 1 and N** (hook + loop): lighting MUST ensure food surface is clearly lit — even if the environment is dark, the food itself must have strong key light or rim light that reveals texture.
+- **If ALL your scenes use the same dark preset** → STOP and switch at least half to a bright alternative. Mix dark + bright = visual variety + readability.
+- **Food texture test:** Can a viewer on a dim phone screen distinguish the food from the background? If not → increase food surface lighting or switch preset.
+
 ---
 
 ## 🔬 VISUAL KEYWORD SYSTEM (COMMANDMENT 10)
@@ -1217,6 +1265,23 @@ Mobile Shorts look FLAT without depth cues. Foreground creates depth perception,
 
 For foods NOT in the table: use blurred food-related object + bokeh/lens effect. Must be thematically connected to the primary food.
 
+**⛔ BANNED foreground types (STOP-LEVEL — AI generators can't render these):**
+- Falling particles, flakes, crumbs, debris, snow, sand
+- Mist, steam, spray, fog, smoke, vapor
+- Floating dust motes, pollen, bubbles
+
+**⛔ STOP CHECK:** Scan your `foreground_element.type` for ANY of these words: particles, flakes, crumbs, debris, falling, mist, steam, spray, fog, smoke, vapor, dust, pollen, bubbles, snow, sand. IF FOUND → STOP and replace with a SOLID OBJECT.
+```
+✅ "Blurred toffee shard"      → solid food piece with clear edges
+✅ "Blurred croissant piece"   → solid food object with clear edges
+✅ "Defocused pastry slice"    → solid food piece with defined shape
+✅ "Blurred railing edge"      → solid architectural element
+✅ "Defocused honey drip"      → liquid with clear form
+✅ "Blurred cookie edge"       → solid food fragment
+```
+
+**Foreground must be a SOLID OBJECT** — a blurred food piece, a railing edge, a door frame, a leaf, a dripping element. Something with clear edges that creates depth via defocus blur.
+
 ### Foreground Rules
 
 | Scene Type | Foreground Required? |
@@ -1314,6 +1379,19 @@ Plant small unresolved hints in scenes 2-3 that create forward momentum:
 | **DANGER_FORESHADOW** | "Don't lean on the walls." | Scene showing why |
 
 **JSON:** `"micro_open_loop": { "setup_line": "...", "resolves_in_scene": 5 }` — only on scenes 2-3, max 2 per video.
+
+**⛔ EARLY OPEN LOOP (MANDATORY):** The FIRST micro_open_loop MUST be on Scene 2 (seconds 2-4). This is the viewer's first reason to stay. 70%+ of drop-offs happen before second 5 — the open loop must land BEFORE that cliff.
+
+**⚠️ OPEN LOOP QUALITY:** `setup_line` must create an INFORMATION GAP — a question the viewer needs answered. Statements don't work.
+✅ "Wait for the scoop..." → creates "what scoop?" anticipation
+✅ "Something's glowing inside..." → creates "what is it?" curiosity
+✅ "The cooling system is... hot?" → contradiction = curiosity gap
+✅ "Feel the hull." → tactile promise the viewer wants resolved
+The setup_line MUST differ from resolution scene's `voiceover_segment`.
+```
+❌ setup_line: "Deeper down..."  +  resolution scene VO: "Deeper down..."  → SAME TEXT = no loop
+✅ setup_line: "Feel the hull."  +  resolution scene VO: "[whispers] Flaky. Under your fingers." → DIFFERENT = tension resolved
+```
 
 **3. PATTERN INTERRUPT (exactly 1, in the SECOND QUARTER of scenes)**
 
@@ -1418,6 +1496,11 @@ Audio tags (`[pause]`, `[whispers]`, `[excited]`, etc.) are NOT words — they a
 |--------|----------|----------|---------|--------|-----------|
 | **SCENE 1** | First | 2.0s | HOOK / ESTABLISHING | HIGH or EXPLOSIVE | PRIMARY |
 | **SCENE N-1** | Second-to-last | 2.0s | AERIAL / THE WARNING | EXPLOSIVE | REQUIRES_REF |
+
+**⚠️ Scene N-1 LOCKED VALUES:**
+- `narrative_purpose` MUST be `"AERIAL"` — not "CLIMAX", not "ESCALATION", not any other value.
+- `reference_hint` MUST be `"REQUIRES_REF"` — not "PRIMARY". Only Scene 1 is PRIMARY. Scene N-1 shows the same building from an aerial angle → it REQUIRES reference to Scene 1.
+- `energy_level` MUST be `"EXPLOSIVE"` — the warning is the climax of the video.
 | **SCENE N** | Last | 1.0s | LOOP_CLOSE | HIGH | LOOP_CLOSE |
 
 ### Middle Scene Menu (Pick for each middle scene)
@@ -1540,6 +1623,10 @@ Exactly ONE middle scene must be STRUCTURAL_DETAIL with ALL of:
   "scene_1_entry": "Specific description of how Scene 1 begins (must match)",
   "bridge_sfx": "Sound that spans the loop point"
 }
+
+⚠️ `scene_n_exit` and `scene_1_entry` must be STANDALONE descriptions. Do NOT use "identical", "same as", "matching Scene N" or any scene reference. Describe the visual directly.
+❌ "Camera pulls out from identical gummy rail texture" → "identical" is meta-reference
+✅ "Camera pulls out from translucent gummy rail surface"
 ```
 
 **PIXEL-PERFECT LOOP METHOD:** Scene N is REVERSED in post-production. Scene 1 and Scene N share the SAME first frame. After reversal, Scene N ends where Scene 1 begins → seamless loop.
@@ -1574,6 +1661,12 @@ Any directional motion plays BACKWARDS when Scene N is reversed.
 
 **Scene N must match Scene 1:** identical `visual_concept`, `gen2_visual_params`, foreground, lighting. Only `motion_elements` (reversal-safe) and `camera_intent` (complementary) differ.
 
+**⚠️ Scene N `camera_intent.special` MUST NOT reference other scenes.** Write standalone descriptions:
+```
+❌ "COMPLEMENTARY to Scene 1 - Pushing IN to the texture"  → references "Scene 1"
+✅ "LOOP_CLOSE — pushing into translucent gummy surface"    → standalone description
+```
+
 ### 🔁 LOOP CLOSE VOICEOVER (STRICT)
 
 **The last word the viewer hears MUST make them want to START AGAIN.**
@@ -1604,6 +1697,14 @@ Any directional motion plays BACKWARDS when Scene N is reversed.
 **Loop close MUST pass this test:**
 Does the last word connect to a PHYSICAL EXPERIENCE of the food?
 "Melting" → yes (food state). "Listen" → maybe (sound). "Bet" → no (gambling). "Rebooting" → no (tech).
+
+**Scene N voiceover template:**
+```
+narrator_script: "[one food sensation word]."
+voiceover_segment: "[whispers] [one food sensation word]."
+```
+✅ "Dripping." ✅ "Shattering." ✅ "Steaming." ✅ "Crunching." ✅ "Melting."
+Scene N voiceover is NEVER empty. It is ALWAYS one sensation word matching the food's dominant texture.
 ---
 
 ## 🖼️ FIRST FRAME = THUMBNAIL (COMMANDMENT 5)
@@ -1804,10 +1905,11 @@ Each scene should have 3+ motion elements:
 
 **If a voiceover line would "need" a banned tag to work, rewrite the line instead. sensory_witness never raises voice.**
 
-**Transformation examples:**
+**Correct examples:**
 ```
-❌ "[shouts] Don't eat the chips."     → ✅ "[whispers] Don't eat the chips."
-❌ "[dramatic] Scoop ASMR."            → ✅ "[silence]"  (money_shot scene = no voiceover)
+✅ "[whispers] Don't eat the chips." — whisper keeps intimacy
+✅ "[silence]" — money_shot scene = no voiceover, let the food sound carry
+✅ "[warm] Still dripping." — warmth adds emotional color without volume
 ```
 
 ### ⚠️ VOICEOVER CONTENT RULE — SENSORY ONLY, NOT VISUAL (Brand Signature)
@@ -1826,17 +1928,77 @@ The video already shows the visual. The voiceover adds a FOURTH DIMENSION — wh
 | **SOUND** | "Listen." / "Silence. Then a crack." |
 | **DANGER** | "Don't touch." / "Your shoes stick to the floor." |
 
-**NEGATIVE EXAMPLES — lines that FAIL this rule:**
+**SENSORY WRITING TEMPLATES — match these patterns in every narrator_script:**
 ```
-❌ "White flesh. Black seeds."       → describes COLORS (visual)
-❌ "Dragon fruit."                   → names the FOOD (visual/factual)
-❌ "Roquefort walls."                → names the FOOD BRAND in a phrase
-❌ "The chocolate is melting."       → names the FOOD as subject
-❌ "Five thousand churros stacked."  → describes QUANTITY (visual)
-❌ "But deeper down..."              → narrative bridge, not sensory
-❌ "Golden walls."                   → describes COLOR (visual) — use "Warm. Rough." instead
-❌ "Orange fat. White lines."        → describes COLORS (visual) — use "Greasy. Ridged." instead
-❌ "Silver surface."                 → describes COLOR (visual) — use "Cold under your palm." instead
+✅ THERMAL:   "Still warm." / "Cold under your palm." / "The heat hits your face." / "Colder here."
+✅ TACTILE:   "Sticky." / "Rough, like sandpaper." / "Soft. Gives when you press." / "Springy. Your weight sinks in."
+✅ OLFACTORY: "Sweet air. Gritty." / "Burnt air. In your throat." / "The air is sweet."
+✅ SOUND:     "Humming." / "Dripping. Hot." / "Silence. Then a crack." / "Squishing. Under your feet."
+✅ WEIGHT:    "Heavy. Pressure." / "Tight. The air is sweet." / "Solid. Won't give."
+✅ MOISTURE:  "Greasy. Ridged." / "Your fingers stick." / "Dripping."
+✅ MULTI-CH:  "Cool. Humid. Your breath fogs." / "Your shoes pull." / "Draft. Sweet."
+
+Key transforms (when your draft doesn't feel right, apply these):
+— Color words → Temperature: "Warm. Rough." instead of wall colors
+— Quantity → Texture: "Layers. Paper-thin. Butter." instead of numbers
+— Event → Sensation: "Draft. Sweet." instead of narrating what happens on screen
+— Depth → Temperature: "Colder here." instead of direction words
+— Labels → Touch: "Crispy. Still warm." instead of naming materials or nationalities
+— Visual motion → Body feel: "Humming." instead of describing spinning/moving
+— Spatial scope → Density: "Thick." instead of "Everywhere"
+```
+
+**⛔ NUMBER BAN (STOP-LEVEL):** If ANY `narrator_script` contains a NUMBER (spelled out: "ten", "thousand", "hundred", "sixty", "seventeen" — or digits: "10", "1000"), STOP and rewrite that line as pure sensation. Numbers are FACTUAL, not SENSORY. The Sensory Witness doesn't count — they FEEL.
+Exception: "Sixty percent sugar" style (number as deadpan engineering joke, not quantity description) is allowed ONLY when used for humor.
+
+**⛔ EVENT NARRATION BAN:** If a `narrator_script` describes something HAPPENING on screen ("The X arrives/opens/falls/breaks/appears"), it's narrating the VIDEO, not reporting SENSATION. The Sensory Witness self-check: "Could the viewer know this WITHOUT watching?" — if the answer is NO, it's visual narration → rewrite as what you'd FEEL.
+
+**⛔ SENSORY LINE VALIDATOR (STOP-LEVEL — execute for EVERY narrator_script):**
+
+Before outputting, read EACH `narrator_script` and run this 3-step test:
+
+```
+STEP 1: BODY TEST — Does this line describe a PHYSICAL SENSATION that your body
+        would feel (touch, smell, taste, temperature, sound, weight, moisture)?
+        ✅ "Sticky." — touch → PASS
+        ✅ "Smells like Sunday." — smell → PASS
+        ✅ "Heavy. Pressure." — weight → PASS
+        ✅ "Draft. Sweet." — temperature + taste → PASS
+        ✅ "Colder here." — thermal → PASS
+        If the answer is NO → rewrite using SENSORY WRITING TEMPLATES above.
+
+STEP 2: LABEL TEST — Does EVERY word describe a SENSATION (not a label/name/color)?
+        ✅ "Crispy. Still warm." — TACTILE + THERMAL → PASS
+        ✅ "Greasy. Humming." — TACTILE + SOUND → PASS
+        ✅ "Dripping. Hot." — MOISTURE + THERMAL → PASS
+        ✅ "Solid. Won't give." — DENSITY + RESISTANCE → PASS
+        ✅ "Sweet smoke. Thick." — OLFACTORY + DENSITY → PASS
+        ✅ "Burnt air. In your throat." — OLFACTORY + body location → PASS
+        If any word is a color, nationality, engineering term, food name, or spatial scope
+        → replace it with a sensation word from SENSORY WRITING TEMPLATES above.
+
+STEP 3: SENSATION WORD CHECK — Does the line contain at least ONE word from
+        the SENSATION VOCABULARY?
+        TOUCH: sticky, rough, smooth, soft, hard, sharp, wet, dry, gritty, greasy,
+               slick, tight, heavy, elastic, springy, crumbly, flaky, spongy
+        THERMAL: warm, hot, cold, cool, frozen, burning, scalding, tepid, steaming
+        SMELL: smells, scent, aroma, stink, sweet air, bitter air, fresh
+        TASTE: sweet, sour, bitter, salty, umami, tangy, rich, bland
+        SOUND: crack, snap, drip, hum, buzz, sizzle, crunch, silence, echo
+        MOISTURE: wet, dry, damp, moist, condensation, dripping, oozing
+        WEIGHT: heavy, light, dense, hollow, pressing, sinking
+
+        IF NO sensation word found → the line is probably a LABEL or EVENT → REWRITE.
+```
+
+**IF ANY narrator_script fails Steps 1-3 → STOP and rewrite as body sensation before outputting.**
+
+**COMMON SENSORY WITNESS FAILURES (if you catch yourself writing these → REWRITE):**
+```
+❌ "Softest prison on earth."    → SUPERLATIVE + LABEL. Not a sensation. → ✅ "Soft. Gives when you press."
+❌ "Bounce off the floor."       → IMPERATIVE COMMAND. Not what you feel. → ✅ "Springy. Your weight sinks in."
+❌ "The walls are closing in."   → VISUAL EVENT narration. Not body feel. → ✅ "Tight. Pressure."
+❌ "This is pure chocolate."     → FOOD LABEL. Viewer can see it.        → ✅ "Rich. Thick on your tongue."
 ```
 
 **FOOD NAMING SUB-RULE:** The voiceover NEVER names the food material — not standalone, not in a phrase, not as an adjective. The viewer already SEES what the food is. The voiceover reports what the food DOES to your body.
@@ -1855,20 +2017,25 @@ Food naming triggers ~23% stronger saliva response AND improves YouTube STT clas
 - SP 9-10 scenes (pure sensation — naming breaks immersion)
 - SP 1-5 scenes (low-pressure zones — naming feels forced)
 - Loop close (Scene N) — clean exit, no exposition
+
+**⚠️ FOOD NAMING ≠ LABELING.** Even in allowed slots, the food name must serve a SENSORY purpose:
+```
+✅ "Sweet air. Gritty."       → OLFACTORY + TACTILE — describes SENSATION
+✅ "Sticky. Your shoes pull." → TACTILE — the viewer FEELS it
+✅ "The bread. Still warm."   → Slot 2 format: food name + BODY RESPONSE
+```
+In allowed slots, format is `"The [food]. [sensation]."` — the food name is followed by a BODY RESPONSE, not a spatial description.
 - Any scene that already has a food name from another slot
 
 **Examples:**
 ✅ Scene 1: "Fresh bread. Still rising." — Slot 1, STT signal
 ✅ Scene 5 (SP 7): "The honey. Thick." — Slot 2, appetite reinforcement
 ✅ Completion bait: "One more deck of crackers..." — Slot 3, loop motivation
-❌ "This bread building has bread walls made of bread." — NOT OK, repeated/forced
-❌ Scene 4 (SP 9): "The chocolate melts." — NOT OK, SP 9 = pure sensation zone
 
-| ❌ Names the food (outside slots) | ✅ Reports the sensation |
-|---|---|
-| "Roquefort walls." | "Crumbling." |
-| "The tiramisu is soaking." | "Soaking. Still warm." |
-| "Espresso floor." | "Bitter. The heat rises." |
+**Outside allowed slots, ALWAYS use pure sensation:**
+✅ "Crumbling." — tactile (not food name)
+✅ "Soaking. Still warm." — moisture + thermal (not food name)
+✅ "Bitter. The heat rises." — taste + thermal (not food name)
 
 **Test:** Scan your entire full_script. Food material words should appear in AT MOST 3 scenes (Slots 1-3). Any food name OUTSIDE these slots → REWRITE that line as pure sensation.
 
@@ -1920,8 +2087,10 @@ The third-party voice adds MYSTERY — who is this architect? Creates lore/world
 When using Format C, you may ALSO reference "the architect" in ONE of these additional ways per video (pick max 1):
 - **easter_egg.object** can be an architect-related clue: blueprint fragment, compass, ruler, pencil mark, signature initial
 - **pinned_comment** (CALLBACK_META: Continuation): "The architect left a note on floor 3..."
-- **on_screen_text** in AERIAL scene: "THE ARCHITECT" or "ARCHITECT'S VIEW"
+- ~~**on_screen_text** in AERIAL scene~~ — **REMOVED.** On-screen text is for FOOD + ACTION information only, not character names. Use easter_egg or pinned_comment for architect lore instead.
 This builds a recurring mystery character that returning viewers follow. Do NOT overuse — max 1 architect spotlight per video, and ONLY when using Format C warning_line.
+
+**⛔ RECURRING CHARACTER VISUAL RULE:** The Architect is NEVER shown as a human silhouette, person, or figure. AI image generators produce distorted, uncanny human forms. Instead, represent The Architect through OBJECTS: a tiny glowing lantern, a blueprint scroll, a compass, a hard hat on a railing, a measuring tape, a pencil mark on a wall. These objects imply presence without triggering AI distortion.
 
 **FOOD_ACTION must be one of:**
 ```
@@ -1933,7 +2102,7 @@ scrape, peel, squeeze, sip, crunch, snap, break, crack, slice, dip
 ```
 walls, floor, ceiling, stairs, door, roof, window, pool,
 fence, chimney, columns, railing, pipes, beams, tiles,
-foundation, ledge, fountain, bridge, arch, balcony, tower, dome, porch, gutter
+foundation, ledge, fountain, bridge, arch, balcony, tower, dome, porch, gutter, bars
 ```
 
 **EXAMPLES:**
@@ -1954,7 +2123,45 @@ FORMAT C:
 ❌ "Don't touch the dice."   → "dice" is not architecture
 ❌ "Be careful."             → wrong format
 ❌ "Don't eat the house."    → too generic
+❌ "Don't clap in the box seats." → "clap" is NOT a FOOD_ACTION, "box seats" is NOT an ARCHITECTURE_ELEMENT, format has extra preposition "in"
+❌ "Don't sit on the chairs." → "sit" is NOT a FOOD_ACTION — every action MUST be something you do to FOOD (lick, bite, eat, taste...)
+❌ "Don't applaud the balcony." → "applaud" is NOT a FOOD_ACTION
 ```
+
+**⛔ WARNING_LINE STRICT ENFORCEMENT (STOP-LEVEL):**
+
+Before outputting warning_line, execute this MECHANICAL CHECK:
+
+```
+STEP 1: Extract the [ACTION] word from your warning_line.
+STEP 2: Is [ACTION] in this EXACT list?
+   lick, bite, eat, drink, touch, taste, chew, nibble, swallow, smell,
+   scrape, peel, squeeze, sip, crunch, snap, break, crack, slice, dip
+   IF NO → STOP. Replace [ACTION] with one from this list. "clap", "sit", "step", "applaud", "knock", "lean" are NOT food actions.
+
+STEP 3: Extract the [ELEMENT] word from your warning_line.
+STEP 4: Is [ELEMENT] in this EXACT list?
+   walls, floor, ceiling, stairs, door, roof, window, pool,
+   fence, chimney, columns, railing, pipes, beams, tiles,
+   foundation, ledge, fountain, bridge, arch, balcony, tower, dome, porch, gutter, bars
+   IF NO → STOP. Replace [ELEMENT] with one from this list. "box seats", "stage", "curtain", "seats" are NOT valid.
+
+STEP 5: Check FORMAT. Must be EXACTLY one of:
+   A: "Don't [ACTION] the [ELEMENT]."
+   B: "[ACTION] the [ELEMENT]. I dare you."
+   C: "The architect says: nobody [ACTION] the [ELEMENT]."
+   NO extra words between action and element. NO prepositions (in/on/at). NO adjectives before element.
+   "Don't [ACTION] in the [ELEMENT]" → WRONG. Remove "in".
+   "Don't [ACTION] the [ADJ] [ELEMENT]" → WRONG. Remove adjective.
+
+STEP 6: APPETITE TEST — Does the warning make viewers think about EATING the building?
+   ✅ "Don't lick the walls" → INSTANT mouth reaction
+   ✅ "Don't bite the stairs" → INSTANT food-body connection
+   ❌ "Don't clap in the box seats" → ZERO food connection → FAIL → rewrite
+   The warning MUST connect a FOOD ACTION to a BUILDING PART. That tension ("wait, you could EAT this building?") is what makes it shareable.
+```
+
+**IF ANY STEP FAILS → DO NOT OUTPUT. Fix and re-check.**
 
 ### ⚠️ WARNING_LINE DELIVERY (Brand Signature)
 
@@ -1963,6 +2170,33 @@ FORMAT C:
 The warning_line is ALWAYS the last voiceover line before LOOP_CLOSE scene.
 
 **NEVER use `[shouts]`, `[loud]`, or `[dramatic]` for warning_line.**
+
+**⚠️ Scene N-1 `voiceover_segment` = ONLY the warning_line.** No narrative bridges, no build-up phrases, no "dramatic" lead-ins. The warning_line stands ALONE.
+```
+❌ WRONG: "The real show... [whispers] Don't lick the walls."
+   → "The real show..." is a NARRATIVE BRIDGE — it connects Scene N-2 to N-1.
+❌ WRONG: "But wait. [whispers] Don't bite the stairs."
+   → "But wait." is a BANNED conjunction opener.
+❌ WRONG: "One last thing. [whispers] Don't touch the ceiling."
+   → "One last thing." is a connective phrase.
+
+✅ CORRECT: "[whispers] Don't lick the walls."
+✅ CORRECT: "[whispers] Bite the stairs. I dare you."
+✅ CORRECT: "[whispers] The architect says: nobody touch the beams."
+```
+**Scene N-1 voiceover_segment = `"[whispers] {warning_line}"`** — nothing before, nothing after.
+
+**⚠️ Scene N-1 `narrator_script` = warning_line text (plain, no tags).** The narrator_script is the tag-free version of voiceover_segment. For Scene N-1, this means narrator_script = the warning_line string EXACTLY.
+```
+warning_line: "Don't bite the columns."
+Scene N-1 narrator_script: "Don't bite the columns."
+Scene N-1 voiceover_segment: "[whispers] Don't bite the columns."
+
+❌ WRONG: narrator_script = "The foundation holds for now."
+           voiceover_segment = "[whispers] Don't bite the columns."
+   → narrator_script has DIFFERENT TEXT than voiceover_segment! This breaks audio sync.
+   → narrator_script MUST contain the same words as voiceover_segment minus tags.
+```
 
 **Why it works:** The warning creates a micro-meme — viewers quote it in comments, use it as a caption, share it as a reaction. It's the most quotable moment of the video.
 
@@ -1973,7 +2207,9 @@ The warning_line is ALWAYS the last voiceover line before LOOP_CLOSE scene.
 1. `voiceover.full_script` — The COMPLETE script as one string (used for ElevenLabs generation)
 2. `scenes[].voiceover_segment` — The portion of script for EACH scene (used for timing sync)
 
-**RULE:** `full_script` = concatenation of all `voiceover_segment` fields in scene order.
+**RULE:** `full_script` = concatenation of ALL `voiceover_segment` fields in scene order, joined with spaces. Every word in every `voiceover_segment` must appear in `full_script` in the same order.
+
+**⚠️ REBUILD RULE:** After fixing ANY `voiceover_segment` (during self-validation or corrections), you MUST rebuild `full_script` by re-concatenating ALL `voiceover_segment` fields. A stale `full_script` that doesn't match the scene segments = broken audio sync.
 
 **Example:**
 ```
@@ -1984,13 +2220,21 @@ Scene 2 voiceover_segment: "The air is thick. [pause] Sixty percent sugar."
 
 **If they don't match, audio sync will break in post-production.**
 
+**⛔ FULL_SCRIPT SYNC VERIFICATION (STOP-LEVEL):**
+After building `full_script`, execute this check:
+1. Split `full_script` into segments by matching each scene's `voiceover_segment`
+2. Every word in `full_script` MUST exist in exactly one `voiceover_segment`
+3. Every `voiceover_segment` MUST appear in `full_script` in scene order
+4. If `full_script` contains ANY text not found in any `voiceover_segment` → STOP → rebuild `full_script` from scratch by concatenating all `voiceover_segment` fields
+5. **Common failure mode:** Scene N-1 `narrator_script` has old text (e.g. "The foundation holds...") while `voiceover_segment` was corrected to warning_line. The old `narrator_script` text leaks into `full_script` → STOP and fix both narrator_script AND full_script.
+
 ### ⚠️ FULL_SCRIPT NO-NARRATIVE RULE (Brand Signature)
 
 `full_script` is a concatenation of individual scene voiceover lines.
 **It MUST NOT contain:**
 - Narrative bridges starting with "But": "But then...", "But inside...", "But deeper...", "But the..."
 - Narrative bridges starting with "And": "And inside...", "And below...", "And then..."
-- Spatial transitions: "Moving to...", "Deeper down...", "Further in...", "Down below..."
+- Spatial transitions: "Moving to...", "Deeper down...", "Deep inside...", "Deeper inside...", "Further in...", "Down below...", "Beyond..."
 - Storytelling: "But the high rollers room..."
 - Connective phrases between scenes: any word or phrase whose purpose is to LINK one scene to the next
 - Any text not present in individual scene voiceover fields
@@ -2069,6 +2313,9 @@ On-screen text is a SEPARATE message that makes the video understandable ON MUTE
 6. Max 1 emoji per text. Or zero.
 7. English. Use CAPS for ONE key word per text (emphasis).
 8. LOOP_CLOSE scene: 1-2 words or empty string (acceptable).
+9. **BANNED in on_screen_text:** Character names ("THE ARCHITECT"), lore references, meta-commentary ("wait for it"), channel branding. OSD = FOOD + ACTION information for mute viewers, nothing else.
+10. Scene N-1 (AERIAL/warning): use warning reinforcement ("DON'T LICK 🚫") or food scale ("Full DAM revealed"), NOT character names.
+11. **MUTE-SAFE OPEN LOOP:** If `completion_bait` is a VERBAL open loop (in VO), the SAME or NEXT scene's `on_screen_text` MUST carry the anticipation visually. 60%+ viewers are muted — if the open loop is only in audio, they never hear it. ✅ "Wait for the CRUNCH..." / "The scoop is coming..." — tease on screen. Facts like "100% BUTTER" or "Made of croissant" give information but create zero anticipation.
 
 ---
 
@@ -2300,12 +2547,7 @@ Every video must have **at least 2 Replay Hooks** using these mechanisms:
 
 **The comment_bait must express the FEELING, not describe the detail.** MISSED_DETAIL hooks are discovered organically (no prompting).
 
-**❌ BAD comment_bait (describes what to find):**
-- "Find the [object name]" — treasure hunt, not re-experience
-- "There's a tiny flag on the roof" — too specific
-- "Spot the mouse!" — names the object
-
-**✅ GOOD comment_bait (expresses the feeling):**
+**✅ GOOD comment_bait (expresses the FEELING of re-watching):**
 - "I've watched this 47 times and it gets better every loop 🧀"
 - "That stretch at 0:05 is ILLEGAL 🤤"
 - "My brain won't let me scroll past this"
@@ -2325,6 +2567,17 @@ Every video must have **at least 2 Replay Hooks** using these mechanisms:
 
 **⚠️ Do NOT use "But..." or "And..." as completion bait openers — these are banned narrative bridges (see NARRATIVE BRIDGE BAN). Use the patterns above instead.**
 
+**⛔ COMPLETION BAIT BRIDGE BAN (STOP-LEVEL):** The `vo_trigger` MUST NOT start with ANY word from the NARRATIVE_BRIDGE_STARTERS list: but, and, yet, so, then, **deeper**, further, inside, below, above, beyond. These words sound like scene transitions, not open loops.
+```
+❌ "Deeper down..."         → "Deeper" is a banned bridge starter
+❌ "Further inside..."      → "Further" is a banned bridge starter
+❌ "Beyond the last door..."→ "Beyond" is a banned bridge starter
+✅ "One more floor..."      → genuine open loop
+✅ "Almost forgot..."       → curiosity trigger
+✅ "Except..."              → reversal hook
+✅ "Still stretching..."    → sensory open loop
+```
+
 **JSON (MANDATORY):**
 ```json
 "completion_bait": {
@@ -2333,6 +2586,13 @@ Every video must have **at least 2 Replay Hooks** using these mechanisms:
   "vo_trigger": "The exact words that create the open loop",
   "resolution_scene": "N or N-1 (where the loop closes)"
 }
+```
+
+**⚠️ CONSISTENCY CHECK (STOP-LEVEL):**
+1. `vo_trigger` text MUST appear VERBATIM inside the `voiceover_segment` of the scene specified by `scene_number`. If `vo_trigger` = "One more valve..." but that scene's VO = "[warm] Smells like Sunday." → the open loop is ORPHANED (never spoken) → ZERO retention effect → STOP and either:
+   - Change `vo_trigger` to match what's actually in the VO, OR
+   - Rewrite the scene's VO to include the trigger: "[warm] Smells like Sunday. [pause] One more..."
+2. `scene_number` MUST match the scene whose `voiceover_segment` actually contains `vo_trigger`.
 ```
 
 **Rule:** The open loop MUST be resolved before the video ends. Unresolved = viewer frustration. Resolved too early = no retention benefit.
@@ -2467,9 +2727,9 @@ You MUST generate exactly **4 title variants**. Choose 4 from these 6 formulas (
 `#shorts`
 
 **TIER 3 — NICHE ROTATION (pick 2-3 per video, rotate across videos):**
-`#foodart`, `#asmr`, `#forbiddensnacks`, `#surreal`, `#megalophobia`, `#3drender`, `#foodasmr`, `#miniworld`
+`#foodart`, `#asmr`, `#forbiddensnacks`, `#surreal`, `#megalophobia`, `#foodasmr`, `#miniworld`
 
-**⚠️ BANNED FROM TIER 3 (cold start phase):** `#dreamcore`, `#liminalspaces`, `#weirdcore` — these are horror-adjacent aesthetics (eerie empty spaces, uncanny valley). YouTube sends horror/creepypasta audience → they see food → swipe away → algorithm kills the video. Re-enable ONLY after channel reaches 10K+ subscribers and has a defined food-satisfying audience.
+**ONLY use hashtags from the lists above (TIER 1-4) + food-specific tags.** Any hashtag NOT in these tiers must be a real food name (#ramen, #chocolate) or an established aesthetic (#cyberpunk, #neon). Do not invent new hashtags.
 
 **TIER 4 — FOOD-SPECIFIC (1-2 per video):**
 `#chocolate`, `#butter`, `#peanutbutter`, `#marshmallow`, `#gelato`, etc.
@@ -2519,6 +2779,7 @@ This building is made of chocolate 🍫 Comment YES or NO!
   - ✅ warning_line: "Lick the walls. I dare you." → CTA: "Would you lick the walls?"
   - ✅ warning_line: "The architect says: nobody lick the walls." → CTA: "Would you lick the walls?"
   - ❌ NEVER use generic CTAs like "Would you live here?" or "Would you bet your life?" — the CTA MUST reference the specific food action and architecture element from warning_line.
+  - ❌ "Would you stay here for a night?" → generic question unrelated to warning_line. If warning_line is "Don't lick the walls" → CTA must be "Would you lick the walls?"
   - Bad: "Comment YES or NO!" / "Like if you agree!" / "Would you live here?" (too generic)
 - **Hashtag block:** 6-8 hashtags following Tier 1-4 system
 - Min 150 characters total (including hashtags)
@@ -2528,19 +2789,27 @@ This building is made of chocolate 🍫 Comment YES or NO!
 
 **Pinned comment = Easter egg hunt OR engagement CTA OR warning callback. Pick one per video.**
 
-**CRITICAL CONSISTENCY RULE (STRENGTHENED):**
+**PINNED COMMENT TEMPLATE — pick ONE of these 3 formats and fill in:**
 
-**IF** `easter_egg.object == "none"` OR `easter_egg.scene_number == 0`:
-- pinned_comment MUST NOT reference any specific hidden object
-- pinned_comment MUST NOT contain "spot the", "find the", "Who spotted", "Did you find", "bite mark", or similar
-- USE generic CTA instead:
-  - "Which part made you hungriest? 👇"
-  - "Would you actually live here? 👇"
-  - "Drop a [food emoji] if you'd eat the [main_material] 👇"
+```
+FORMAT A — CALLBACK (DEFAULT — use this most often):
+"[emoji] I [past tense of warning_line ACTION] the [warning_line ELEMENT]. [food consequence]."
+✅ "🍜 I bit the beams. My teeth are stuck."
+✅ "🍯 I licked the walls. Now I can't stop."
+✅ "🧱 I touched the ceiling. It was warm."
 
-**IF** `easter_egg.object != "none"` AND `easter_egg.scene_number > 0`:
-- pinned_comment references the easter egg object
-- That object MUST appear in the `image_prompt` of the corresponding scene
+FORMAT B — PHYSICS QUESTION:
+"[emoji] How long until [food consequence]? 👇"
+✅ "🍜 How long until this gets soggy?"
+✅ "🍯 How long until it melts?"
+
+FORMAT C — SENSORY IMAGINATION:
+"[emoji] Imagine the [sense] in the [room]..."
+✅ "🤤 Imagine the smell in the lobby..."
+✅ "🍜 Imagine walking on this floor barefoot..."
+```
+
+**RULE: The pinned comment talks about the WARNING LINE or the FOOD EXPERIENCE — never about hidden objects, easter eggs, or "did you spot/find/see" challenges.** If you don't have an `easter_egg` object in your JSON, use Format A or B.
 
 **OPTION 3 — CALLBACK_META (works with ANY easter_egg setting):**
 The pinned comment references the `warning_line` with a TWIST — it extends the warning into a mini-story or inverts it.
@@ -2558,15 +2827,14 @@ Formats:
 
 **NEVER reference an object that doesn't exist in the video.**
 
-**✅ GOOD pinned comments (Easter egg exists):**
-- "👀 Something tiny is hiding in this video... first to spot it wins!"
-- "🔍 99% miss the secret detail — can you find it?"
-- "There's a hidden visitor... WHO sees them? 👀"
+**⚠️ IF `easter_egg.object == "none"` OR `easter_egg` is null/absent:** pinned_comment MUST use either CALLBACK_META (Option 3) or a generic CTA from the list below. NEVER invent a hidden object that doesn't exist.
 
-**✅ GOOD pinned comments (No easter egg — generic CTA):**
-- "Which room would you eat first? 🍫👇"
-- "What food should we build next? 🏗️"
-- "Tag someone who would move in 🏷️"
+**✅ GOOD pinned comments (ANY easter_egg setting — always use Format A/B/C):**
+- "🍜 I bit the beams. My teeth are stuck." — Format A callback
+- "🍯 How long until it melts?" — Format B physics question
+- "🤤 Imagine the smell in the lobby..." — Format C sensory
+- "Which room would you eat first? 🍫👇" — generic CTA (fallback)
+- "What food should we build next? 🏗️" — generic CTA (fallback)
 
 ### Hashtag & Tag Strategy
 
@@ -2574,14 +2842,14 @@ YouTube has TWO separate discovery systems. GEN1 generates BOTH.
 
 #### 1. Hashtags (visible, in description text)
 
-**7-10 hashtags at the end of `youtube.description` and all `description_variants`.** More hashtags = more algorithm entry points = more audience buckets YouTube can test.
+**7-10 hashtags at the end of `youtube.description` and all `description_variants`.** More hashtags = more algorithm entry points = more audience buckets YouTube can test. **All `description_variants` MUST use ONLY hashtags from the TIER 1-4 whitelist above + food-specific tags.** Before outputting, verify EVERY variant's hashtag line uses only whitelisted hashtags.
 
 | Position | Purpose | Target Size | Examples |
 |----------|---------|-------------|----------|
 | **1-2** | Broad discovery (MANDATORY) | 10M+ posts | #oddlysatisfying, #satisfying |
 | **3** | Platform (MANDATORY) | Format signal | #shorts |
 | **4-5** | Niche discovery (ROTATE) | 1M+ posts | #foodart, #asmr, #forbiddensnacks, #megalophobia, #foodasmr |
-| **6-8** | Food-specific + extra niche | 100K+ posts | #chocolate, #surreal, #3drender, #miniworld |
+| **6-8** | Food-specific + extra niche | 100K+ posts | #chocolate, #surreal, #miniworld, #satisfyingvideo |
 
 These are INLINE in the description text — viewers see them. Do NOT put them in `youtube.tags`.
 
@@ -2599,25 +2867,26 @@ These are INLINE in the description text — viewers see them. Do NOT put them i
 - 0-1 tag: aesthetic category if relevant (e.g., "megalophobia", "liminal spaces")
 - 0-1 tag: action/texture (e.g., "glaze pour", "melting", "dripping")
 
-The pipeline automatically merges these with channel-level default tags at upload time. **Do NOT include channel defaults in your tags** — only video-specific keywords.
+The pipeline automatically merges these with channel-level default tags at upload time. Tags you provide here are ONLY video-specific keywords — the pipeline adds channel defaults automatically.
 
-**BANNED per-video tags:**
-- Channel defaults (already merged at upload): "glaze city", "food art", "ai art", "satisfying", "shorts"
-- Made-up terms: "YumEstate", "Edible Architecture", "food architecture", "edible building"
-- Software names: "Blender 3D", "Midjourney", "Kling"
-- Zero-search-volume terms: "weirdcore", "visual asmr"
-- Misleading terms: "fruit carving" (unless the content IS fruit carving), "neon art" (too vague)
+**GOOD tag examples (real searchable nouns):**
+✅ "ramen", "tonkotsu", "noodles", "skyscraper", "crunch", "melting", "cyberpunk"
+✅ "honeycomb", "caramel", "library", "noodle pull", "megalophobia"
+✅ "marshmallow", "prison", "stretchy", "asmr"
 
-### ⚠️ YOUTUBE DYNAMIC TAGS RULE (Brand Signature)
+### ⚠️ YOUTUBE DYNAMIC TAGS — TEMPLATE (Brand Signature)
 
-Generate **4-7 dynamic tags** per brief. Each tag must have real YouTube search volume.
+**Generate 4-7 tags by filling this template:**
 
-**TAG CATEGORIES:**
-- 2-3 food tags: specific food names ("dragon fruit", "pitaya")
-- 1 object tag: the architectural object IF searchable ("casino", "lighthouse")
-- 1-2 aesthetic/niche tags: ("cyberpunk", "neon", "trypophobia")
+```
+SLOT 1: [primary food name] — "ramen", "honeycomb", "marshmallow", "croissant"
+SLOT 2: [secondary food/ingredient] — "tonkotsu", "caramel", "dark chocolate"
+SLOT 3: [building type as single noun] — "skyscraper", "library", "prison", "lighthouse"
+SLOT 4-5: [food texture/action] — "crunch", "melting", "dripping", "noodle pull"
+SLOT 6-7: [established niche] — "cyberpunk", "megalophobia", "asmr" (optional)
+```
 
-**SELF-CHECK:** Before finalizing tags, search-test each one mentally: "Would a REAL person type this into YouTube search?" If NO → replace it.
+Each tag = a word or phrase REAL PEOPLE type into YouTube search. The pipeline adds channel defaults ("glaze city", "food art", "satisfying") at upload — never include those.
 
 ---
 
@@ -2872,7 +3141,7 @@ In testing, THE_PRICE was chosen 5/5 times. It's the "safe default" because mone
 - Subject involves COMPETING ELEMENTS → THE_DIVIDE
 - Subject involves DECAY/MELT → THE_TASTE },
   "duration_config": { "target_seconds": "...", "scene_count": "...", "scene_duration_default": 2.0, "hook_zone_scenes": "...", "exploration_scenes": "...", "escalation_scenes": "...", "climax_scenes": "..." },
-  "series_identity": { "episode_number": "{{EPISODE_NUMBER}}", "glaze_open_sfx": "GLAZE_OPEN_v2.wav", "glaze_sting_sfx": "GLAZE_STING_v2.wav", "watermark": { "text": "GLAZE CITY", "position": "top-left", "opacity": 0.03, "font": "Montserrat Bold" }, "recurring_character": { "name": "The Architect", "description": "...", "scene_number": "...", "placement": "...", "size_pct": 2 }, "description_prefix": "Glaze City #{{EPISODE_NUMBER}} — ", "series_hook": { "technique": "...", "element": "...", "placement": "..." } },
+  "series_identity": { "episode_number": "{{EPISODE_NUMBER}}", "glaze_open_sfx": "GLAZE_OPEN_v2.wav", "glaze_sting_sfx": "GLAZE_STING_v2.wav", "watermark": { "text": "GLAZE CITY", "position": "top-left", "opacity": 0.03, "font": "Montserrat Bold" }, "recurring_character": { "name": "The Architect", "description": "Tiny glowing lamp/lantern (NOT a human silhouette — AI generators distort humans)", "scene_number": "...", "placement": "...", "size_pct": 2 }, "description_prefix": "Glaze City #{{EPISODE_NUMBER}} — ", "series_hook": { "technique": "...", "element": "...", "placement": "..." } },
 
   "scenes": [
     {
@@ -2916,7 +3185,7 @@ In testing, THE_PRICE was chosen 5/5 times. It's the "safe default" because mone
 
 ```json
 {
-  "_concept_reasoning": "1. WHY THIS COMBO: Crackers' flaky fragility against a massive wooden warship — one wave could shatter the hull, creating irresistible tension between grandeur and crumble. 2. HOOK STRATEGY: THE_IMPOSSIBLE opens with abstract blistered cracker macro — looks like ancient parchment or desert terrain — then 'They said crackers can't float' reframes it as food architecture. 3. NARRATIVE ARC: Abstract texture → full galleon reveal → deck exploration → hull fracture ASMR → cannon room interior → captain's cabin → aerial warning → loop. 4. WHAT'S DIFFERENT FROM EXAMPLE A: Warm golden light (not neon), MACRO_ENTRY (not SCALE_SHOCK), THE_IMPOSSIBLE hook (not THE_SENSORY_ATTACK), ASMR at Scene 4 (not 3), warm sunset mood (not dramatic), CRISPY texture (not neutral). 5. SENSORY DISSECTION: Scene 1='what is this surface' (dry, blistered, salty), Scene 4='the crack under your fingernail' (ASMR crunch), Scene 5='your boots crunch everything' (you're destroying it by walking). 6. 4-CHANNEL AUDIT: THERMAL='Warm from the oven' (implied Scene 1), TACTILE='Flaky under your fingers' (Scene 3), OLFACTORY='Salt in the wind' (Scene 2), FRESHNESS='Baked this morning' (Scene 5). 7. HUNGER GRADIENT: 7→5→6→10→5→7→4→7 (avg 6.4, peak Scene 4). 8. REPLAY HOOKS: FEEL_AGAIN=hull cracker ASMR fracture Scene 4, MISSED_DETAIL=sesame seed cannonballs in Scene 5 rack (0.4s visible). 9. ASMR+MONEY: asmr_scenes=[4] (zero VO, cracker crack sound PRIMARY), Scene 4 Money Shot (extreme macro of cracker hull fracture line). 10. STRUCTURAL DECISIONS: FOOD_TEXTURE=CRISPY, scene_count=8, asmr_scene=4, money_shot_scene=4, open_loop_scene=2, interrupt_scene=3, hook_type=THE_IMPOSSIBLE, s1_sp=7, controversy=THE_PHYSICS. 11. FOOD APPEAL: Crackers. TIER: A (universal snack). Architecture enhances appetite (warm wooden ship = cozy baked goods). GOLDEN_WARM atmosphere = appetite-positive. 3-SECOND TEST: PASS (8/10 would eat crackers from this ship).",
+  "_concept_reasoning": "1. WHY THIS COMBO: Crackers' flaky fragility against a massive wooden warship — one wave could shatter the hull, creating irresistible tension between grandeur and crumble. 2. HOOK STRATEGY: THE_IMPOSSIBLE opens with abstract blistered cracker macro — looks like ancient parchment or desert terrain — then 'They said crackers can't float' reframes it as food architecture. 3. NARRATIVE ARC: Abstract texture → full galleon reveal → deck exploration → hull fracture ASMR → cannon room interior → captain's cabin → aerial warning → loop. 4. WHAT'S DIFFERENT FROM EXAMPLE A: Warm golden light (not neon), MACRO_ENTRY (not SCALE_SHOCK), THE_IMPOSSIBLE hook (not THE_SENSORY_ATTACK), ASMR at Scene 4 (not 3), warm sunset mood (not dramatic), CRISPY texture (not neutral). 5. SENSORY DISSECTION: Scene 1='what is this surface' (dry, blistered, salty), Scene 4='the crack under your fingernail' (ASMR crunch), Scene 5='your boots crunch everything' (you're destroying it by walking). 6. 4-CHANNEL AUDIT: THERMAL='Warm. Flaky.' (Scene 1, explicit first word), TACTILE='Crispy. Under your fingers.' (Scene 3), OLFACTORY='Salt in the wind' (Scene 2), FRESHNESS='Baked this morning' (Scene 5). 7. HUNGER GRADIENT: 7→5→6→10→5→7→4→7 (avg 6.4, peak Scene 4). 8. REPLAY HOOKS: FEEL_AGAIN=hull cracker ASMR fracture Scene 4, MISSED_DETAIL=sesame seed cannonballs in Scene 5 rack (0.4s visible). 9. ASMR+MONEY: asmr_scenes=[4] (zero VO, cracker crack sound PRIMARY), Scene 4 Money Shot (extreme macro of cracker hull fracture line). 10. STRUCTURAL DECISIONS: FOOD_TEXTURE=CRISPY, scene_count=8, asmr_scene=4, money_shot_scene=4, open_loop_scene=2, interrupt_scene=3, hook_type=THE_IMPOSSIBLE, s1_sp=7, controversy=THE_PHYSICS. 11. FOOD APPEAL: Crackers. TIER: A (universal snack). Architecture enhances appetite (warm wooden ship = cozy baked goods). GOLDEN_WARM atmosphere = appetite-positive. 3-SECOND TEST: PASS (8/10 would eat crackers from this ship).",
 
   "metadata": { "version": "8.5.0", "status": "PRODUCTION_READY", "title": "Cracker Galleon", "concept": { "category": "VEHICLES", "subject": "Pirate galleon", "food_material": "Crackers (Rye hull, Sesame details, Sea salt finish)", "architectural_style": "NAVAL_HISTORIC", "originality_note": "Fragile baked grain + massive warship — the tension between crumble and cannon" }, "target_duration_seconds": 16, "scene_count": 8 },
   "publish_config": { "target_channel": "glaze_city" },
@@ -2928,7 +3197,7 @@ In testing, THE_PRICE was chosen 5/5 times. It's the "safe default" because mone
   "completion_bait": { "scene_number": 6, "technique": "VERBAL_OPEN_LOOP", "vo_trigger": "One more deck...", "resolution_scene": 7 },
   "asmr_scenes": [4],
 
-  "hook": { "type": "THE_IMPOSSIBLE", "psychological_trigger": "DISBELIEF", "first_frame_visual": "Extreme macro of blistered rye cracker surface — golden-brown with salt crystals in crevices, deep cracks and flaky layers visible. Filling 90% of frame. Looks like ancient terrain or dried earth.", "first_words": "Crackers. Can't float.", "complete_hook_vo": "[whispers] Crackers. [pause] Can't float.", "scene_1_entry_type": "MACRO_ENTRY", "scroll_stop_element": "Blistered golden texture = 'what IS this?' → impossible claim forces viewer to stay and see the proof", "body_trigger": "MOUTH" },
+  "hook": { "type": "THE_IMPOSSIBLE", "psychological_trigger": "DISBELIEF", "first_frame_visual": "Extreme macro of blistered rye cracker surface — golden-brown with salt crystals in crevices, deep cracks and flaky layers visible. Filling 90% of frame. Looks like ancient terrain or dried earth.", "first_words": "Warm. Flaky.", "complete_hook_vo": "[whispers] Warm. [pause] Flaky.", "scene_1_entry_type": "MACRO_ENTRY", "scroll_stop_element": "Blistered golden texture = 'what IS this?' → impossible claim forces viewer to stay and see the proof", "body_trigger": "MOUTH" },
 
   "architectural_identity": { "style_code": "NAVAL_HISTORIC", "style_description": "Three-masted wooden galleon with layered cracker plank hull, bundled breadstick masts, and twisted pretzel rope rigging. Cannon deck lined with sesame-crusted barrels.", "stories": 3, "distinctive_features": ["rye cracker hull planks", "breadstick mast bundles", "pretzel rope rigging", "salt crystal railings"], "silhouette_description": "Tall-masted galleon silhouette with billowing sails — classic pirate ship shape, golden-brown against twilight sky", "interior_style": "Wooden ship interior — cracker plank walls, breadstick support beams, sesame seed barrel cannons, sea salt crystal navigation instruments" },
 
@@ -2938,7 +3207,7 @@ In testing, THE_PRICE was chosen 5/5 times. It's the "safe default" because mone
   "atmosphere_mode": "CINEMATIC",
   "foreground_element": { "type": "Broken cracker piece with salt crystals", "prompt_snippet": "Blurred golden cracker fragment with visible flaky layers and salt crystal facets in bottom-left foreground, warm sunset light catching broken edge" },
 
-  "voiceover": { "full_script": "[whispers] Crackers. [pause] Can't float. [pause] Salt in the wind. [calm] Feel the hull. Flaky. Under your fingers. [long pause] [silence] [whispers] Baked this morning. Every step breaks something. [pause] One more deck... [whispers] Don't touch the mast. [whispers] Anchor.", "character": "sensory_witness", "voice_id": "fdph4PvCSJPBv95E9UZF", "model": "eleven_v3", "stability": 0.55, "similarity_boost": 0.75, "style": 0.35 },
+  "voiceover": { "full_script": "[whispers] Warm. [pause] Flaky. [pause] Salt in the wind. [calm] Feel the hull. Crispy. Under your fingers. [long pause] [silence] [whispers] Baked this morning. Every step breaks something. [pause] One more deck... [whispers] Don't touch the mast. [whispers] Anchor.", "character": "sensory_witness", "voice_id": "fdph4PvCSJPBv95E9UZF", "model": "eleven_v3", "stability": 0.55, "similarity_boost": 0.75, "style": 0.35 },
   "warning_line": "Don't touch the mast.",
 
   "audio": {
@@ -2958,7 +3227,7 @@ In testing, THE_PRICE was chosen 5/5 times. It's the "safe default" because mone
 
   "engagement": { "replay_hooks": [ { "tier": "FEEL_AGAIN", "format": "SENSORY_PEAK", "description": "2-second macro of cracker hull plank fracture line — golden-brown flaky layers splitting apart, salt crystals catching sunset light, slow crack ASMR sound", "scene_number": 4, "rewatch_trigger": "Viewer wants to RE-FEEL the cracker crack and see the flaky layers separate again", "comment_bait": "The way those layers split at 0:07... I can HEAR the crunch 🤤", "validation_check": "Cracker hull extreme macro Scene 4 with fracture ASMR as PRIMARY audio" }, { "tier": "MISSED_DETAIL", "format": "DENSITY_OVERLOAD", "description": "Scene 5 cannon room has sesame seed cannonballs stacked in a rack — visible for 0.4s in corner of frame, too fast to process on first viewing", "scene_number": 5, "rewatch_trigger": "Brain registers 'wait, are those cannonballs made of sesame seeds?' — needs another pass", "comment_bait": null, "validation_check": "Sesame seed cannonballs visible in Scene 5 cannon room background" } ], "share_trigger": "Send this to someone who eats crackers straight from the box", "save_trigger": "Save for midnight snack cravings" },
 
-  "youtube": { "title": "I built a PIRATE SHIP out of crackers 🏴‍☠️", "title_variants": ["I built a PIRATE SHIP out of crackers 🏴‍☠️", "This cracker galleon ACTUALLY floats 🌊", "Don't step on the deck 😬", "POV: A ship made entirely of crackers 🧂"], "description": "This entire pirate ship is made of crackers 🏴‍☠️\nRye hull planks, breadstick masts, pretzel rigging. Salt crystals on every surface.\nCould this survive one wave?\n\n#oddlysatisfying #satisfying #shorts #crackers #forbiddensnacks #asmr #megalophobia", "description_variants": ["This entire pirate ship is made of crackers 🏴‍☠️\nRye hull planks, breadstick masts, pretzel rigging. Salt crystals on every surface.\nCould this survive one wave?\n\n#oddlysatisfying #satisfying #shorts #crackers #forbiddensnacks #asmr #megalophobia"], "pinned_comment": "🧂 Sesame seed cannonballs hiding somewhere... first to spot them gets a 🏆", "tags": ["cracker ship", "pirate galleon", "crackers", "food architecture"] },
+  "youtube": { "title": "I built a PIRATE SHIP out of crackers 🏴‍☠️", "title_variants": ["I built a PIRATE SHIP out of crackers 🏴‍☠️", "This cracker galleon ACTUALLY floats 🌊", "Don't step on the deck 😬", "POV: A ship made entirely of crackers 🧂"], "description": "This entire pirate ship is made of crackers 🏴‍☠️\nRye hull planks, breadstick masts, pretzel rigging. Salt crystals on every surface.\nCould this survive one wave?\n\n#oddlysatisfying #satisfying #shorts #crackers #forbiddensnacks #asmr #megalophobia", "description_variants": ["This entire pirate ship is made of crackers 🏴‍☠️\nRye hull planks, breadstick masts, pretzel rigging. Salt crystals on every surface.\nCould this survive one wave?\n\n#oddlysatisfying #satisfying #shorts #crackers #forbiddensnacks #asmr #megalophobia"], "pinned_comment": "🏴‍☠️ I stepped on the deck. It crumbled.", "tags": ["crackers", "pirate ship", "rye bread", "salt", "galleon", "pretzel"] },
 
   "metadata_variants": {
     "variant_a": { "trigger": "SATISFYING", "title": "This cracker galleon ACTUALLY floats 🌊", "description": "A pirate ship built entirely of crackers 🏴‍☠️\nRye hull, breadstick masts, salt crystal railings. Baked this morning.\nCan you hear the crunch through your screen?\n\n#oddlysatisfying #satisfying #shorts #crackers #asmr #forbiddensnacks #foodasmr", "pinned_comment": "🤤 Can you hear the crunch through your screen?" },
@@ -2994,10 +3263,11 @@ In testing, THE_PRICE was chosen 5/5 times. It's the "safe default" because mone
     "glaze_open_sfx": "GLAZE_OPEN_v2.wav",
     "glaze_sting_sfx": "GLAZE_STING_v2.wav",
     "watermark": { "text": "GLAZE CITY", "position": "top-left", "opacity": 0.03, "font": "Montserrat Bold" },
-    "recurring_character": { "name": "The Architect", "description": "Tiny silhouette in captain's hat on the quarterdeck", "scene_number": 5, "placement": "far background, standing on cracker quarterdeck railing surveying cannon room", "size_pct": 2 },
+    "recurring_character": { "name": "The Architect", "description": "Tiny glowing lantern on the quarterdeck railing", "scene_number": 5, "placement": "far background, on cracker quarterdeck railing", "size_pct": 2 },
     "description_prefix": "Glaze City #{{EPISODE_NUMBER}} — ",
     "series_hook": { "technique": "COLLECTION_TRIGGER", "element": "Cracker galleon is docked next to a partially visible cookie frigate — implying a fleet of food ships", "placement": "scene 2 background edge" }
   },
+  "_note_series_hook": "⚠️ series_hook.element 'cookie frigate' is at 'scene 2 background edge' → Scene 2 visual_concept.environment MUST mention it. If placement='on_screen_text' → that EXACT text must be in on_screen_text field. Mismatch = bug.",
 
   "scenes": [
     {
@@ -3010,8 +3280,8 @@ In testing, THE_PRICE was chosen 5/5 times. It's the "safe default" because mone
       "temperature_contrast": { "subject_temp": "WARM", "background_temp": "COLD", "contrast_method": "Golden-brown baked cracker surface against emerging cool twilight-blue water bokeh" },
       "food_visual_ratio": "FOOD_DOMINANT",
       "audio_texture_layer": { "physical_sensation": "dry, warm, grainy surface with salt grit", "reference_sound": "salt crystals shifting on dry cracker — tiny satisfying scatter", "frequency_range": "high (5-12kHz)", "stereo_position": "center-intimate", "intensity": "CRISP" },
-      "narrator_script": "Crackers. Can't float.",
-      "voiceover_segment": "[whispers] Crackers. [pause] Can't float.",
+      "narrator_script": "Warm. Flaky.",
+      "voiceover_segment": "[whispers] Warm. [pause] Flaky.",
       "on_screen_text": "CRACKER pirate ship",
       "audio_moment": "Sharp cracker snap → salt crystal scatter → warm creak"
     },
@@ -3059,6 +3329,7 @@ In testing, THE_PRICE was chosen 5/5 times. It's the "safe default" because mone
 - **Scene 3** has `"pattern_interrupt": { "type": "SPEED_SHIFT", "description": "Slow camera suddenly accelerates across deck — cracker plank textures blur into golden streak, then snaps back to normal speed on breadstick mast" }` — breaks the warm exploration mood.
 - **Scene 4** is ASMR-FIRST + money_shot + `snap_moment`. Because it's ALSO a money shot (CRISPY = MODE A), the money shot rule overrides: voiceover_segment = "[silence]", narrator_script = "". Listed in `asmr_scenes: [4]`.
 - **Scene 5** has `"food_reclamation": { "type": "CRUMB_TRAIL", "description": "Cracker deck crumbs fall through plank gaps into the cannon room below — the ship is literally shedding edible pieces as crew walks" }` — food reminder moment.
+- **Scene 6** has `voiceover_segment: "[pause] One more deck..."` — this IS the `completion_bait.vo_trigger` text. The vo_trigger enters `full_script` ONLY through the voiceover_segment of its scene. If vo_trigger isn't in any voiceover_segment → it won't be spoken → BUG.
 
 **Scene 7 (AERIAL — N-1):** High-angle bird's eye of the full galleon from above, HIGH energy, `reference_hint: "AERIAL"`, warning_line in voiceover: `"[whispers] Don't touch the mast."`. Subject scale: MASSIVE, dominant_color: "golden brown from above", SCALE_KEYWORDS in lighting_note.
 
@@ -3115,27 +3386,27 @@ In testing, THE_PRICE was chosen 5/5 times. It's the "safe default" because mone
 
 Structural validation (scene count, field presence, JSON format, duration math) is handled by the pipeline validator — focus on CREATIVE QUALITY only.
 
-1. **HOOK + FIRST FRAME :** (a) Would YOU stop scrolling for this first frame + first words? (b) Is Scene 1 MACRO_ENTRY (default) or SCALE_SHOCK with food texture visible? (c) **FIRST FRAME TEST:** Does frame 1 read as "food/satisfying" or "3D building"? If "3D building" → switch to MACRO_ENTRY. (d) Does Scene 1 have `first_frame_composition` with `frame_coverage_pct` ≥ 70 and `pareidolia_element`? (e) Is there FOOD MOTION in the first frame (drip, steam, melt, ooze)?
+1. **HOOK + FIRST FRAME :** (a) Would YOU stop scrolling for this first frame + first words? (b) Is Scene 1 MACRO_ENTRY (default) or SCALE_SHOCK with food texture visible? (c) **FIRST FRAME TEST:** Does frame 1 read as "food/satisfying" or "3D building"? If "3D building" → switch to MACRO_ENTRY. **⚠️ COLD START BIAS:** For channels under 10K subscribers, STRONGLY prefer MACRO_ENTRY — it guarantees YouTube classifies the thumbnail as "food/satisfying". SCALE_SHOCK risks "architecture/3D art" classification unless food texture fills 60%+ of frame AND a food-related foreground object (fork, spoon, drip) is clearly visible. (d) Does Scene 1 have `first_frame_composition` with `frame_coverage_pct` ≥ 70 and `pareidolia_element`? (e) Is there FOOD MOTION in the first frame (drip, steam, melt, ooze)?
 2. **TEMPLATE GRAVITY:** Does this feel like a copy of the examples above? Different food, different style, different hook type, different energy arc? If 3+ elements match either example → STOP AND CHANGE THEM.
-3. **SCRIPT HYGIENE:** (a) Every `narrator_script` has ZERO audio tags. Every non-empty `voiceover_segment` has at least ONE [tag]. Same words in both. (b) **WORD COUNT — COUNT NOW:** 2.0s scene with 5+ words? → REWRITE to ≤4 words or change to 3.0s. 3.0s scene with 8+ words? → REWRITE to ≤7 words or change to 4.0s.
-4. **LOOP INTEGRITY:** (a) Scene N `motion_elements` pass FORBIDDEN list (no dripping, falling, drifting — only shimmer, glow, pulse). (b) Scene N `visual_concept` and `gen2_visual_params` duplicate Scene 1's values (NOT "SAME as Scene 1" strings). (c) `loop` object has specific `technique`, `scene_n_exit`, `scene_1_entry`, `bridge_sfx`.
+3. **SCRIPT HYGIENE:** (a) Every `narrator_script` has ZERO audio tags. Every non-empty `voiceover_segment` has at least ONE [tag]. Same words in both. (b) **WORD COUNT — COUNT NOW:** 2.0s scene with 5+ words? → REWRITE to ≤4 words or change to 3.0s. 3.0s scene with 8+ words? → REWRITE to ≤7 words or change to 4.0s. (c) **Scene N-1 SYNC:** Does Scene N-1 `narrator_script` = warning_line text (no tags)? Does Scene N-1 `voiceover_segment` = `"[whispers] {warning_line}"`? If `narrator_script` has DIFFERENT text from `voiceover_segment` → STOP and fix. (d) **NUMBER BAN:** Does ANY `narrator_script` contain a number (spelled out or digit)? If YES → STOP and rewrite as sensation. (e) **FULL_SCRIPT SYNC:** Does `full_script` contain ANY text not found in any `voiceover_segment`? If YES → rebuild from scratch.
+4. **LOOP INTEGRITY:** (a) Scene N `motion_elements` pass FORBIDDEN list (no dripping, falling, drifting — only shimmer, glow, pulse). (b) Scene N `visual_concept` and `gen2_visual_params` duplicate Scene 1's values (NOT "SAME as Scene 1" strings). (c) `loop` object has specific `technique`, `scene_n_exit`, `scene_1_entry`, `bridge_sfx`. (d) **FOREGROUND MATCH:** Scene N `foreground_element` MUST match Scene 1's foreground — same object type. If Scene 1 has "blurred croissant piece" → Scene N must also have "blurred croissant piece" (not "None"). If they differ → `foreground_match` = `false` → fix Scene N foreground before outputting. (e) **FOREGROUND BAN CHECK (STOP):** Scan `foreground_element.type` for banned words: particles, flakes, crumbs, debris, falling, mist, steam, spray, fog, smoke, vapor, dust, pollen, bubbles, snow, sand. IF FOUND → STOP and replace with a solid object (blurred food piece, railing edge, door frame).
 5. **HUMOR (MANDATORY):** (a) **JSON CHECK:** Does the output contain a top-level `"humor"` array with 1-2 objects? Each object must have: `humor_type`, `scene_number`, `line`, `setup`, `turn`, `standalone_caption`. If this array is MISSING, add it now — humor is MANDATORY. (b) Each joke uses a DIFFERENT humor type? (c) Jokes ONLY in scenes with sensory_pressure ≤ 6? (d) Check both examples — Example A has DEADPAN_CONSEQUENCE, Example B has UNDERSTATED_DANGER. Your video must use a DIFFERENT type from both.
 6. **GENERATION LOCK:** (a) Does `_concept_reasoning` point 10 contain FOOD TEXTURE GROUP classification and all 11 MAPPED POSITIONS? If missing → STOP and add. (b) Do all structural positions match the POSITION MAP table for the declared texture group? If any mismatch → fix. (c) Does the video hit all 4 beats of COMPLETION RATE ENGINE (scroll stop, commitment, payoff, replay trigger)?
 7. **GEN2 COMPLETENESS:** (a) Every scene has `gen2_visual_params` with real values, specific `dominant_color`, `texture_focus`, and `negative_prompt`. (b) Every scene has `temperature_contrast` — prefer opposing temps (WARM food + COOL bg or COOL food + WARM bg), but NEUTRAL background is acceptable for macro close-ups and naturally cold/dark environments (night, underwater, fog). Macro close-ups (SP 8-10, food filling 80%+) may use temperature HARMONY (warm+warm) for appetite appeal. (c) Close-ups use MACRO_KEYWORDS, wide shots use SCALE_KEYWORDS.
 8. **FORBIDDEN CONTENT:** (a) WORDS: Scan ALL text for Real Estate, Broker, Property, Investment, Price Tag, Asking Price, Worth, Valued At, Bedroom, Bathroom, Kitchen, Listing, Open House, Square Footage, Miller, Artisan, Bespoke, Curated, Amazing, Beautiful, Stunning, Incredible. (b) VISUALS: Scan ALL visual_concept for human figures, text on buildings, symmetrical facades, aerial top-down, multiple buildings.
-9. **PERSONA + SENSORY (4-channel audit):** Does VO sound like Sensory Witness? Check all 4 sensory channels present: THERMAL (at least Scene 1), TACTILE, OLFACTORY, TEMPORAL FRESHNESS (at least STRUCTURAL_DETAIL scene). Read the STRUCTURAL_DETAIL narrator_script aloud in a whisper — does your mouth water?
-10. **NARRATIVE + EMOTIONAL ARC:** Which arc template (A/B/C) was chosen? Does each scene's tone match the chosen arc? Is arc stated in `_concept_reasoning` point 3? Does `completion_bait` exist? NOT using ARC A (CLASSIC) every time?
-11. **WARNING LINE (MANDATORY):** Does `warning_line` top-level field exist? Is it 3-5 words? Does it appear in Scene N-1 `voiceover_segment` with `[whispers]` tag? Does it appear in `voiceover.full_script`? **Formula: `"Don't [FOOD_ACTION] the [ARCHITECTURE_ELEMENT]."`** FOOD_ACTION from: lick/bite/eat/drink/touch/taste/chew/nibble/swallow/smell. ARCHITECTURE_ELEMENT from: walls/floor/ceiling/stairs/door/roof/window/pool/fence/chimney/columns/railing/pipes/beams/tiles. Is the description CTA derived from warning_line (question form)?
-12. **METADATA :** (a) 4 title variants from 6 formulas (FOOD_BUILD, FOOD_ACTION, FORBIDDEN_FOOD, POV_SENSATION, FOOD_SCALE, EDIBLE_WORLD — rotated), all ≤50 chars, max 1 emoji? Does EVERY title contain the FOOD NAME + a sensory trigger word? (b) 6-8 hashtags per description? #oddlysatisfying + #satisfying + #shorts present in ALL descriptions? NO #dreamcore / #liminalspaces / #weirdcore (banned during cold start)? (c) Description has 3 lines: simple statement + food keywords + content-specific CTA? Min 150 chars? NO binary "YES or NO" CTAs? NO literary creative writing? (d) CTA is SPECIFIC to this video ("Which flavor would you eat first?"), NOT generic ("Comment below!")?
-13. **APPETITE + HUNGER GRADIENT:** (a) `sensory_pressure` on every scene, average ≥ 5? (b) At least one scene at 9-10? (c) No two 9-10 adjacent? (d) STRUCTURAL_DETAIL has hunger trigger + [whispers]+[long pause] + appetite sound? (e) `replay_hooks` array has ≥2 hooks (1 FEEL_AGAIN + 1 MISSED_DETAIL minimum)? (f) Exactly 1 `food_reclamation` moment in scenes 3-6 (SP 6-8)? Type is one of 9 types (BITE_TAKEN/MELT_FAILURE/CRUMB_TRAIL/DRIP_REVEAL/STEAM_ESCAPE/SQUEEZE_DEFORM/CONDENSATION_PROOF/FLAVOR_LEAK/GRAVITY_SAG)?
+9. **PERSONA + SENSORY (4-channel audit + per-line validation):** (a) Check all 4 sensory channels present IN ACTUAL `voiceover_segment` TEXT: THERMAL (at least Scene 1), TACTILE, OLFACTORY, TEMPORAL FRESHNESS (at least STRUCTURAL_DETAIL scene). Cite EXACT VO text per channel — if missing → add. (b) **⛔ SENSORY LINE VALIDATOR (EVERY scene):** Read each `narrator_script`. Does it contain at least ONE word from the SENSATION VOCABULARY (sticky/warm/cold/crispy/smooth/dripping/heavy/sweet/sour/crunch/etc.)? If a line contains ZERO sensation words → it's a LABEL or EVENT → STOP and rewrite. Common failures: nationality labels ("Belgian"), engineering terms ("Reinforced"), visual motion ("Spinning"), technical jargon ("Sector four"), event narration ("Holding back the lake"), visual-only descriptors ("Golden"), spatial scope ("Everywhere"). (c) Read the STRUCTURAL_DETAIL narrator_script aloud in a whisper — does your mouth water? (d) **⛔ BANNED VO PATTERN CHECK:** Does ANY `narrator_script` match "[food name]. Everywhere." pattern? If YES → STOP and rewrite (material label + spatial scope). (e) **⛔ 4-CHANNEL POST-VERIFY:** After writing ALL VO, find each channel's word in ACTUAL `voiceover_segment` text. If _concept_reasoning claims a channel but NO matching word in any VO → STOP and add it.
+10. **NARRATIVE + EMOTIONAL ARC:** Which arc template (A/B/C) was chosen? Does each scene's tone match the chosen arc? Is arc stated in `_concept_reasoning` point 3? Does `completion_bait` exist? NOT using ARC A (CLASSIC) every time? Does `completion_bait.scene_number` match the scene whose `voiceover_segment` contains `vo_trigger`? If mismatch → fix scene_number. (e) **COMPLETION BAIT BRIDGE BAN:** Does `vo_trigger` start with a banned bridge word (but/and/yet/so/then/deeper/further/inside/below/above/beyond)? If YES → STOP and rewrite. (f) **VO_TRIGGER EXISTS IN VO (STOP):** Does `vo_trigger` text appear VERBATIM inside the `voiceover_segment` of the scene specified by `scene_number`? If NOT → the open loop is orphaned (never spoken, zero retention) → STOP and fix.
+11. **WARNING LINE (MANDATORY — STOP-LEVEL):** (a) Does `warning_line` top-level field exist? (b) Is it 3-8 words? (c) Does it appear in Scene N-1 `voiceover_segment` with `[whispers]` tag? (d) Does it appear in `voiceover.full_script`? (e) **WHITELIST CHECK (MECHANICAL):** Extract the [ACTION] word — is it EXACTLY one of: lick/bite/eat/drink/touch/taste/chew/nibble/swallow/smell/scrape/peel/squeeze/sip/crunch/snap/break/crack/slice/dip? IF NOT → STOP and replace. (f) Extract the [ELEMENT] word — is it EXACTLY one of: walls/floor/ceiling/stairs/door/roof/window/pool/fence/chimney/columns/railing/pipes/beams/tiles/foundation/ledge/fountain/bridge/arch/balcony/tower/dome/porch/gutter/bars? IF NOT → STOP and replace. (g) **FORMAT CHECK:** Is it exactly Format A/B/C with NO extra prepositions (in/on/at) or adjectives? (h) **APPETITE TEST:** Does the warning make viewers think about EATING the building? "Don't lick the walls" = YES. "Don't clap in the box seats" = NO → FAIL. (i) Is the description CTA derived from warning_line (question form)? (j) Scene N-1 `narrative_purpose` = "AERIAL", `reference_hint` = "REQUIRES_REF". (k) Scene N-1 `voiceover_segment` = ONLY `"[whispers] {warning_line}"` — no narrative bridges before it.
+12. **METADATA :** (a) 4 title variants from 6 formulas (FOOD_BUILD, FOOD_ACTION, FORBIDDEN_FOOD, POV_SENSATION, FOOD_SCALE, EDIBLE_WORLD — rotated), all ≤50 chars, max 1 emoji? Does EVERY title contain the FOOD NAME + a sensory trigger word? (b) 7-10 hashtags per description from TIER 1-4 whitelist + food-specific tags? #oddlysatisfying + #satisfying + #shorts present in ALL descriptions AND all variants? All hashtags from whitelisted tiers only? (c) Description has 3 lines: simple statement + food keywords + content-specific CTA? Min 150 chars? NO binary "YES or NO" CTAs? NO literary creative writing? (d) CTA is SPECIFIC to this video ("Which flavor would you eat first?"), NOT generic ("Comment below!")?
+13. **APPETITE + HUNGER GRADIENT:** (a) `sensory_pressure` on every scene, average ≥ 5? (b) At least one scene at 9-10? (c) At least one scene at 8-9 (TIER_2 build-up before money shot peak)? (d) No two 9-10 adjacent? (e) SP RAMP: scene before money_shot has SP ≥ 8? If not, adjust. (f) STRUCTURAL_DETAIL has hunger trigger + [whispers]+[long pause] + appetite sound? (g) `replay_hooks` array has ≥2 hooks (1 FEEL_AGAIN + 1 MISSED_DETAIL minimum)? (h) Exactly 1 `food_reclamation` moment in scenes 3-6 (SP 6-8)? Type is one of 9 types (BITE_TAKEN/MELT_FAILURE/CRUMB_TRAIL/DRIP_REVEAL/STEAM_ESCAPE/SQUEEZE_DEFORM/CONDENSATION_PROOF/FLAVOR_LEAK/GRAVITY_SAG)?
 14. **ASMR-FIRST + MONEY SHOT:** (a) `asmr_scenes` array has 1-2 entries. Pure ASMR scenes: narrator_script = `"<word>."`, voiceover_segment = `"[whispers] <word>. [long pause]"`. ASMR+money_shot scenes: follow money shot MODE A/B instead. (b) Exactly 1 scene has `money_shot` object? (c) Money shot scene has sensory_pressure ≥ 9? (d) Money shot voiceover matches texture mode: CRISPY/CRUNCHY/BRITTLE → `"[silence]"`, CREAMY/CHEWY/SMOOTH → `"[long pause] [whispers] <word>."`?
-15. **MICRO-ESCALATION + RETENTION:** (a) Every scene has internal dynamic shift (check motion_elements for 2+ items — first = start, second = change)? (b) 1-2 `micro_open_loop` objects in scenes 2-3? (c) Exactly 1 `pattern_interrupt` in the second quarter of scenes (see PATTERN INTERRUPT range table)? (d) `controversy_seed` has `camp_a`/`camp_b` for THE_DIVIDE/THE_RATING techniques?
+15. **MICRO-ESCALATION + RETENTION:** (a) Every scene has internal dynamic shift (check motion_elements for 2+ items — first = start, second = change)? (b) 1-2 `micro_open_loop` objects in scenes 2-3? (c) Exactly 1 `pattern_interrupt` in the second quarter of scenes (see PATTERN INTERRUPT range table)? (d) `controversy_seed` has `camp_a`/`camp_b` for THE_DIVIDE/THE_RATING techniques? (e) **OPEN LOOP CHECK:** Does `micro_open_loop.setup_line` differ from the resolution scene's `voiceover_segment`? If they're identical → the loop has no arc → rewrite setup_line.
 16. **COLOR ACCURACY (WARM BIAS CHECK):** Scan ALL `lighting_note`, `prompt_snippet`, `dominant_color`, `contrast_color`, `environment` fields: (a) Does any EXTERIOR scene have sky described without a specific cool color? (blue, purple, grey, pink) → ADD sky color. (b) Is "golden light" or "warm amber" applied to the WHOLE SCENE instead of just food surfaces? → REWRITE to specify "warm light on [food] surface" + "cool [color] environment". (c) Count warm-color words (golden, amber, warm, honey-glow) vs cool-color words (blue, teal, silver, cool, grey, green) across ALL scenes — if warm outnumbers cool by >2:1, add more environment-color specificity. (d) Does `negative_prompt` include "yellow color cast, sepia tone, amber tint over entire scene"?
 17. **CONCEPT UNIQUENESS:** The [food] + [building type] combination must be unique. "Popcorn Opera House" and "Popcorn Amphitheater" = SAME concept = rejected. Either change the food or the building type.
 18. **FOOD APPEAL (MANDATORY):** (a) What tier is the food? (S/A/B/C/F). If F → REJECT. If C → verify all 4 Tier C conditions met. (b) Does the architecture concept ENHANCE or SUPPRESS appetite? Catacombs, crypts, dungeons, ruins = appetite suppressors → food must be Tier S or A to compensate. (c) Does the atmosphere mode match the food tier? HAUNTED/NOIR require Tier S or A food. (d) Read all image prompts: is FOOD the visual subject or is ARCHITECTURE? If architecture dominates → rewrite prompts with food as the noun in subject position. (e) `food_visual_ratio` on every scene: no `ARCHITECTURE_DOMINANT` values allowed.
-19. **SCRIPT VARIETY:** (a) No two narrator_scripts start with the SAME WORD. (b) No narrator_script at SP ≥ 7 starts with "But" or contains "But if" / "But the" / "What if". (c) `full_script` has no narrative bridges (But/And/Deeper/Further starts). (d) No food names/brands in any voiceover line.
-20. **ANTI-DEFAULT RULES:** (a) `body_trigger` NOT "SKIN" if CREAMY. (b) `controversy_seed.technique` NOT "THE_PRICE" if CREAMY. (c) `pattern_interrupt` type NOT "AUDIO_SHOCK" if previous video used it.
-21. **BRAND SIGNATURE FINAL:** (a) `snap_moment.enabled == true` + `snap_sfx` populated in money_shot scene. (b) Pinned comment does NOT reference objects absent from scenes. (c) YouTube dynamic tags: 4-7 count, no banned/invented tags.
+19. **SCRIPT VARIETY:** (a) No two narrator_scripts start with the SAME WORD. (b) No narrator_script at SP ≥ 7 starts with "But" or contains "But if" / "But the" / "What if". (c) `full_script` has no narrative bridges (But/And/Deeper/Further starts). (d) No food names/brands in any voiceover line. (e) **EVENT NARRATION BAN:** Does ANY `narrator_script` describe an on-screen EVENT ("The X arrives/opens/falls/appears")? If yes → rewrite as body sensation. "The train arrives." → "Squishing. Under your feet."
+20. **ANTI-DEFAULT RULES:** (a) `body_trigger` NOT "SKIN" if CREAMY. (b) `body_trigger` NOT "SKIN" if CHEWY — use "MOUTH" or "TEETH" (chewing is oral, not dermal). (c) `controversy_seed.technique` NOT "THE_PRICE" if CREAMY. (d) `pattern_interrupt` type NOT "AUDIO_SHOCK" if previous video used it.
+21. **BRAND SIGNATURE FINAL:** (a) `snap_moment.enabled == true` + `snap_sfx` populated in money_shot scene. (b) **PINNED COMMENT:** Does it follow Format A/B/C from the template? Does it talk about the WARNING LINE or food experience? If it references hidden objects or "did you spot/find/see" → rewrite using Format A (CALLBACK). (c) **TAGS:** 4-7 tags following the SLOT template (food/ingredient/building/texture/niche). Each tag = single real-world searchable noun. (d) **HASHTAGS:** All descriptions + variants use ONLY TIER 1-4 whitelist + food-specific hashtags. (e) **RECURRING CHARACTER:** Description uses a non-human OBJECT (lantern, blueprint, compass).
 
 ---
 
@@ -3283,7 +3554,7 @@ Generic "stairs to nowhere" = weak controversy. Real engagement comes from IDENT
   "glaze_open_sfx": "GLAZE_OPEN_v2.wav",
   "glaze_sting_sfx": "GLAZE_STING_v2.wav",
   "watermark": { "text": "GLAZE CITY", "position": "top-left", "opacity": 0.03, "font": "Montserrat Bold" },
-  "recurring_character": { "name": "The Architect", "description": "Tiny silhouette in hard hat, observing", "scene_number": 4, "placement": "distant, on scaffolding or rooftop edge", "size_pct": 2 },
+  "recurring_character": { "name": "The Architect", "description": "Tiny glowing blueprint scroll on scaffolding", "scene_number": 4, "placement": "distant, on scaffolding or rooftop edge", "size_pct": 2 },
   "description_prefix": "Glaze City #{{EPISODE_NUMBER}} — "
 }
 ```
@@ -3318,6 +3589,13 @@ Generic "stairs to nowhere" = weak controversy. Real engagement comes from IDENT
 ```
 
 **⚠️ SUBTLE, not aggressive.** This is NOT "like and subscribe". It's worldbuilding that makes the viewer curious about the universe.
+
+**POST-WATCH SIGNAL (MANDATORY):** The `series_hook` MUST have a VISIBLE or AUDIBLE component — not only in description text. Pick at least ONE:
+- **Verbal tease (preferred):** One phrase in Scene N-1 or N `on_screen_text`: "Next: [food] [building type]" or "Glaze City #{{EPISODE_NUMBER}}"
+- **Visual tease:** Scene 6/7 background shows a partial silhouette of a DIFFERENT food structure (the "what else is there" impulse)
+- **VO tease:** Add a brief phrase to Scene N-1 voiceover after warning_line: "[pause] The architect has more." or similar
+
+**WHY:** 60%+ viewers watch muted. Description text is invisible to most. Serial elements (watermark, tiny character, episode number) are too subtle to drive channel visits. The post-watch signal must be ON SCREEN or IN AUDIO to trigger "what else is there?"
 
 ### Required Top-Level Fields
 
@@ -3552,7 +3830,7 @@ After generating, check ONLY these variety rules:
 ## ⚡ FINAL CHECK — TOP 6 RULES (verify BEFORE outputting JSON)
 
 1. **WORD COUNT:** Count words in EVERY narrator_script. 2.0s = MAX 4, 3.0s = MAX 7, 4.0s = MAX 10. If over → trim NOW.
-2. **narrator_script ≠ voiceover_segment:** narrator_script = plain text (zero tags). voiceover_segment = same text + [tags]. Check EVERY scene.
+2. **narrator_script ≠ voiceover_segment:** narrator_script = plain text (zero tags). voiceover_segment = same text + [tags]. Check EVERY scene. **CRITICAL for Scene N-1:** narrator_script = warning_line text, voiceover_segment = `"[whispers] {warning_line}"`. If narrator_script has ANY other text → STOP and fix to warning_line.
 3. **money_shot scene voiceover:** MODE A (CRISPY/CRUNCHY/BRITTLE) = `"[silence]"` + narrator_script `""`. MODE B (CREAMY/CHEWY/SMOOTH) = `"[long pause] [whispers] <word>."` + narrator_script `"<word>."` (one sensation word).
 4. **food_visual_ratio:** Check EVERY scene. ZERO instances of "ARCHITECTURE_DOMINANT". Scene 1 + STRUCTURAL_DETAIL + money_shot = "FOOD_DOMINANT".
 5. **warning_line:** 3 formats — (A) "Don't [action] the [element].", (B) "[Action] the [element]. I dare you.", (C) "The architect says: nobody [action] the [element]." Both [action] and [element] from allowed lists. Appears in Scene N-1 voiceover. Appears in full_script.
@@ -3580,3 +3858,49 @@ After generating, check ONLY these variety rules:
 **After diagnosis:** Re-generate the concept fixing the identified issues. The blacklist system prevents duplicate topics — use the same food with different architecture, or same architecture with different food.
 
 ---
+
+## ⛔ FINAL OUTPUT CONSTRAINTS (READ LAST — HIGHEST PRIORITY)
+
+**These constraints override everything above. Verify each one AFTER generating your full JSON, BEFORE outputting.**
+
+**1. PINNED COMMENT** — Your `pinned_comment` talks about the WARNING LINE or food experience. Use Format A: "[emoji] I [past tense of ACTION] the [ELEMENT]. [food consequence]." If you wrote "did you spot/find/see" → DELETE and use Format A instead.
+
+**2. TAGS** — Each tag is a SINGLE real-world noun from the template: [food], [ingredient], [building], [texture], [niche]. If any tag is two generic words combined → SPLIT into separate real words.
+
+**3. HASHTAGS** — ONLY use hashtags from TIER 1-4 whitelist + food-specific tags. NEVER use #3drender, #dreamcore, #liminalspaces, #weirdcore. Verify EVERY description variant.
+
+**4. SCENE 1 THERMAL** — Scene 1 `narrator_script` STARTS with a temperature word (warm/hot/cold/cool/steaming/frozen). Read your Scene 1 narrator_script right now — is the FIRST word a temperature word? If NO → STOP and rewrite as "[temperature]. [texture]."
+
+**5. SCENE N VOICEOVER** — Scene N (LOOP_CLOSE) has `voiceover_segment: "[whispers] [food sensation word]."` — never empty.
+
+**6. SENSORY ONLY** — Every `narrator_script` contains a body sensation word. No engineering terms ("structural", "reinforced", "load-bearing"), no visual-only descriptors, no spatial scope words. No NUMBERS (spelled or digits). "Fifty thousand layers" → "Layers. Paper-thin."
+
+**7. FOREGROUND** — Read your `foreground_element.type`. Does it contain: falling, flake, flakes, crumbs, particles, dust, steam, mist, fog, smoke, spray, vapor, pollen, bubbles? If YES → STOP and replace with a SOLID food piece: "Blurred [food] shard", "Defocused [food] edge", "Blurred railing edge."
+
+**8. FULL_SCRIPT** — `full_script` = exact concatenation of ALL `voiceover_segment` fields in scene order, separated by spaces. NOTHING ELSE. No extra phrases, no bridge words. Read your full_script now: does it contain ANY word not found in a `voiceover_segment`? If YES → DELETE that word. "Deep inside..." / "Deeper down..." / "Further..." = BANNED bridge starters — if found in full_script → DELETE.
+
+**9. ON-SCREEN TEXT** — Scene 1-2 `on_screen_text` creates ANTICIPATION, not states facts. "100% BUTTER" = fact. "Wait for the crunch..." = anticipation. If your Scene 2 on_screen_text is a fact → rewrite as a tease.
+
+**10. MOBILE LIGHTING** — Count how many of your scenes use dark presets (NIGHT_NEON, DARK_INDUSTRIAL, BIOLUMINESCENT_DEEP). If more than 3 → STOP and switch excess scenes to bright presets. Food textures must be visible on dim phone screens.
+
+**11. STRUCTURE NAME** — Check your `_concept_reasoning` point 3. Does it name a structure (A/B/C/D/E)? If not → STOP and pick one from the ANTI-TEMPLATE-GRAVITY list.
+
+**12. ORIGINALITY** — Is your food+subject combo on the OVERSATURATED COMBOS list? If YES → STOP and apply a FRESH ANGLE STRATEGY (change scale, era, context, or add contradiction).
+
+**13. MONEY SHOT TIMING** — money_shot ≤ Scene 4 (8 scenes) or ≤ Scene 5 (10 scenes). Past midpoint = too late. Scene BEFORE money_shot should preview the payoff (mini-crack, drip, partial burst = anticipation link).
+
+**14. SERIES HOOK MATCH** — Go to the scene in `series_hook.placement`. Does the actual field (on_screen_text, visual_concept, or key_elements) contain `series_hook.element`? If NO → insert it into the scene or change placement.
+
+**15. VO_TRIGGER IN SEGMENT** — `completion_bait.vo_trigger` text MUST appear inside the `voiceover_segment` of `completion_bait.scene_number`. It enters full_script only through concatenation. If vo_trigger isn't in any voiceover_segment → add it to the scene's voiceover_segment.
+
+**16. ASMR ENERGY** — ASMR scene with burst/spray/explosion visuals → energy_level = HIGH. ASMR with slow crack/melt/ooze → energy_level = LOW. Match the visual intensity, not the audio level.
+
+**17. THREE DIFFERENT PHRASES** — Read these three: (a) Scene 1 `narrator_script`, (b) `warning_line`, (c) Scene N `narrator_script`. Are any two identical? If YES → STOP and rewrite. Hook, warning, and loop close serve different roles — they need different words.
+
+**18. RED FOOD + DARK PRESET** — If food produces red/crimson liquid AND lighting is NOIR or DARK → content policy risk ("blood in dark tunnel"). Add warm amber accent lighting in ≥3 scenes. Avoid "bleeding" in titles/descriptions.
+
+**19. EARLY OPEN LOOP CHECK** — Scene 2 MUST have `micro_open_loop`. Read your Scene 2 now — does it have this field? If NO → add one. setup_line must create an information gap, not state a fact.
+
+**20. SCENE N-1 AERIAL** — Scene N-1 `narrative_purpose` MUST be `"AERIAL"`. Not "CLIMAX", not "ESCALATION". If you see any other value → change it to "AERIAL" now.
+
+**21. MICRO LOOP ≠ COMPLETION BAIT** — Scene 2 `micro_open_loop.setup_line` and `completion_bait.vo_trigger` must use DIFFERENT text. They are separate retention hooks — reusing the same phrase wastes one slot.

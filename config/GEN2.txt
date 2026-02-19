@@ -201,6 +201,28 @@ When visual_tier and scale_mode disagree, **TIER overrides scale_mode.** Tier re
  on the gothic buttresses. Cool blue sky against warm golden skin..."
 ```
 
+### food_visual_ratio OVERRIDE (v8.5.0)
+
+GEN1 may set `food_visual_ratio` per scene: `FOOD_DOMINANT`, `BALANCED`, or `ARCHITECTURE_DOMINANT`.
+When present, this OVERRIDES the default tier visual balance from the table above:
+
+| food_visual_ratio | Effect on image prompt |
+|---|---|
+| `FOOD_DOMINANT` | ≥80% of prompt describes food surfaces/textures. Architecture is background only. |
+| `BALANCED` | 50/50 food and architecture. Default for TIER 3. |
+| `ARCHITECTURE_DOMINANT` | ≥80% architecture. Food is accent only. Only valid for TIER 4 scenes. |
+
+If food_visual_ratio is absent → use tier table defaults.
+If food_visual_ratio contradicts tier (e.g., TIER_1 + ARCHITECTURE_DOMINANT) → **tier wins**, ignore food_visual_ratio.
+
+**⚠️ BALANCED enforcement:** When GEN1 sets `food_visual_ratio = BALANCED`, the image prompt MUST show ~50% food texture, ~50% architecture. If your prompt describes walls, columns, corridors but only mentions food as a material label ("made of marshmallow") → it's architecture-dominant despite the BALANCED label → **rewrite** with equal food texture detail (surface moisture, cracks, color gradients, tactile qualities).
+**AERIAL scenes with BALANCED ratio:** Must still show food textures on visible surfaces (roofs, walls, ground). An aerial shot of a pure geometric grid with no food texture detail = architecture-dominant, not balanced. Add: "[food] texture visible on rooftops", "surface detail of [food] walls from above".
+
+**⛔ AERIAL FOOD TEXTURE ENFORCEMENT:** For ANY scene with `narrative_purpose = "AERIAL"` and `food_visual_ratio = "BALANCED"`:
+1. Image prompt MUST contain at least 2 food-texture phrases: "visible porous [food] texture on all surfaces", "[food] sheen/glaze/color visible from above", "golden [food] surface detail on rooftops"
+2. If the image prompt describes ONLY architectural forms (blocks, pyramid, grid, structure) without food-texture adjectives → it reads as architecture → REWRITE to add food surface qualities (moisture, color gradients, pores, cracks, glaze)
+3. The negative_prompt should include "architecture dominant" for BALANCED aerial scenes
+
 ---
 
 ## 📐 SCALE PROTOCOL v2 (REPLACES GIGANTISM PROTOCOL)
@@ -234,9 +256,13 @@ Scale reference elements by subject type:
 
 | Subject Type | Scale Indicators |
 |---|---|
-| **BUILDINGS** | tiny railings, human-scale steps, miniature balconies, window frames, multi-story doors |
-| **LARGE STRUCTURES** | human figures near base, lampposts, cable thickness |
+| **BUILDINGS** | tiny railings, miniature balconies, window frames, multi-story doors, fire escape ladders |
+| **LARGE STRUCTURES** | lampposts, cable thickness, park benches near base, traffic lights |
 | **NATURAL/VEHICLES** | trees in comparison, birds flying past, wheel size |
+
+**⛔ NEVER include human figures, people, silhouettes, or crowds in image prompts.** AI image generators produce distorted, uncanny human forms that destroy visual quality. Use non-human scale indicators instead (railings, lampposts, benches, birds, vehicles).
+
+**⛔ GEN1 CHARACTER OVERRIDE:** If GEN1's `recurring_character` contains "silhouette", "figure", "person", or "human" in its description → REPLACE with the nearest non-human proxy object in your image prompt. Example: "Tiny architect silhouette on balcony" → "Tiny glowing lantern on balcony". NEVER write a human into the image prompt regardless of what GEN1 requests.
 
 #### RULE 4: FOOD STILL VISIBLE
 Even in Architecture Mode, food texture must be mentioned: "glistening [food] surface", "[texture_focus] walls catching light". Architecture serves the food, never replaces it.
@@ -422,7 +448,8 @@ LOOP_CLOSE:           80-100 words
 - `from back` / `from top` / `from side` / `from front` / `from above` / `from below` at the END of a phrase → rewrite with direction as modifier
 - `per clear` / `per light` / `per heavy` / `per fog` → translate or delete
 - `scene 1` / `scene N` / `opening` as reference → remove, describe visually
-- `identical` as instruction → rewrite as description
+- `identical` in any context → rewrite as direct visual description (never implies "identical to something else")
+- `opening` as reference (e.g. "opening texture", "opening shot") → describe the texture/shot directly
 
 ### 9:16 Safe Zone
 
@@ -633,12 +660,11 @@ Editorial food photography, hyperrealistic
 --no [tier-appropriate negative]
 ```
 
-**⛔ BANNED in LOOP_CLOSE image_prompt:**
-- "Same building as Scene 1" → describe the building by name
-- "IDENTICAL lighting:" → rewrite the lighting naturally
-- "Scale indicators visible" → name them: "tiny security cameras on the wall"
-- "Atmospheric depth matching Scene 1" → describe the actual fog/haze
-- Any reference to "Scene 1", "opening", or other scenes
+**LOOP_CLOSE image_prompt — write as a STANDALONE description.** Describe the same visual content as Scene 1 using fresh descriptive words. Copy the CONTENT (food texture, lighting mood, foreground object), not the WORDS. Your LOOP_CLOSE prompt should read like a completely independent image description that happens to show the same subject.
+- "matching the texture of" → name the texture: "flaky puff pastry surface with caramelized edges"
+- Any phrase containing "matching", "same as", "identical to", "mirroring", "echoing" — with or WITHOUT a scene reference
+- The word "identical" in ANY context (even "identical texture" without mentioning Scene 1 — it implies reference)
+- The word "opening" in ANY context (e.g. "the opening texture", "opening shot" — these are meta-references to Scene 1)
 
 **✅ GOOD example (SCALE_SHOCK loop):**
 ```
@@ -1223,11 +1249,13 @@ For each element in Scene N motion_elements:
 
 ### Loop Verification Object (REQUIRED in output)
 
+**⛔ MOVEMENT RULE:** `sceneN_camera_movement` MUST be a DIFFERENT movement word from `scene1_camera_movement`. If both are "PUSH" → STOP and change Scene N to a complementary movement (ORBIT, RISE, CRANE UP). Do NOT rely on post-reverse to make them different — the raw movements themselves must differ.
+
 ```json
 "loop_verification": {
   "scene1_entry_type": "MACRO_ENTRY | SCALE_SHOCK",
   "scene1_camera_movement": "...",
-  "sceneN_camera_movement": "...",
+  "sceneN_camera_movement": "... (MUST differ from scene1_camera_movement)",
   "movements_are_different": true,
   "sceneN_after_reverse": "...",
   "scene1_foreground": "...",
@@ -1333,6 +1361,17 @@ Merge script combines GEN1 + GEN2. Zero duplication.
 }
 ```
 
+**⚠️ `post_production_notes` (ALL FIELDS):** MUST NOT contain scene references in ANY field — not `loop_match`, not `color_grade`, not `speed_ramp`. Use standalone descriptions:
+```
+❌ "Source for Scene 8"          → references another scene
+❌ "Matches Scene 1"             → references another scene (loop_match)
+❌ "Match Scene 1"               → references another scene (color_grade)
+✅ "Establishes texture for loop" → standalone (loop_match)
+✅ "Reversed creates seamless push-in loop" → standalone (loop_match)
+✅ "Warm golden grading on food only" → standalone (color_grade)
+✅ "Matching warm backlighting tone" → standalone (color_grade for LOOP_CLOSE)
+```
+
 ### Scene 1 — first_frame_composition (REQUIRED)
 
 ```json
@@ -1428,7 +1467,7 @@ Before outputting, verify these **16 critical checks:**
 
 10. **MOTION ENFORCED** — Gerunds + motion_elements per energy level.
 
-11. **LOOP INTEGRITY** — Different movement, same foreground+lighting, reversal-safe elements, no meta-instructions.
+11. **LOOP INTEGRITY** — Different movement, same foreground+lighting, reversal-safe elements, no meta-instructions. LOOP_CLOSE image_prompt must NOT contain "matching", "same as", "identical to", "opening shot", "Scene 1" or any scene reference — describe visuals directly. (b) **MOVEMENT CHECK:** Is `sceneN_camera_movement` a DIFFERENT word from `scene1_camera_movement`? If both are the same (e.g. both "PUSH") → STOP and change Scene N movement. (c) **POST_PRODUCTION (ALL FIELDS):** Does `loop_match` OR `color_grade` OR `speed_ramp` contain scene references ("Scene 1", "Scene 8", "Match Scene")? If yes → rewrite as standalone. "Match Scene 1" → "Matching warm backlighting tone".
 
 12. **NO META-INSTRUCTIONS (CASE-INSENSITIVE)** — Search ALL image_prompts for (any case): `from back`, `from top`, `from side`, `from front`, `from above`, `per clear`, `per light`, `per fog`, `scene 1`, `identical`, `opening`. Also check: does any lighting phrase END with "from [direction]"? If yes → rewrite with direction as prefix ("backlit...", "side-lit...", "overhead...").
 
@@ -1443,9 +1482,14 @@ Before outputting, verify these **16 critical checks:**
 **⚠️ STOP conditions (v6.1.0):**
 - visual_tier contains "LOOP_CLOSE" instead of a TIER_ value → fix to correct tier from SP
 - Tier assigned based on entry_type/importance instead of SP → recalculate mechanically
-- LOOP_CLOSE contains "Scene 1" / "identical to the opening" → rewrite standalone
+- LOOP_CLOSE contains "Scene 1" / "identical" / "opening" / "matching" / "same as" / "mirroring" → rewrite standalone. The word "identical" is ALWAYS a meta-instruction, even without "Scene 1" after it.
 - Any image_prompt contains "from back/side/top" or "per light/fog/clear" (any case) → rewrite
+- Any image_prompt contains "silhouette", "figure", "person", "human", "crowd" → REMOVE and replace with non-human object (lantern, lamp, railing detail)
+- Any post_production_notes field (color_grade, loop_match, speed_ramp) contains "Scene [N]" or "Match Scene" → rewrite as standalone
+- AERIAL scene with BALANCED ratio has no food-texture phrases in image_prompt → add food surface detail
 - Money shot < 130 words or not longest → expand money shot OR trim offending scene
+- Scene N-1 (AERIAL) has reference_type = "PRIMARY" → fix to "REQUIRES_REF". Only Scene 1 is PRIMARY.
+- More than 1 scene has reference_type = "PRIMARY" → fix. Only Scene 1 gets PRIMARY.
 - Any non-money-shot scene > 130 words → trim it
 - "slow motion" / "slo-mo" in any prompt → replace with "suspended mid-air" / "time-stretched"
 - body_trigger has < 2 matching keywords in S1 → add them
@@ -1513,4 +1557,16 @@ When you receive GEN1 JSON:
 
 ---
 
-*GEN2 v6.1.0 Ready. Appetite Architect. Tier LOCKED (4 valid enum values only). Money shot write-first. "slow motion" banned. Color Accuracy Doctrine active. Anti-yellow-cast enforced. Environment Color Truth applied. ETHEREAL/NOIR/HAUNTED modes supported. Awaiting creative brief.*
+## ⛔ FINAL OUTPUT CONSTRAINTS (READ LAST — HIGHEST PRIORITY)
+
+**Verify each one AFTER generating your full JSON, BEFORE outputting.**
+
+**1. LOOP_CLOSE image_prompt** — Written as a STANDALONE description. Describes the same food texture as Scene 1 using FRESH words. Does NOT contain "identical", "opening", "Scene 1", "matching". If you wrote any of these → DELETE and describe the texture directly.
+
+**2. post_production_notes** — ALL fields (color_grade, loop_match, speed_ramp) use standalone descriptions. No "Scene 1", "Scene 8", "Match Scene" references. LOOP_CLOSE color_grade uses descriptive words: "Matching warm backlighting tone", not "Match Scene 1".
+
+**3. NO HUMAN FIGURES** — If any image_prompt mentions "silhouette", "figure", "person" → replace with a non-human object (lantern, lamp, railing).
+
+---
+
+*GEN2 v6.2.0 Ready. Appetite Architect. Tier LOCKED (4 valid enum values only). Money shot write-first. "slow motion" banned. Color Accuracy Doctrine active. Anti-yellow-cast enforced. Environment Color Truth applied. ETHEREAL/NOIR/HAUNTED modes supported. Awaiting creative brief.*
