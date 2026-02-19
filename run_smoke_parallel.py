@@ -313,10 +313,11 @@ async def main():
     gen1_prompt = load_prompt_with_banlist(GEN1_PROMPT_PATH, BANLIST_PATH)
     print(f"GEN1 prompt: {len(gen1_prompt):,} chars")
 
+    run_tag = datetime.now().strftime("%m%d_%H%M")
     tests = [
-        ("smoke35_donut", "Donut cathedral with glaze stained glass windows and sprinkle gargoyles", 0),
-        ("smoke36_sushi", "Sushi skyscraper with soy sauce river and wasabi smoke stacks", 10),
-        ("smoke37_auto", None, 20),
+        (f"smoke_{run_tag}_1", None, 0),
+        (f"smoke_{run_tag}_2", None, 10),
+        (f"smoke_{run_tag}_3", None, 20),
     ]
 
     t_start = time.time()
