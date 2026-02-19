@@ -77,6 +77,11 @@ VALID_ARCHITECTURE_ELEMENTS: set = {
     # Transport/vehicle structures
     "wheel", "track", "rail", "mast", "hull", "rudder", "propeller",
     "cockpit", "cabin", "deck",
+    # Fortification/castle
+    "moat", "tunnel", "corridor", "chamber", "gate", "drawbridge",
+    "parapet", "turret", "bunker",
+    # Plumbing/conduit
+    "sewer", "duct", "chute", "slot", "nozzle", "funnel", "drain", "spout",
 }
 
 # Food actions whitelist (for warning_line)
@@ -160,6 +165,10 @@ _PURPOSE_FIXES: dict = {
     "WIDE": "EXTERIOR_ANGLE",
     "MACRO": "DETAIL",
     "SENSATION": "FEATURE",
+    # Phase labels used as narrative_purpose (smoke27-29)
+    "SENSORY_BUILD": "STRUCTURAL_DETAIL",
+    "TENSION": "DYNAMIC_ACTION",
+    "AFTERMATH": "FEATURE_HIGHLIGHT",
 }
 
 # Texture group → default temperature word mapping
@@ -274,6 +283,31 @@ def _closest_match(word: str, valid_set: set, default: str, cutoff: float = 0.7)
     return matches[0] if matches else default
 
 
+def _element_in_concept(element: str, data: dict) -> bool:
+    """Check if element appears in concept data (architectural_identity or food_dna).
+
+    If an element is part of the concept, it should be kept as-is even if not
+    in VALID_ARCHITECTURE_ELEMENTS — it's a creative choice, not a hallucination.
+    """
+    elem_lower = element.lower()
+    # Check architectural_identity.distinctive_features
+    arch = data.get("architectural_identity", {})
+    if isinstance(arch, dict):
+        features = arch.get("distinctive_features", [])
+        if isinstance(features, list):
+            for feat in features:
+                if isinstance(feat, str) and elem_lower in feat.lower():
+                    return True
+    # Check food_identity.food_dna values
+    food_id = data.get("food_identity", {})
+    food_dna = food_id.get("food_dna", {}) if isinstance(food_id, dict) else {}
+    if isinstance(food_dna, dict):
+        for val in food_dna.values():
+            if isinstance(val, str) and elem_lower in val.lower():
+                return True
+    return False
+
+
 def _get_texture_group(data: dict) -> str:
     """Determine primary texture group from food_identity."""
     food_id = data.get("food_identity", {})
@@ -284,6 +318,17 @@ def _get_texture_group(data: dict) -> str:
             if kw_lower in _TEXTURE_TO_TEMP:
                 return kw_lower
     return "crispy"  # safe default
+
+
+def _concept_hash(data: dict) -> int:
+    """Deterministic hash from concept data for rotation decisions.
+
+    Uses food name + subject to produce a stable integer.
+    Different concepts → different hash → different rotation choices.
+    """
+    food = _get_food_name(data) or "x"
+    subject = _get_subject(data) or "x"
+    return sum(ord(c) for c in (food + subject).lower())
 
 
 # ---------------------------------------------------------------------------
@@ -318,6 +363,7 @@ def autocorrect_gen1(data: Dict[str, Any]) -> Tuple[Dict[str, Any], List[AutoFix
     _fix_silence_speech_contradiction(d, scenes, w)
     _fix_on_screen_text(d, scenes, w)
     _fix_scene_n_minus_1_aerial(scenes, w)
+    _fix_warning_line_format_rotation(d, scenes, w)  # BUG 4: must be BEFORE delivery+sync
     _fix_warning_line_delivery(d, scenes, w)
     _fix_direction_tags(scenes, w)
     _fix_narrator_script_tags(scenes, w)
@@ -325,10 +371,13 @@ def autocorrect_gen1(data: Dict[str, Any]) -> Tuple[Dict[str, Any], List[AutoFix
     _fix_thermal_first_word(d, scenes, w)
     _fix_narrator_vo_sync(scenes, w)
     _fix_scene_durations(scenes, w)
+    _fix_narrator_word_count(scenes, w)     # Truncate overflow AFTER durations fixed
     _fix_scene_n_constraints(d, scenes, w)
     _fix_scene_n_minus_1_vo(d, scenes, w)
     _fix_vo_trigger_injection(d, scenes, w)
     _fix_description_line1(d, w)
+    _fix_title_default_rotation(d, w)       # BUG 6: FOOD_BUILD → other
+    _fix_controversy_rotation(d, w)         # BUG 9: THE_PHYSICS → other
     _fix_full_script_rebuild(d, scenes, w)  # ALWAYS last — rebuilds from segments
 
     return d, w
@@ -869,18 +918,23 @@ def _fix_warning_line_element_sync(d: dict, scenes: list, w: list) -> None:
                 w.append(AutoFixWarning("warning_line", f"Non-standard action '{wl_action}' (kept as-is, no close match)"))
 
         if wl_element not in VALID_ARCHITECTURE_ELEMENTS:
-            fixed_elem = _closest_match(wl_element, VALID_ARCHITECTURE_ELEMENTS, wl_element)
-            if fixed_elem != wl_element:
-                old = d.get("warning_line", "")
-                d["warning_line"] = re.sub(
-                    r"(?i)the\s+" + re.escape(wl_element),
-                    f"the {fixed_elem}", old, count=1,
-                )
-                w.append(AutoFixWarning("warning_line", f"Auto-fixed element '{wl_element}' → '{fixed_elem}'"))
-                wl_element = fixed_elem
+            # Concept-aware bypass: if element is in concept data, keep it
+            if _element_in_concept(wl_element, d):
+                w.append(AutoFixWarning("warning_line",
+                    f"Non-standard element '{wl_element}' kept (found in concept data)"))
             else:
-                # No close match — keep original creative choice, just warn
-                w.append(AutoFixWarning("warning_line", f"Non-standard element '{wl_element}' (kept as-is, no close match)"))
+                fixed_elem = _closest_match(wl_element, VALID_ARCHITECTURE_ELEMENTS, wl_element)
+                if fixed_elem != wl_element:
+                    old = d.get("warning_line", "")
+                    d["warning_line"] = re.sub(
+                        r"(?i)the\s+" + re.escape(wl_element),
+                        f"the {fixed_elem}", old, count=1,
+                    )
+                    w.append(AutoFixWarning("warning_line", f"Auto-fixed element '{wl_element}' → '{fixed_elem}'"))
+                    wl_element = fixed_elem
+                else:
+                    # No close match — keep original creative choice, just warn
+                    w.append(AutoFixWarning("warning_line", f"Non-standard element '{wl_element}' (kept as-is, no close match)"))
 
     # Sync element across scene VOs
     if wl_action and wl_element:
@@ -1273,6 +1327,180 @@ def _fix_description_line1(d: dict, w: list) -> None:
     youtube["description"] = "\n".join(lines)
     w.append(AutoFixWarning("youtube.description",
         f"Auto-fixed Line 1: '{first_line[:50]}' → '{new_line1}'"))
+
+
+# Word limits by scene duration (TOP RULE #1)
+_DURATION_WORD_LIMITS: dict = {
+    1.0: 2, 1.5: 3, 2.0: 4, 2.5: 5, 3.0: 7, 3.5: 8, 4.0: 10,
+}
+
+_CONSEQUENCE_VERBS_LIST = ["remembers", "knows", "watches", "waits", "listens", "breathes"]
+_FOOD_BUILD_RE = re.compile(r"^I\s+\w+(?:ed|ED)\s+", re.IGNORECASE)
+_CONTROVERSY_ROTATION = ["THE_CHALLENGE", "THE_CURSED", "THE_DIVIDE", "THE_TASTE", "THE_PRICE"]
+
+
+def _max_words_for_duration(duration: float) -> int:
+    """Max narrator_script words for a given scene duration (TOP RULE #1)."""
+    for d_val in sorted(_DURATION_WORD_LIMITS.keys()):
+        if duration <= d_val + 0.01:
+            return _DURATION_WORD_LIMITS[d_val]
+    return 10
+
+
+def _fix_narrator_word_count(scenes: list, w: list) -> None:
+    """Truncate narrator_script if word count exceeds duration limit.
+
+    TOP RULE #1: 2.0s = MAX 4 words, 3.0s = MAX 7, 4.0s = MAX 10.
+    Overflow = TTS audio gets cut off = broken scene timing.
+    Skips last 2 scenes (overwritten by _fix_scene_n_constraints / _fix_scene_n_minus_1_vo).
+    """
+    if len(scenes) < 3:
+        return
+
+    for i, scene in enumerate(scenes):
+        if not isinstance(scene, dict):
+            continue
+        # Skip last 2 scenes (dedicated fixers overwrite them)
+        if i >= len(scenes) - 2:
+            continue
+
+        narrator = scene.get("narrator_script", "")
+        if not isinstance(narrator, str) or not narrator.strip():
+            continue
+
+        duration = scene.get("duration_seconds", 2.0)
+        try:
+            duration = float(duration)
+        except (ValueError, TypeError):
+            duration = 2.0
+
+        max_words = _max_words_for_duration(duration)
+        words = narrator.strip().split()
+
+        if len(words) <= max_words:
+            continue
+
+        # Truncate to max_words
+        truncated = " ".join(words[:max_words])
+        if truncated[-1] not in ".!?":
+            truncated = truncated.rstrip(",;:—–-") + "."
+
+        old_count = len(words)
+        scene["narrator_script"] = truncated
+
+        # Also update voiceover_segment to match
+        vo_seg = scene.get("voiceover_segment", "")
+        if isinstance(vo_seg, str) and vo_seg.strip() and vo_seg.strip() != "[silence]":
+            # Preserve the opening delivery tag ([whispers], [warm], etc.)
+            leading_tag = "[whispers]"
+            tag_match = re.match(r'\[[\w\s]+\]', vo_seg.strip())
+            if tag_match:
+                leading_tag = tag_match.group(0)
+            scene["voiceover_segment"] = f"{leading_tag} {truncated}"
+
+        w.append(AutoFixWarning(
+            f"scenes[{i}].narrator_script",
+            f"Word overflow: {old_count}→{max_words} for {duration}s: "
+            f"'{narrator[:35]}' → '{truncated}'",
+        ))
+
+
+def _fix_warning_line_format_rotation(d: dict, scenes: list, w: list) -> None:
+    """Rotate warning_line away from Format A if Gemini defaults to it.
+
+    BUG 4: Gemini locks to Format A ("Don't [action] the [element].") 100% of the time.
+    This fix deterministically rotates to B/C/D/F using concept-hash.
+    """
+    wl = d.get("warning_line", "")
+    if not isinstance(wl, str) or not wl.strip():
+        return
+
+    stripped = _strip_tags(wl)
+
+    # Only fix Format A (the locked default)
+    m = re.match(r"^don['\u2019]t\s+(\w+)\s+the\s+(\w+)", stripped, re.IGNORECASE)
+    if not m:
+        return  # Not Format A — already diverse
+
+    action = m.group(1).lower()
+    element = m.group(2).lower()
+
+    # Concept-hash picks target format (B, C, D, F — never back to A)
+    h = _concept_hash(d)
+    targets = ["B", "C", "D", "F"]
+    target = targets[h % len(targets)]
+
+    if target == "B":
+        new_wl = f"{action.capitalize()} the {element}. I dare you."
+    elif target == "C":
+        new_wl = f"The architect says: nobody {action} the {element}."
+    elif target == "D":
+        verb_s = _CONSEQUENCE_VERBS_LIST[h % len(_CONSEQUENCE_VERBS_LIST)]
+        # Plural elements (walls, columns, stairs) need plural verb
+        verb = verb_s.rstrip("s") if element.endswith("s") else verb_s
+        new_wl = f"The {element} {verb}."
+    else:  # F
+        new_wl = f"Nobody warns you about the {element}."
+
+    d["warning_line"] = new_wl
+    w.append(AutoFixWarning("warning_line",
+        f"Format rotation A→{target}: '{stripped[:40]}' → '{new_wl}'"))
+
+
+def _fix_title_default_rotation(d: dict, w: list) -> None:
+    """If title is FOOD_BUILD, swap with first non-FOOD_BUILD variant.
+
+    BUG 6: Gemini locks to FOOD_BUILD ("I [verb]ed a [structure]...") 91% of the time.
+    This fix promotes a non-FOOD_BUILD variant to title position.
+    """
+    yt = d.get("youtube")
+    if not isinstance(yt, dict):
+        return
+
+    variants = yt.get("title_variants", [])
+    if not isinstance(variants, list) or len(variants) < 2:
+        return
+
+    title = yt.get("title", "")
+    if not isinstance(title, str):
+        return
+
+    # Only fix if current title matches FOOD_BUILD pattern
+    if not _FOOD_BUILD_RE.match(title.strip()):
+        return
+
+    # Find first non-FOOD_BUILD variant
+    for i, v in enumerate(variants):
+        if i == 0 or not isinstance(v, str):
+            continue
+        if not _FOOD_BUILD_RE.match(v.strip()):
+            old_title = title
+            yt["title"] = v
+            variants[0], variants[i] = variants[i], variants[0]
+            w.append(AutoFixWarning("youtube.title",
+                f"Title rotation FOOD_BUILD→other: '{old_title[:35]}' → '{v[:35]}'"))
+            return
+
+
+def _fix_controversy_rotation(d: dict, w: list) -> None:
+    """Rotate controversy away from THE_PHYSICS if it's the default lock.
+
+    BUG 9: Gemini locks to THE_PHYSICS 73% of the time because all structures
+    have physics properties. This fix rotates to other techniques using concept-hash.
+    """
+    cs = d.get("controversy_seed")
+    if not isinstance(cs, dict):
+        return
+
+    technique = cs.get("technique", "")
+    if not isinstance(technique, str) or technique.strip() != "THE_PHYSICS":
+        return  # Not locked
+
+    h = _concept_hash(d)
+    new_tech = _CONTROVERSY_ROTATION[h % len(_CONTROVERSY_ROTATION)]
+    cs["technique"] = new_tech
+    w.append(AutoFixWarning("controversy_seed.technique",
+        f"Controversy rotation: THE_PHYSICS → {new_tech}"))
 
 
 def _fix_full_script_rebuild(d: dict, scenes: list, w: list) -> None:

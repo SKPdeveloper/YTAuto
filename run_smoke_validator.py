@@ -228,9 +228,9 @@ async def main():
     print(f"GEN1 prompt: {len(gen1_prompt):,} chars")
 
     tests = [
-        ("smoke23_mochi", "Giant mochi temple where the walls breathe and pulse like living dough"),
-        ("smoke25_caramel", "Caramel suspension bridge over a chocolate river canyon"),
-        ("smoke26_auto", None),
+        ("smoke27_pretzel", "Pretzel fortress with salt crystal battlements in a mustard moat"),
+        ("smoke28_gelato", "Gelato volcano erupting inside a frozen cathedral"),
+        ("smoke29_auto", None),
     ]
 
     results = []

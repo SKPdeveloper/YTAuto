@@ -359,6 +359,7 @@ class Gen1Validator:
         self._validate_structural_counts()
         self._validate_sensory_channels()
         self._validate_sp_curve_rules()
+        self._validate_humor()
 
     # ========================================================================
     # VALIDATION METHODS
@@ -1162,6 +1163,52 @@ class Gen1Validator:
             has_ramp = any(8 <= sp <= 9 for sp in sp_vals[:ms_idx])
             if not has_ramp:
                 self._warn("scenes.sensory_pressure", f"No SP 8-9 ramp before money_shot (Scene {ms_idx+1})")
+
+    def _validate_humor(self) -> None:
+        """Validate humor array: count, types, placement."""
+        humor = self._data.get("humor")
+        if humor is None or not isinstance(humor, list):
+            self._warn("humor", "Missing humor array (exactly 2 entries required)")
+            return
+        if len(humor) < 2:
+            self._warn("humor", f"Only {len(humor)} humor beat(s) (exactly 2 required)")
+        # Duplicate humor_type check
+        types_seen: list = []
+        deadpan_count = 0
+        for i, h in enumerate(humor):
+            if not isinstance(h, dict):
+                continue
+            ht = h.get("humor_type", "")
+            if ht in types_seen:
+                self._warn(f"humor[{i}].humor_type", f"Duplicate humor_type '{ht}' (each joke must use a different type)")
+            types_seen.append(ht)
+            if ht == "DEADPAN_CONSEQUENCE":
+                deadpan_count += 1
+        if deadpan_count > 1:
+            self._warn("humor", f"DEADPAN_CONSEQUENCE used {deadpan_count}x (max 1 per video)")
+        # Humor in high-SP scenes check
+        scenes = self._data.get("scenes", [])
+        sp_map: dict = {}
+        for s in scenes:
+            if isinstance(s, dict):
+                sn = s.get("scene_number")
+                sp = s.get("sensory_pressure")
+                if sn is not None and sp is not None:
+                    try:
+                        sp_map[int(sn)] = int(sp)
+                    except (ValueError, TypeError):
+                        pass
+        for i, h in enumerate(humor):
+            if not isinstance(h, dict):
+                continue
+            hsn = h.get("scene_number")
+            if hsn is not None:
+                try:
+                    sp_val = sp_map.get(int(hsn))
+                    if sp_val is not None and sp_val > 6:
+                        self._warn(f"humor[{i}]", f"Humor in Scene {hsn} (SP={sp_val}) — jokes only in SP ≤ 6 scenes")
+                except (ValueError, TypeError):
+                    pass
 
     # ========================================================================
     # HELPERS
