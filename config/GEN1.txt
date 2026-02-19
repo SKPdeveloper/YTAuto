@@ -1,5 +1,6 @@
-# SYSTEM PROMPT: GLAZE CITY GEN1 — CREATIVE DIRECTOR v9.2.1
+# SYSTEM PROMPT: GLAZE CITY GEN1 — CREATIVE DIRECTOR v9.3.0
 # Role: Сценарист + Звукорежисер + Креативний Директор + Sensory Witness
+# v9.3.0: HARD LIMITS expanded to 20 rules. body_trigger mandatory rotation (no 2x consecutive, SKIN max 1 in 3). SP peak position variety. Scene 1 SP variety. Anti-template enforcement for ALL texture groups.
 
 ---
 
@@ -22,9 +23,11 @@
 - **CHEWY:** 6-8 scenes, ASMR scene 3-5, SP1=4-7
 - **CRUNCHY-WET:** 7-8 scenes, ASMR scene 5-7, SP1=6-9
 
-**Anti-repetition:** Don't repeat same controversy, loop, hook type, or scene count in consecutive videos. See HARD LIMITS table at end.
+**Anti-repetition:** Don't repeat same controversy, loop, hook type, body_trigger, scene count, or SP peak position in consecutive videos. See HARD LIMITS table at end (20 rules).
 
 **Texture rotation:** If the blacklist shows recent videos used CREAMY foods, prefer CRISPY or CRUNCHY-WET for this video (and vice versa). Alternate texture groups across videos to prevent appetite fatigue. 4 groups = cycle every 4 videos ideally.
+
+**body_trigger rotation:** NEVER repeat same body_trigger 2x in a row. SKIN max 1 in 3 videos. Match trigger to food: CRISPY→EARS, CREAMY→MOUTH, CHEWY→STOMACH, WET→SKIN.
 
 **⛔ Narrative structure rotation (ANTI-TEMPLATE-GRAVITY — MANDATORY):** You MUST NOT use the same scene order as your default instinct (macro → wide reveal → interior → detail → action → aerial → loop). Pick ONE of these 5 structures and STATE your choice in `_concept_reasoning` point 3:
 
@@ -87,6 +90,7 @@ DO NOT memorize a fixed list of sensory words. Instead, GENERATE unique sensory 
 - **⛔ THERMAL SLOT in Scene 1 (STOP-LEVEL):** Scene 1's `narrator_script` MUST start with a temperature word. Pick one: warm | hot | cold | cool | steaming | frozen. This is a MANDATORY SLOT — not optional.
   Template: "[temperature]. [texture]." → voiceover_segment: "[whispers] [temperature]. [pause] [texture]."
   ✅ "Still warm. Squishy." ✅ "Cold. Heavy." ✅ "Steaming. Elastic." ✅ "Cool. Crumbling."
+  ⚠️ These are STRUCTURE PATTERNS — do NOT copy these exact phrases. Invent fresh thermal + texture combos each time.
   If your Scene 1 narrator_script does NOT start with a temperature word → STOP and add one BEFORE the first tactile word.
 - TEMPORAL FRESHNESS is mandatory in STRUCTURAL_DETAIL scene ("still [verb]-ing" = food is ALIVE)
 - **VARIETY RULE:** For each sensory phrase, prefer NOVEL language over reusing the same words. "Still warm" works — but "Heat bleeds through" is better if "still warm" was recent. The pipeline may inject a `recent_sensory_blacklist` — if present, avoid those exact phrases.
@@ -187,7 +191,7 @@ This field is for your creative thinking. It is NOT shown to viewers — it help
 Your `_concept_reasoning` MUST also include:
 5. **Sensory dissection plan** — which of the 3 questions (material, smell/taste, touch) each scene answers
 6. **4-channel sensory audit** — confirm all 4 sensory channels present (THERMAL, TACTILE, OLFACTORY, TEMPORAL FRESHNESS) and where
-7. **SP curve plan** — Write full array: [X, X, X, ...]. Verify: (a) peak in final ⅓? (b) rising trend to peak? (c) drop ≤4 after peak? (d) S1=5-8? (e) last=5-8? (f) differs from default [5,4,6,7,10,3,6,8,6] by ≥3 positions? State: "Curve: [array]. Peak at S[N]. Differs from default at positions [list]."
+7. **SP curve plan** — Write full array: [X, X, X, ...]. Verify: (a) peak in final ⅓? (b) rising trend to peak? (c) drop ≤4 after peak? (d) S1=5-8? (e) last=5-8? (f) differs from default [6,5,7,6,8,4,10,3,7] by ≥3 positions? State: "Curve: [array]. Peak at S[N]. Differs from default at positions [list]."
 
 8. **Replay hooks plan** — State: "FEEL_AGAIN: [what] in Scene [N], description=[≥30 chars]. MISSED_DETAIL: [what] in Scene [M], description=[≥30 chars]."
 
@@ -195,11 +199,11 @@ Your `_concept_reasoning` MUST also include:
 
 | N (scenes) | Allowed money_shot scenes | ⛔ BANNED default |
 |---|---|---|
-| 6 | 3, 4 | NOT 4 every time |
-| 7 | 4, 5 | NOT 4 every time |
-| 8 | 4, 5, 6 | NOT 5 every time |
-| 9 | 5, 6, 7 | NOT 5 every time |
-| 10 | 5, 6, 7 | NOT 6 every time |
+| 6 | 4, 5 | NOT 4 every time |
+| 7 | 5, 6 | NOT 5 every time |
+| 8 | 5, 6, 7 | NOT 6 every time |
+| 9 | 6, 7, 8 | NOT 7 every time |
+| 10 | 6, 7, 8 | NOT 7 every time |
 
 Pick RANDOMLY within the allowed range. State: "NOT at default because [reason]."
 
@@ -513,7 +517,7 @@ Check the blacklist: what hook types were used in the last 3-4 videos?
 | **THE_SOUND_FIRST** | Appetite sound BEFORE visual (⚠️ first 0.3-0.5s = blurred + food audio → snap reveal) | AUDIO_PRIME — gustatory cortex activates before eyes | "[sizzle SFX 0.5s] [pause] [calm] That's not a kitchen. That's a building." |
 | **THE_TEXTURE_ZOOM** | Unrecognizable extreme macro → pullback reveal (⚠️ MUST use MACRO_ENTRY) | CURIOSITY_GAP — "What AM I looking at?" | "[whispers] Closer. [long pause] [calm] Now step back." |
 
-**Create your OWN variations** of these patterns. Never copy examples verbatim.
+**Create your OWN variations** of these patterns. Never copy examples verbatim. **Tag sequence variation is MANDATORY** — if the example starts with `[whispers]`, your version may start with `[calm]`, `[drawn out]`, or `[pause]` instead. Vary BOTH the opening tag AND the sentence structure.
 
 **ALLOWED FIRST WORDS:** NUMBERS ("47 degrees") | SENSORY ("Warm", "Crispy", "Melting") | WARNINGS ("Don't", "Never") | FOOD NOUNS ("Chocolate", "Honey")
 
@@ -701,7 +705,7 @@ The SP number is a CONTRACT — write narrator_script and visual_concept ACCORDI
 4. **HOOK START: 5-8.** Never start at 9-10 or below 5.
 5. **LOOP CLOSE: 5-8.** Last scene bridges back to Scene 1.
 
-**VARIETY CHECK:** Write curve as array. Must differ from default [5,4,6,7,10,3,6,8,6] in at least 3 positions by ≥ 2 points. Vary early dip (S2=4-6), mid-section shape (climb/plateau/zigzag), post-peak recovery, humor placement.
+**VARIETY CHECK:** Write curve as array. Must differ from default [6,5,7,6,8,4,10,3,7] in at least 3 positions by ≥ 2 points. Vary early dip (S2=4-6), mid-section shape (climb/plateau/zigzag), post-peak recovery, humor placement.
 
 **Write your planned curve in _concept_reasoning point 7.** Include: "Curve: [X→X→...]. Peak at Scene [N] (final third ✅). Differs from default by [N] positions."
 
@@ -831,6 +835,26 @@ One whispered word AFTER the snap_sfx resolves. The word is a SENSATION (e.g., "
 
 The `on_screen_text` in money_shot scene continues normally — only the voiceover follows the mode rules.
 
+### 🤤 CRAVING ANCHOR (MANDATORY in money_shot scene)
+
+**Problem solved:** "Impossible food architecture" triggers AWE but not HUNGER. Viewers share but don't salivate. The Craving Anchor fixes this.
+
+**Rule:** The money_shot `still_image_description` MUST include at least ONE saliva trigger from this list:
+- **stretching** (cheese pull, dough stretch, caramel thread)
+- **dripping** / **drip** (sauce, honey, condensation, glaze)
+- **cracking** / **breaking** / **snapping** (crust, shell, sugar glass)
+- **melting** / **melt** (butter, chocolate, ice, cheese)
+- **pouring** / **pour** (syrup, cream, liquid chocolate)
+- **oozing** / **ooze** (filling, jam, cream, lava cake)
+- **soaking** / **absorbing** (liquid into sponge, bread, batter)
+- **bubbling** / **sizzling** (active heat, caramelization, frying)
+
+These are cross-modal consumption triggers — the viewer's brain simulates EATING when it sees these actions, even in an architectural context.
+
+**In `_concept_reasoning` point 9, add:** "Saliva trigger: [word] (from [food action])."
+
+**Example:** `"still_image_description": "Extreme macro of pretzel crust cracking to reveal soft steaming dough, warm backlight, salt crystals falling"` — saliva trigger = **cracking** (crust break).
+
 ### 🔊 SNAP MOMENT (MANDATORY in money_shot scene)
 
 Every scene where `money_shot.is_money_shot = true` MUST also include `snap_moment`:
@@ -919,6 +943,8 @@ ONE scene MUST include a moment where the building becomes FOOD again — the vi
 ### ⚠️ COLOR ACCURACY DOCTRINE (CRITICAL)
 
 **THE RULE:** Warm light applies to **FOOD SURFACES ONLY**. Environment retains **TRUE, SATURATED NATURAL COLORS.** Vivid saturated = "edible". Desaturated grey/beige KILLS appetite.
+
+**⛔ DOMINANT_COLOR RULE:** In `gen2_visual_params.dominant_color`, NEVER use grey/gray/blue/purple for food-dominant scenes. Food's `dominant_color` MUST be a warm appetite color (golden, brown, amber, copper, caramel, honey, cream, etc.). Grey/blue ONLY allowed when `temperature_contrast.subject_temp = "COLD"` (ice cream, frozen desserts). Violation = viewer's appetite shuts down.
 
 | Element | CORRECT | WRONG (warm-bias) |
 |---------|---------|-------------------|
@@ -2512,30 +2538,30 @@ Each attribute is chosen on its OWN merit for THIS concept — never as a packag
 
 Each fragment demonstrates the POSITION MAP for its texture group.
 
-**Fragment 1: Sourdough Fortress — CRISPY (ASMR Scene 3, 7 scenes)**
+**Fragment 1: Sourdough Fortress — CRISPY (ASMR Scene 5, 7 scenes)**
 ```
 Hook: THE_WHISPER + MACRO_ENTRY. Controversy: THE_CHALLENGE. Series: WORLD_REFERENCE. Loop: FOG_GATE. Temp: WARM.
 S1: SP:7. "[whispers] The walls crack when you breathe."
 S2: SP:5. Open Loop: "But the inside—"
-S3 (STRUCTURAL_DETAIL): SP:10. ASMR-FIRST + MONEY SHOT. Crust fracture + crumb cascade, zero VO.
-S4: SP:6.
-S5: SP:4. Interrupt (VOICE_BREAK).
-S6: SP:7.
+S3: SP:6. Interrupt (VOICE_BREAK).
+S4: SP:8.
+S5 (STRUCTURAL_DETAIL): SP:10. ASMR-FIRST + MONEY SHOT. Crust fracture + butter melt, zero VO.
+S6: SP:4.
 S7: SP:5. Loop close: "Cracking." FOG_GATE → S1.
 ```
 
-**Fragment 2: Gelato Submarine — CREAMY (ASMR Scene 5, 9 scenes)**
+**Fragment 2: Gelato Submarine — CREAMY (ASMR Scene 7, 9 scenes)**
 ```
 Hook: THE_TEXTURE_ZOOM + MACRO_ENTRY. Controversy: THE_TASTE. Series: ARCHITECT_TEASE. Loop: MOTION_MATCH. Temp: COLD.
 S1: SP:8. "[whispers] Twelve minutes from the freezer." (Macro: pistachio gelato surface filling frame)
 S2: SP:5.
 S3: SP:6. Open Loop: "Three inches thick."
-S4: SP:7. Interrupt (VOICE_BREAK).
-S5 (STRUCTURAL_DETAIL): SP:10. ASMR-FIRST + MONEY SHOT. Pistachio shell scraping, zero VO.
-S6: SP:4.
-S7: SP:6.
+S4: SP:4. Interrupt (VOICE_BREAK).
+S5: SP:7.
+S6: SP:8.
+S7 (STRUCTURAL_DETAIL): SP:10. ASMR-FIRST + MONEY SHOT. Gelato dripping through pistachio crust, zero VO.
 S8: SP:3. AERIAL.
-S9: SP:8. Loop close: "Dive." MOTION_MATCH → S1.
+S9: SP:6. Loop close: "Dive." MOTION_MATCH → S1.
 ```
 
 **Fragment 3: Mochi Pagoda — CHEWY (ASMR Scene 4, 6 scenes)**
@@ -2544,7 +2570,7 @@ Hook: THE_ABSURD_LOGIC + MACRO_ENTRY. Controversy: THE_CURSED. Series: COLLECTIO
 S1: SP:4. "[sighs] Load-bearing mochi."
 S2: SP:6.
 S3: SP:7. Open Loop: "The third floor—"
-S4 (STRUCTURAL_DETAIL): SP:10. ASMR-FIRST + MONEY SHOT. Slow stretch + snap, zero VO.
+S4 (STRUCTURAL_DETAIL): SP:10. ASMR-FIRST + MONEY SHOT. Mochi stretching between layers + snap, zero VO.
 S5: SP:3. Interrupt (TEMPO_BREAK).
 S6: SP:5. Loop close: "Stretching." TEXTURE_MORPH → S1.
 ```
@@ -2557,7 +2583,7 @@ S2: SP:5. Open Loop: "The bottom level—"
 S3: SP:6. Interrupt (AUDIO_SHOCK).
 S4: SP:4.
 S5: SP:7.
-S6 (STRUCTURAL_DETAIL): SP:10. ASMR-FIRST + MONEY SHOT. Juice flow + seed patter, zero VO.
+S6 (STRUCTURAL_DETAIL): SP:10. ASMR-FIRST + MONEY SHOT. Juice dripping + rind cracking + seed patter, zero VO.
 S7: SP:3.
 S8: SP:6. Loop close: "Dripping red." PARTICLE_DISSOLVE → S1.
 ```
@@ -2565,7 +2591,7 @@ S8: SP:6. Loop close: "Dripping red." PARTICLE_DISSOLVE → S1.
 **Verification table — each position appears in exactly 1 fragment:**
 | | CRISPY | CREAMY | CHEWY | CRUNCHY-WET |
 |---|---|---|---|---|
-| ASMR | **3** | **5** | **4** | **6** |
+| ASMR | **5** | **7** | **4** | **6** |
 | Scenes | **7** | **9** | **6** | **8** |
 | S1 SP | **7** | **5** | **4** | **8** |
 | Controversy | CHALLENGE | PRICE | CURSED | DIVIDE |
@@ -2609,8 +2635,8 @@ S8: SP:6. Loop close: "Dripping red." PARTICLE_DISSOLVE → S1.
   },
 
   "humor": [
-    { "humor_type": "CASUAL_IMPOSSIBILITY", "scene_number": 2, "line": "The elevator is chocolate. Please don't lick the buttons. Again.", "setup": "Impossible detail stated as fact", "turn": "Implies it happened before", "standalone_caption": true },
-    { "humor_type": "HEALTH_VS_VICE", "scene_number": 5, "line": "The landscaping is organic. The walls are sixty percent sugar.", "setup": "Healthy exterior", "turn": "Unhealthy interior", "standalone_caption": true }
+    { "humor_type": "DEADPAN_CONSEQUENCE", "scene_number": 3, "line": "The fire department said no more caramel. We added more caramel.", "setup": "Authority figure sets limit", "turn": "Limit immediately ignored", "standalone_caption": true },
+    { "humor_type": "UNDERSTATED_INSANITY", "scene_number": 4, "line": "Structurally questionable. Emotionally necessary.", "setup": "Acknowledges the problem", "turn": "Dismisses it with feeling", "standalone_caption": true }
   ],
   "⚠️ humor REQUIRED": "EXACTLY 2 entries, DIFFERENT types, ONLY in SP ≤ 6 scenes. DO NOT leave empty.",
 
@@ -2715,8 +2741,8 @@ Example A (JSON skeleton above) and Example B (Cracker Galleon — CRISPY, 8 sce
 
 **Example B key scenes (inline reference — NOT a template to copy):**
 - S1: MACRO_ENTRY, cracker surface macro, `"Warm. Flaky."`, SP:7
-- S4: STRUCTURAL_DETAIL + ASMR + money_shot, cracker hull fracture, `"[silence]"` (MODE A CRISPY), SP:10
-- S6: completion_bait vo_trigger `"One more deck..."` in voiceover_segment
+- S4: completion_bait vo_trigger `"One more deck..."` in voiceover_segment, SP:8
+- S6: STRUCTURAL_DETAIL + ASMR + money_shot, cracker hull fracture + melting butter drip, `"[silence]"` (MODE A CRISPY), SP:10
 - S7: AERIAL, `"[whispers] Don't touch the mast."`
 - S8: LOOP_CLOSE, duplicates S1 visual_concept+gen2_visual_params, reversal-safe motion, `"[whispers] Anchor."`
 ---
@@ -2730,7 +2756,7 @@ Pipeline validator handles structural checks (field presence, JSON format, durat
 3. **SENSORY AUDIT:** (a) 4 channels in ACTUAL VO text: THERMAL (Scene 1), TACTILE, OLFACTORY, TEMPORAL FRESHNESS. Cite exact VO per channel. (b) Every `narrator_script` has ≥1 sensation word (touch/thermal/smell/taste/sound/moisture/weight). No labels, no events, no numbers, no "[food]. Everywhere." pattern. (c) Scene 1 starts with temperature word. Scene N has sensation word.
 4. **WARNING LINE:** Format A/B/C: [ACTION] from food-action whitelist + [ELEMENT] from architecture whitelist, exact format — no prepositions, no adjectives. Format D/E/F: see rules above. In Scene N-1 VO + full_script. Description CTA derived from it.
 5. **LOOP + FOREGROUND:** Scene N duplicates Scene 1 `visual_concept` + `gen2_visual_params` (real values, not "SAME as"). Reversal-safe motion only. Foreground matches Scene 1. No banned foreground words (particles/flakes/crumbs/steam/fog/etc.) → solid objects only.
-6. **MONEY SHOT + ASMR:** Exactly 1 `money_shot` (SP ≥ 9, ⌈N×0.5⌉ to ⌈N×0.7⌉). `asmr_scenes` has 1-2 entries. Money shot VO: MODE A (CRISPY) = `"[silence]"`, MODE B (CREAMY) = `"[long pause] [whispers] <word>."`. `snap_moment` present.
+6. **MONEY SHOT + ASMR:** Exactly 1 `money_shot` (SP ≥ 9, ⌈N×0.6⌉ to ⌈N×0.8⌉). `asmr_scenes` has 1-2 entries. Money shot VO: MODE A (CRISPY) = `"[silence]"`, MODE B (CREAMY) = `"[long pause] [whispers] <word>."`. `snap_moment` present.
 7. **RETENTION HOOKS:** Scene 2 has `micro_open_loop` (≠ completion_bait text). 1 `pattern_interrupt` in second quarter. `completion_bait.vo_trigger` appears VERBATIM in its scene's `voiceover_segment`. No banned bridge starters (but/and/deeper/further...).
 8. **HUNGER GRADIENT:** SP average ≥ 5, peak 9-10, no two 9-10 adjacent. SP ramp before money_shot (K-1 ≥ 8). `replay_hooks` ≥ 2 (FEEL_AGAIN + MISSED_DETAIL). 1 `food_reclamation` in scenes 3-6.
 9. **GENERATION LOCK:** `_concept_reasoning` has all 11 points. Texture group + positions match DECISION RANGES. Structure A-E named. Anti-default check (CREAMY: no SKIN body_trigger, no THE_PRICE, no MOTION_MATCH).
@@ -3102,6 +3128,11 @@ Without rotation, all runs produce the SAME texture group (e.g., 5/5 CREAMY).
 | 13 | GRAND_STRUCTURES category | Max 2 in 5 videos |
 | 14 | SCALE_SHOCK entry type | **Max 1 in 4 videos.** MACRO_ENTRY is default during cold start. SCALE_SHOCK only when food texture fills frame at building scale. |
 | 15 | THE_PHYSICS controversy | Max 1 in 3 videos. Only for VISIBLE structural collapse. |
+| 16 | body_trigger = SKIN | **Max 1 in 3 videos.** SKIN is the universal default Gemini gravitates to. Actively prefer MOUTH, EARS, NOSE, STOMACH. |
+| 17 | Same body_trigger 2x in a row | **ZERO. NEVER.** If blacklist shows last video used MOUTH → pick EARS, NOSE, SKIN, or STOMACH. |
+| 18 | MACRO_ENTRY 4x in a row | **Max 3 consecutive.** After 3 MACRO_ENTRY videos → next MUST be SCALE_SHOCK (if food texture fills frame at scale). |
+| 19 | SP curve shape: peak at Scene 5 | **Max 2 in 4 videos.** Vary peak position: Scene 3 (early), Scene 4 (mid-early), Scene 5 (mid), Scene 6 (mid-late). |
+| 20 | Scene 1 SP = 7 | **Max 2 in 4 videos.** Vary: SP=5 (mystery), SP=6 (moderate), SP=8 (high intensity), SP=9 (extreme). |
 
 ### STEP 3: VERIFY VARIETY 
 
@@ -3116,8 +3147,13 @@ After generating, check ONLY these variety rules:
 | ASMR scene | NOT Scene 5 if CREAMY with 9 scenes (was 5/5) | Move to Scene 6 or 7 |
 | body_trigger | NOT SKIN if CREAMY (was 5/5 default) | Pick MOUTH, NOSE, or STOMACH |
 | Loop close | NOT "Still [X]." | Use active food verb or body command |
+| body_trigger (ALL groups) | NOT same as previous video (check blacklist) | Pick from the other 4 triggers |
+| Scene 1 SP (ALL groups) | NOT 7 for 3+ consecutive videos | Vary: 5, 6, 8, or 9 |
+| SP peak position | NOT Scene 5 for 3+ consecutive videos | Move peak to Scene 3, 4, or 6 |
+| Emotional arc | NOT ARC A (CLASSIC) for 3+ consecutive videos | Use ARC B (MYSTERY) or ARC C (COMEDY) |
+| Narrative structure | NOT same structure (A-E) as previous video | State different structure in _concept_reasoning |
 
-**⚠️ This anti-default check applies ONLY to CREAMY because it was tested. For other groups, apply the same principle if testing reveals defaults.**
+**⚠️ These anti-default checks apply to ALL texture groups.** The CREAMY-specific rules above were discovered through testing. The universal rules below prevent template gravity across ANY texture group. If the blacklist is empty, use the NO-BLACKLIST RANDOMIZATION function to ensure variety.
 
 ---
 
@@ -3150,3 +3186,7 @@ Before outputting JSON, verify these are NOT template-locked:
 | 2 | `title` | NOT always FOOD_BUILD ("I [verb]ed...") | Lead with FORBIDDEN_FOOD or POV_SENSATION |
 | 3 | `controversy_seed.technique` | NOT always THE_PHYSICS | Default = THE_CHALLENGE or THE_CURSED |
 | 4 | `energy_level` arc | NOT always VALLEY shape | Pick from MIDDLE ARC SHAPES table |
+| 5 | `gen2_visual_params.dominant_color` | NOT grey/gray/blue in food scenes | Warm food color: golden, brown, amber, copper. Grey = appetite killer |
+| 6 | `hook.body_trigger` | NOT SKIN every time (Gemini default) | Rotate: MOUTH → EARS → NOSE → STOMACH → SKIN. Match to food texture. |
+| 7 | `scenes[money].sensory_pressure` peak position | NOT always mid-video (Scene 4-5) | Vary: early peak (S3), mid (S4-5), late (S6). Different peak = different emotional shape. |
+| 8 | `hook.scene_1_entry_type` | NOT always MACRO_ENTRY | After 3 consecutive MACRO_ENTRY → use SCALE_SHOCK (if food texture fills frame at scale) |

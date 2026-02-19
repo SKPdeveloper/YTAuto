@@ -171,6 +171,9 @@ _PURPOSE_FIXES: dict = {
     "AFTERMATH": "FEATURE_HIGHLIGHT",
 }
 
+# Appetite-killing dominant_color keywords → auto-replace with food color
+_GREY_COLOR_WORDS: set = {"grey", "gray", "slate", "charcoal", "ash"}
+
 # Texture group → default temperature word mapping
 _TEXTURE_TO_TEMP: dict = {
     "crispy": "Still warm.",
@@ -378,6 +381,7 @@ def autocorrect_gen1(data: Dict[str, Any]) -> Tuple[Dict[str, Any], List[AutoFix
     _fix_description_line1(d, w)
     _fix_title_default_rotation(d, w)       # BUG 6: FOOD_BUILD → other
     _fix_controversy_rotation(d, w)         # BUG 9: THE_PHYSICS → other
+    _fix_grey_dominant_color(d, scenes, w)  # OPT: grey→warm color in food scenes
     _fix_full_script_rebuild(d, scenes, w)  # ALWAYS last — rebuilds from segments
 
     return d, w
@@ -1501,6 +1505,43 @@ def _fix_controversy_rotation(d: dict, w: list) -> None:
     cs["technique"] = new_tech
     w.append(AutoFixWarning("controversy_seed.technique",
         f"Controversy rotation: THE_PHYSICS → {new_tech}"))
+
+
+def _fix_grey_dominant_color(d: dict, scenes: list, w: list) -> None:
+    """Replace grey/gray dominant_color in food-dominant scenes with food's primary color."""
+    food_identity = d.get("food_identity")
+    if not isinstance(food_identity, dict):
+        return
+    color_kws = food_identity.get("color_keywords", [])
+    if not isinstance(color_kws, list) or not color_kws:
+        return
+    # Use first color keyword as replacement (e.g. "golden amber", "baked brown")
+    replacement_color = color_kws[0] if isinstance(color_kws[0], str) else "golden brown"
+
+    # Check if food is cold — skip fix for frozen foods
+    atmos = food_identity.get("atmosphere", "")
+    if isinstance(atmos, str) and any(w_word in atmos.lower() for w_word in ("cold", "frozen", "icy", "glacial")):
+        return
+
+    for scene in scenes:
+        if not isinstance(scene, dict):
+            continue
+        if scene.get("food_visual_ratio") != "FOOD_DOMINANT":
+            continue
+        g2 = scene.get("gen2_visual_params")
+        if not isinstance(g2, dict):
+            continue
+        dom = g2.get("dominant_color", "")
+        if not isinstance(dom, str):
+            continue
+        dom_lower = dom.lower()
+        if any(grey_word in dom_lower for grey_word in _GREY_COLOR_WORDS):
+            old_val = dom
+            g2["dominant_color"] = replacement_color
+            sn = scene.get("scene_number", "?")
+            w.append(AutoFixWarning(
+                f"scenes[S{sn}].gen2_visual_params.dominant_color",
+                f"Grey '{old_val}' → '{replacement_color}' (appetite-suppressing color in food scene)"))
 
 
 def _fix_full_script_rebuild(d: dict, scenes: list, w: list) -> None:

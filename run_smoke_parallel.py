@@ -302,7 +302,7 @@ async def main():
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print("#" * 70)
-    print(f"  GEN1 v9.2.1 PARALLEL SMOKE TEST — {timestamp}")
+    print(f"  GEN1 v9.3.0 PARALLEL SMOKE TEST — {timestamp}")
     print(f"  Model: {settings.CONTENTBRAIN_MODEL}")
     print(f"  Strategy: 3 tests, 10s stagger between API calls")
     print("#" * 70)
@@ -314,9 +314,9 @@ async def main():
     print(f"GEN1 prompt: {len(gen1_prompt):,} chars")
 
     tests = [
-        ("smoke33_pancake", "Pancake pagoda with maple syrup waterfalls and butter meditation gardens", 0),
-        ("smoke34_pretzel", "Pretzel fortress with mustard moat and salt crystal watchtowers", 10),
-        ("smoke35_auto", None, 20),
+        ("smoke35_donut", "Donut cathedral with glaze stained glass windows and sprinkle gargoyles", 0),
+        ("smoke36_sushi", "Sushi skyscraper with soy sauce river and wasabi smoke stacks", 10),
+        ("smoke37_auto", None, 20),
     ]
 
     t_start = time.time()

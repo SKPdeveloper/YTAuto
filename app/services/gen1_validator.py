@@ -186,6 +186,19 @@ MIN_PROMPT_SNIPPET_LENGTH = 10
 
 COLOR_WORDS: Set[str] = {"golden", "white", "black", "red", "blue", "green", "pink", "orange", "silver", "purple", "brown", "yellow"}
 
+# Appetite-suppressing dominant colors (grey/blue kill hunger response)
+_APPETITE_KILLER_COLORS: Set[str] = {"grey", "gray", "blue", "purple", "silver", "slate", "charcoal", "ash"}
+
+# Saliva trigger words for money_shot craving anchor
+_SALIVA_TRIGGERS: Set[str] = {
+    "stretching", "stretch", "dripping", "drip", "drips",
+    "cracking", "crack", "cracks", "breaking", "break", "breaks", "snapping", "snap",
+    "melting", "melt", "melts", "pouring", "pour", "pours",
+    "oozing", "ooze", "oozes", "soaking", "soak", "absorbing", "absorbed",
+    "bubbling", "bubble", "sizzling", "sizzle", "pulling", "pull",
+    "tearing", "tear", "splitting", "split", "fracturing", "fracture",
+}
+
 # Sensory channel keywords for 4-channel audit
 _THERMAL_WORDS = {"warm", "hot", "cold", "cool", "steaming", "frozen", "heat", "burning", "icy", "chilled", "sizzling", "boiling", "lukewarm", "scalding", "frosty", "molten"}
 _TACTILE_WORDS = {"stick", "sticky", "squishy", "rough", "smooth", "soft", "hard", "wet", "dry", "gooey", "crispy", "crunchy", "slippery", "gritty", "velvety", "silky", "pull", "sink", "press", "squeeze", "crumble", "flaky", "elastic", "rubbery", "brittle"}
@@ -360,6 +373,8 @@ class Gen1Validator:
         self._validate_sensory_channels()
         self._validate_sp_curve_rules()
         self._validate_humor()
+        self._validate_dominant_color_appetite()
+        self._validate_money_shot_saliva_trigger()
 
     # ========================================================================
     # VALIDATION METHODS
@@ -892,9 +907,9 @@ class Gen1Validator:
         elif ms_count > 1:
             self._warn("scenes", f"{ms_count} money_shot scenes (exactly 1 allowed)")
 
-        # Money shot timing — must be in optimal range [ceil(N*0.5), ceil(N*0.7)]
-        lower = math.ceil(total * 0.5)
-        upper = math.ceil(total * 0.7)
+        # Money shot timing — must be in optimal range [ceil(N*0.6), ceil(N*0.8)]
+        lower = math.ceil(total * 0.6)
+        upper = math.ceil(total * 0.8)
         for s in scenes:
             if isinstance(s, dict) and isinstance(s.get("money_shot"), dict) and s["money_shot"].get("is_money_shot"):
                 msn = s.get("scene_number", 0)
@@ -1136,11 +1151,20 @@ class Gen1Validator:
             return
         total = len(sp_vals)
 
-        # SP peak must be in last third
+        # SP peak position check (two tiers)
         peak_idx = sp_vals.index(max(sp_vals))
+        half_point = total // 2  # first half boundary
         last_third_start = total * 2 // 3
-        if peak_idx < last_third_start and max(sp_vals) >= 9:
-            self._warn("scenes.sensory_pressure", f"Peak SP at Scene {peak_idx+1} — should be in last third (Scene {last_third_start+1}+)")
+        if max(sp_vals) >= 9:
+            if peak_idx < half_point:
+                # Peak in first half = ERROR (creates boring second half, kills completion)
+                self._error("scenes.sensory_pressure",
+                            f"Peak SP={max(sp_vals)} at Scene {peak_idx+1}/{total} — in first half! "
+                            f"Must be Scene {half_point+1}+ (completion rate drops when climax is too early)",
+                            code="SP_PEAK_FIRST_HALF")
+            elif peak_idx < last_third_start:
+                self._warn("scenes.sensory_pressure",
+                           f"Peak SP at Scene {peak_idx+1} — should be in last third (Scene {last_third_start+1}+)")
 
         # SP 9-10 not adjacent
         for i in range(len(sp_vals) - 1):
@@ -1209,6 +1233,67 @@ class Gen1Validator:
                         self._warn(f"humor[{i}]", f"Humor in Scene {hsn} (SP={sp_val}) — jokes only in SP ≤ 6 scenes")
                 except (ValueError, TypeError):
                     pass
+
+    def _validate_dominant_color_appetite(self) -> None:
+        """Warn when food-dominant scenes use appetite-killing dominant_color."""
+        scenes = self._data.get("scenes", [])
+        if not isinstance(scenes, list):
+            return
+        # Check if food is cold (ice cream, frozen) — cold food gets a pass on blue
+        food_identity = self._data.get("food_identity", {})
+        is_cold_food = False
+        if isinstance(food_identity, dict):
+            atmos = food_identity.get("atmosphere", "")
+            if isinstance(atmos, str) and any(w in atmos.lower() for w in ("cold", "frozen", "icy", "glacial")):
+                is_cold_food = True
+        for i, scene in enumerate(scenes):
+            if not isinstance(scene, dict):
+                continue
+            fvr = scene.get("food_visual_ratio", "")
+            if fvr != "FOOD_DOMINANT":
+                continue
+            g2 = scene.get("gen2_visual_params")
+            if not isinstance(g2, dict):
+                continue
+            dom_color = g2.get("dominant_color", "")
+            if not isinstance(dom_color, str):
+                continue
+            dom_lower = dom_color.lower()
+            # Skip cold-food exceptions
+            if is_cold_food:
+                continue
+            for killer in _APPETITE_KILLER_COLORS:
+                if killer in dom_lower:
+                    self._warn(
+                        f"scenes[{i}].gen2_visual_params.dominant_color",
+                        f"Appetite-suppressing color '{dom_color}' in food-dominant scene",
+                        suggestion="Use warm food color: golden, brown, amber, copper, caramel",
+                    )
+                    break
+
+    def _validate_money_shot_saliva_trigger(self) -> None:
+        """Ensure money_shot still_image_description contains a saliva trigger word."""
+        scenes = self._data.get("scenes", [])
+        if not isinstance(scenes, list):
+            return
+        for i, scene in enumerate(scenes):
+            if not isinstance(scene, dict):
+                continue
+            ms = scene.get("money_shot")
+            if not isinstance(ms, dict) or not ms.get("is_money_shot"):
+                continue
+            desc = ms.get("still_image_description", "")
+            if not isinstance(desc, str):
+                continue
+            desc_lower = desc.lower()
+            has_trigger = any(trigger in desc_lower for trigger in _SALIVA_TRIGGERS)
+            if not has_trigger:
+                self._warn(
+                    f"scenes[{i}].money_shot.still_image_description",
+                    "No saliva trigger word found (craving anchor missing)",
+                    suggestion="Include one of: stretching, dripping, cracking, melting, pouring, oozing, soaking, bubbling, sizzling",
+                )
+            break  # Only one money_shot
 
     # ========================================================================
     # HELPERS

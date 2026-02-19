@@ -197,6 +197,14 @@ class PromptRouter:
         # Track last GEN1 parse error for retry guidance
         self._last_gen1_parse_error: Optional[str] = None
 
+        # Pre-generate GEN2 JSON schema for Gemini structured output
+        self._gen2_json_schema: Optional[Dict] = None
+        try:
+            self._gen2_json_schema = Gen2BatchOutput.model_json_schema()
+            logger.info(f"  GEN2 JSON schema: generated ({len(json.dumps(self._gen2_json_schema))} chars)")
+        except Exception as e:
+            logger.warning(f"  GEN2 JSON schema: failed to generate ({e}), will use mime-type only")
+
         # Initialize Gemini client
         self.client = genai.Client(api_key=settings.GOOGLE_GEMINI_API_KEY)
         self.model = settings.CONTENTBRAIN_MODEL  # gemini-3-pro
@@ -869,17 +877,22 @@ You MUST fix ALL the issues listed above. Pay special attention to:
         user_prompt = self._build_gen2_user_prompt(payload, retry_guidance)
 
         try:
+            # Build Gemini config with JSON schema enforcement if available
+            gen2_config = types.GenerateContentConfig(
+                system_instruction=self.gen2_prompt,
+                temperature=1.0,  # Gemini 3 Pro optimized (thinking model)
+                max_output_tokens=16384,  # Reduced - some models have lower limits
+                response_mime_type="application/json",
+            )
+            if self._gen2_json_schema:
+                gen2_config.response_json_schema = self._gen2_json_schema
+
             # Call Gemini with GEN2 system prompt (with timeout)
             response = await asyncio.wait_for(
                 self.client.aio.models.generate_content(
                     model=self.model,
                     contents=user_prompt,
-                    config=types.GenerateContentConfig(
-                        system_instruction=self.gen2_prompt,
-                        temperature=1.0,  # Gemini 3 Pro optimized (thinking model)
-                        max_output_tokens=16384,  # Reduced - some models have lower limits
-                        response_mime_type="application/json",
-                    ),
+                    config=gen2_config,
                 ),
                 timeout=GEMINI.GEN2_CALL,
             )
@@ -1002,51 +1015,34 @@ You MUST fix ALL the issues listed above before generating output.
 
 """
 
+        scene_count = len(payload.scenes)
+
         return f"""Generate visual prompts for the following creative brief:
 
 {payload_json}
 
-⚠️ TOKEN LIMIT WARNING: Keep your response CONCISE to avoid truncation!
-- image_prompt: MAX 150 words each
-- video_prompt: MAX 40 words each
+⚠️ TOKEN LIMIT: Keep CONCISE to avoid truncation.
+- image_prompt: per WORD COUNT HIERARCHY in system prompt (money shot 130-150w, others less)
+- video_prompt: per ENERGY LEVELS table (15-40 words depending on energy)
 - motion_elements: MAX 4 items per scene
-- scale_techniques: Keep brief, 5-10 words per field
 
-CRITICAL REQUIREMENTS:
+REQUIREMENTS:
 
-1. SCENE COUNT (MANDATORY - DO NOT SKIP!):
-   - You MUST return scenes matching the GEN1 scene count from the input
-   - scene_number MUST be: 1 through N (in order, no duplicates, no gaps)
-   - Process ALL scenes from the input - do not skip any!
+1. SCENE COUNT: Return EXACTLY {scene_count} scenes, scene_number 1 through {scene_count}, no gaps.
 
-2. IMAGE PROMPTS:
-   - Use formulas from system prompt
-   - Include "--no tilt-shift, miniature, diorama..." negative prompt
-   - Include "subject positioned in upper portion of frame for vertical safe zone"
-   - Scene 1 (PRIMARY): Full description with foreground, landscaping
-   - REQUIRES_REF: Include "Maintaining exact design and material consistency..."
-   - INDEPENDENT (interior): Include food floor, furniture, fixtures
-   - NO --ar (hardcoded in software)
+2. TIER SYSTEM: Assign visual_tier MECHANICALLY from sensory_pressure + money_shot per system prompt rules. Write money shot scene FIRST (≥130 words, longest in output).
 
-3. VIDEO PROMPTS:
-   - MAX 40 words
-   - 2-3+ motion elements per scene
-   - NO banned words (slow, gentle, accelerating, rack focus, speed ramp)
-   - Include camera movement
-   - NO duration spec like "10s" (hardcoded in software)
+3. IMAGE PROMPTS: Use FORMULAS from system prompt per tier. Negative prompt required. Safe zone required. NO --ar, NO --duration, NO quality specs.
 
-4. SCENE 1 MUST HAVE first_frame_composition
+4. VIDEO PROMPTS: Use SP-driven motion vocabulary. NO banned words (slow, gentle, subtle, drifting, floating, gliding, accelerating, rack focus, speed ramp). NO "10s". Gerunds required.
 
-5. LAST SCENE LOOP REQUIREMENTS (CRITICAL!):
-   - reference_type MUST be "LOOP_CLOSE" (NOT "REQUIRES_REF"!)
-   - Must match Scene 1 for seamless loop
-   - Must have inheritance object referencing Scene 1
+5. LOOP_CLOSE: Last scene reference_type="LOOP_CLOSE" with inheritance. Different camera movement from Scene 1. Reversal-safe motion only. Standalone description (no "Scene 1", "identical", "matching").
 
-6. OUTPUT STRUCTURE:
-   - scenes: array of Gen2SceneOutput objects with scene_number 1 through N
-   - visual_summary: summary object with total_scenes matching scene count
+6. COLOR ACCURACY: Warm/golden tones on FOOD SURFACES only. Environment keeps true natural colors. Anti-yellow in negative prompts.
 
-{retry_section}Output ONLY valid JSON matching Gen2BatchOutput schema."""
+7. Scene 1: first_frame_composition REQUIRED. body_trigger visual emphasis (≥2 keywords).
+
+{retry_section}Output ONLY valid JSON."""
 
     # =========================================================================
     # VALIDATION: VAL_GEN1 & VAL_GEN2
