@@ -117,10 +117,10 @@ class Settings(BaseSettings):
     )
 
     GEMINI_TEMPERATURE: float = Field(
-        default=0.3,
+        default=1.0,
         ge=0.0,
         le=2.0,
-        description="Temperature для Gemini (0.0-2.0)"
+        description="Temperature для Gemini 3 Pro (recommended: 1.0 for thinking models)"
     )
 
     GEMINI_MAX_OUTPUT_TOKENS: int = Field(

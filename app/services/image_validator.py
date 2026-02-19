@@ -82,7 +82,7 @@ class ImageValidator:
         # Validation config (new SDK uses types.GenerateContentConfig)
         self.validation_config = types.GenerateContentConfig(
             system_instruction=self.validation_prompt,  # VAL_IMG system prompt
-            temperature=0.2,  # Low for consistent validation
+            temperature=1.0,  # Gemini 3 Pro optimized (thinking model)
             top_p=0.95,
             top_k=40,
             max_output_tokens=4096,

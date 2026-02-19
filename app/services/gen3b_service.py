@@ -87,7 +87,7 @@ class Gen3bService:
         # Generation config for creative decisions
         self.config = types.GenerateContentConfig(
             system_instruction=self.system_prompt,
-            temperature=0.5,  # Higher for creative decisions
+            temperature=1.0,  # Gemini 3 Pro optimized (thinking model)
             top_p=0.95,
             max_output_tokens=settings.GEMINI_MAX_OUTPUT_TOKENS,
             response_mime_type="application/json",

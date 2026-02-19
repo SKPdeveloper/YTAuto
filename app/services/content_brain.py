@@ -181,7 +181,7 @@ class ContentBrain:
 
         # Models - використовуємо одну модель для всього (Gemini 3 Pro)
         self.model_name = settings.CONTENTBRAIN_MODEL  # gemini-3-pro
-        self.temperature = settings.GEMINI_TEMPERATURE  # 0.3
+        self.temperature = settings.GEMINI_TEMPERATURE  # 1.0 (Gemini 3 Pro default)
 
         # Generation configs (new SDK uses types.GenerateContentConfig)
         self.script_config = types.GenerateContentConfig(
@@ -193,7 +193,7 @@ class ContentBrain:
         )
 
         self.validator_config = types.GenerateContentConfig(
-            temperature=0.2,  # Lower for validation (more deterministic)
+            temperature=1.0,  # Gemini 3 Pro optimized (thinking model)
             top_p=0.95,
             top_k=40,
             max_output_tokens=2048,

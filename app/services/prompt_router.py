@@ -370,7 +370,7 @@ class PromptRouter:
                     contents=user_prompt,
                     config=types.GenerateContentConfig(
                         system_instruction=self.gen1_prompt,
-                        temperature=0.7,  # Creative for concept generation
+                        temperature=1.0,  # Gemini 3 Pro optimized (thinking model)
                         max_output_tokens=16384,  # Reduced - some models have lower limits
                         response_mime_type="application/json",
                     ),
@@ -876,7 +876,7 @@ You MUST fix ALL the issues listed above. Pay special attention to:
                     contents=user_prompt,
                     config=types.GenerateContentConfig(
                         system_instruction=self.gen2_prompt,
-                        temperature=0.3,  # Precise for prompt generation
+                        temperature=1.0,  # Gemini 3 Pro optimized (thinking model)
                         max_output_tokens=16384,  # Reduced - some models have lower limits
                         response_mime_type="application/json",
                     ),

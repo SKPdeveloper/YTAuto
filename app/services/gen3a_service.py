@@ -82,7 +82,7 @@ class Gen3aService:
         # Generation config for video analysis
         self.config = types.GenerateContentConfig(
             system_instruction=self.system_prompt,
-            temperature=0.2,  # Low for precise analysis
+            temperature=1.0,  # Gemini 3 Pro optimized (thinking model)
             top_p=0.95,
             max_output_tokens=settings.GEMINI_MAX_OUTPUT_TOKENS,
             response_mime_type="application/json",
