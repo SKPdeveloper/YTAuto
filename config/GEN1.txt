@@ -191,7 +191,7 @@ Your `_concept_reasoning` MUST also include:
 
 8. **Replay hooks plan** — State: "FEEL_AGAIN: [what] in Scene [N], description=[≥30 chars]. MISSED_DETAIL: [what] in Scene [M], description=[≥30 chars]."
 
-9. **ASMR + Money Shot plan** — State: "asmr_scenes=[N], money_shot=Scene [N] (SP=[value≥9], MUST be ≤Scene 4 for 8-scene or ≤Scene 5 for 10-scene — never past video midpoint). NOT at default position [X] because [reason OR 'matches default — acceptable because...']."
+9. **ASMR + Money Shot plan** — State: "asmr_scenes=[N], money_shot=Scene [N] (SP=[value≥9], position = ⌈N×0.5⌉ to ⌈N×0.7⌉, pick RANDOMLY within range). NOT at default position [X] because [reason OR 'matches default — acceptable because...']."
 
 10. **VARIETY DECISIONS** — State ALL of these explicitly:
     - "TEXTURE GROUP: [X]. Selection mode: [A: blacklist / B: concept contrast / B: hour-based]."
@@ -1004,6 +1004,16 @@ Every scene's `gen2_visual_params` MUST include this `negative_prompt` field:
 | **HAUNTED** | Gingerbread, caramel, dark chocolate, gothic structures | Desaturated warmth, candlelit pools in darkness, fog creeping, eerie beauty — **food must still look APPETIZING.** ⚠️ HAUNTED mode REQUIRES Tier S or A food (see Appetite Appeal Test). Tier C food + HAUNTED = double appetite suppression → REJECTED. |
 
 **Pick atmosphere that CONTRASTS expectations.** Chocolate + PLAYFUL is more surprising than Chocolate + CINEMATIC. Sushi + GOLDEN_WARM is warmer than expected.
+
+### ⛔ ATMOSPHERE + LIGHTING COLLISION BAN
+| Atmosphere | BANNED Lighting | Use Instead |
+|---|---|---|
+| CINEMATIC / NOIR | OVERCAST_SOFT | CANDLELIT_WARM, MOONLIT_SILVER |
+| HAUNTED | OVERCAST_SOFT, BLUE_HOUR | CANDLELIT_WARM |
+| ETHEREAL | MOONLIT_SILVER | MORNING_GOLDEN, TWILIGHT_PURPLE |
+
+Rule: low-visibility atmosphere → CONTRAST lighting (golden, candle, neon). Never double-dim.
+
 ---
 
 ## 🌡️ TEMPERATURE CONTRAST SYSTEM (COMMANDMENT 2 — MANDATORY)
@@ -1256,6 +1266,12 @@ To ensure total duration stays under 20s, follow this LOOKUP TABLE strictly:
 
 Select the type that best serves the NARRATIVE. Don't force types that don't fit the concept.
 
+### Scene Name Diversity
+`scene_name` = unique food-specific compound noun per scene.
+❌ BANNED: "detail", "texture", "cross-section", "interior", "close-up", "reveal", "overview"
+✅ GOOD: "crust-fracture", "caramel-drip", "crumb-cascade", "glaze-pool", "honey-bridge"
+Formula: [food-material]-[action/shape]. Each must be unique within the video.
+
 | Type Code | Description | When to Use | Reference Hint |
 |-----------|-------------|-------------|----------------|
 | `THEMATIC_INTERIOR` | Inside the structure (rooms, halls, corridors) | When subject HAS an interior | INDEPENDENT |
@@ -1339,16 +1355,14 @@ Exactly ONE middle scene must be STRUCTURAL_DETAIL with ALL of:
 - At least one middle scene must be HIGH or EXPLOSIVE (maintain momentum)
 - Energy should generally BUILD toward Scene N-1 (the climax)
 
-**Energy Arc Examples (for different scene counts):**
+**Energy Arc RULES (generate unique arc — NO templates):**
+- Scene 1 = HIGH or EXPLOSIVE (anchor)
+- At least 1 valley (LOW or MEDIUM) in middle third
+- Max 2 consecutive scenes at same energy level
+- Last 2 scenes before LOOP_CLOSE must include ≥1 EXPLOSIVE
+- Energy generally BUILDS toward N-1 (dips allowed, not strict ramp)
 
-| Scenes | Scene 1 | Middle scenes... | N-1 | N |
-|--------|---------|------------------|-----|---|
-| 6 scenes | HIGH | MED, HIGH, LOW | EXPLOSIVE | HIGH |
-| 7 scenes | EXPLOSIVE | HIGH, MED, LOW, HIGH | EXPLOSIVE | HIGH |
-| 8 scenes | HIGH | MED, HIGH, MED, LOW, HIGH | EXPLOSIVE | HIGH |
-| 10 scenes | HIGH | MED, HIGH, MED, LOW, MED, HIGH, HIGH | EXPLOSIVE | HIGH |
-
-*These are EXAMPLES. Create your own arc that fits the concept.*
+⛔ ANTI-TEMPLATE: If your arc = [HIGH, MED, HIGH, MED, LOW, HIGH, EXPLOSIVE, HIGH] → you copied a default. Swap 2 adjacent energy levels.
 
 ### Loop Engineering (CRITICAL) — COMMANDMENT 4: INFINITE FLOW
 
@@ -1694,7 +1708,7 @@ Every video ends with **THE WARNING** — a catchy, shareable line delivered in 
 **Rules:**
 - 3-8 words, punchy, quotable, tongue-in-cheek advisory about the food-building
 - Must appear in the `warning_line` top-level field AND in Scene N-1's `voiceover_segment` AND in `voiceover.full_script`
-- Pick ONE of 3 FORMATS per video (rotate to prevent formula fatigue after 30+ videos):
+- Pick ONE of 6 FORMATS per video (A-F, rotate to prevent formula fatigue after 30+ videos):
 
 **FORMAT A — Standard (use ~60% of videos):**
 `"Don't [FOOD_ACTION] the [ARCHITECTURE_ELEMENT]."`
@@ -1706,6 +1720,21 @@ The dare INVERTS the warning — instead of "don't do it", it CHALLENGES the vie
 **FORMAT C — Third-Party (use ~20% of videos):**
 `"The architect says: nobody [FOOD_ACTION] the [ARCHITECTURE_ELEMENT]."`
 The third-party voice adds MYSTERY — who is this architect? Creates lore/world-building for returning viewers.
+
+**FORMAT D — Consequence (use ~15%):**
+`"The [ARCHITECTURE_ELEMENT] [CONSEQUENCE_VERB]."`
+CONSEQUENCE_VERB: remembers, knows, watches, waits, listens, breathes
+✅ "The vault remembers." ✅ "The columns know."
+
+**FORMAT E — Origin Warning (use ~10%):**
+`"[MATERIAL] was never meant for [FOOD_PROCESS]."`
+MATERIAL: stone/glass/steel/wood/iron/concrete. PROCESS: baking/melting/freezing/frying/pouring/glazing.
+✅ "Stone was never meant for baking."
+
+**FORMAT F — Nobody Warns (use ~10%):**
+`"Nobody warns you about the [SPECIFIC_DETAIL]."`
+DETAIL: specific element from THIS video (second layer, last step, third floor).
+✅ "Nobody warns you about the second layer."
 
 **THE ARCHITECT — LORE BUILDING (optional spotlight):**
 When using Format C, you may ALSO reference "the architect" in ONE of these additional ways per video (pick max 1):
@@ -1743,6 +1772,18 @@ FORMAT C:
 ✅ "The architect says: nobody drink the pool."
 ✅ "The architect says: nobody touch the beams."
 
+FORMAT D:
+✅ "The vault remembers."
+✅ "The columns know."
+
+FORMAT E:
+✅ "Stone was never meant for baking."
+✅ "Glass was never meant for melting."
+
+FORMAT F:
+✅ "Nobody warns you about the second layer."
+✅ "Nobody warns you about the last step."
+
 ❌ "Don't eat the chips."    → "chips" is not architecture
 ❌ "Don't touch the dice."   → "dice" is not architecture
 ❌ "Be careful."             → wrong format
@@ -1754,7 +1795,7 @@ FORMAT C:
 
 **⛔ WARNING_LINE STRICT ENFORCEMENT (STOP-LEVEL):**
 
-Before outputting, verify: (1) [ACTION] is from FOOD_ACTION list above, (2) [ELEMENT] is from ARCHITECTURE_ELEMENT list above, (3) format is EXACTLY A/B/C — no prepositions (in/on/at), no adjectives before element, (4) APPETITE TEST: the warning connects a FOOD action to a BUILDING part ("wait, you could EAT this?"). If any check fails → fix and re-check before outputting.
+Before outputting, verify: Format A/B/C: (1) [ACTION] is from FOOD_ACTION list, (2) [ELEMENT] is from ARCHITECTURE_ELEMENT list, (3) format exact — no prepositions (in/on/at), no adjectives before element. Format D: [ELEMENT] from list + [VERB] from CONSEQUENCE_VERB list. Format E: [MATERIAL] + [PROCESS] from lists above. Format F: [DETAIL] is specific to THIS video. (4) APPETITE TEST: warning connects food/building ("wait, you could EAT this?"). If any check fails → fix and re-check.
 
 ### ⚠️ WARNING_LINE DELIVERY (Brand Signature)
 
@@ -1878,8 +1919,9 @@ On-screen text is a SEPARATE message that makes the video understandable ON MUTE
 
 | Rule | Guideline |
 |------|-----------|
-| **Density** | **1-2 jokes per video MAX** (one in hook zone, one optional in middle). ASMR-FIRST and sensory scenes have ZERO jokes. |
-| **Variety** | Each joke MUST use a DIFFERENT humor type — never two of the same mechanic in one video |
+| **Density** | **2 humor beats per video** (excluding Scene 1 and Scene N). ASMR/money_shot scenes = ZERO jokes. |
+| **Distribution** | ≥1 humor beat in second half (scene ≥ ⌈N/2⌉). Humor ONLY in scenes 2-3 = front-loaded = wrong. |
+| **Variety** | No 2 consecutive humor beats of same humor_type. Each joke MUST use a DIFFERENT humor type. |
 | **Character** | Never break Sensory Witness persona — you WITNESS and REPORT, not SELL |
 | **The Turn** | Every joke needs an UNEXPECTED element — setup leads one way, punchline goes another |
 | **Explanation** | NEVER explain the joke |
@@ -2074,12 +2116,14 @@ Every video must have **at least 2 Replay Hooks** using these mechanisms:
 
 **Scene N-2 or N-1 MUST contain an open loop** — an unresolved statement that forces the viewer to keep watching.
 
-**VO patterns (use or adapt):**
-- "One more thing..."
-- "The real problem is..."
-- "Except..."
-- "Almost forgot..."
-- "Underneath..."
+**VO patterns — 5 FORMULAS (rotate, NEVER repeat same formula 2x in a row):**
+- Formula A: "One more [specific_noun]..." → teases remaining content
+- Formula B: "Wait until the [specific_reveal]..." → builds anticipation
+- Formula C: "You haven't seen the [hidden_thing] yet..." → implies discovery
+- Formula D: "Almost there — [specific_action]..." → progress + tease
+- Formula E: "The [reveal_noun] is next..." → direct promise
+
+⛔ ANTI-LOCK: If vo_trigger starts with "One more" → check didn't use Formula A last time. If unsure → pick B/C/D/E.
 
 **⚠️ Do NOT use "But..." or "And..." as completion bait openers — these are banned narrative bridges (see NARRATIVE BRIDGE BAN). Use the patterns above instead.**
 
@@ -2181,14 +2225,14 @@ These rules apply to ALL variants (`title`, `title_variants[]`, `description`, `
 - Each variant uses a DIFFERENT hook angle (price, material, warning, humor)
 - **FOOD KEYWORD in ALL CAPS or naturally prominent** — "BUTTER", "MELTING chocolate"
 
-### Title Formulas (ALGORITHM DISCOVERY — MANDATORY 4 VARIANTS from 6 formulas)
+### Title Formulas (ALGORITHM DISCOVERY — MANDATORY 4 VARIANTS from 10 formulas)
 
 **⚠️ ALGORITHM DISCOVERY PRINCIPLE:**
 YouTube classifies videos into audience buckets by title + description + first frame. If YouTube can't classify your video → it shows to random people → they swipe → video dies. Your title MUST contain keywords that map to EXISTING large niches: oddly satisfying, forbidden food, food ASMR, food art, megalophobia. The architecture is your HOOK, but the food is your TICKET into the algorithm.
 
 **THE BRIDGE RULE:** Every title must contain: (1) a SATISFYING/SENSORY trigger word (melting, sticky, dripping, crunchy, edible, built) AND (2) the FOOD name AND (3) optionally the structure. YouTube NLP reads "BUTTER" + "MELTING" = food satisfying bucket (500M+ audience). YouTube reads "The Onion Ring Collider" = ??? (no bucket = death).
 
-You MUST generate exactly **4 title variants**. Choose 4 from these 6 formulas (rotate which 4 you use across videos — don't always pick the same 4):
+You MUST generate exactly **4 title variants**. Choose 4 from these 10 formulas (rotate which 4 you use across videos — don't always pick the same 4):
 
 | Formula Code | Pattern | Example | Psychology | Algorithm Bucket |
 |---|---|---|---|---|
@@ -2198,6 +2242,10 @@ You MUST generate exactly **4 title variants**. Choose 4 from these 6 formulas (
 | **POV_SENSATION** | "POV: [tactile food sensation] [emoji]" | "POV: The walls are STICKY 🥜" | Self-insertion + tactile trigger | oddly satisfying, POV |
 | **FOOD_SCALE** | "[Number] [FOOD] as a [structure] [emoji]" | "50,000 marshmallows as a building 🏭" | Scale + food = curiosity | megalophobia, satisfying |
 | **EDIBLE_WORLD** | "Every [element] is [FOOD/edible] [emoji]" | "Every wall in this prison is chocolate 🍫" | Edible world fantasy | forbidden snacks, food art |
+| **IMPOSSIBLE_CLAIM** | "The [adj] [FOOD] that [impossible] [emoji]" | "The STICKY honey that holds a skyscraper 🍯" | Impossibility + food | oddly satisfying |
+| **LAYER_COUNT** | "[Number] layers of [FOOD] — [consequence] [emoji]" | "47 layers of BUTTER — still melting 🧈" | Numbers + process | satisfying, food |
+| **HIDDEN_FOOD** | "This [place] hides [FOOD] inside [unexpected] [emoji]" | "This subway hides CHOCOLATE inside every wall 🍫" | Discovery + food | forbidden snacks |
+| **FOOD_EQUATION** | "[FOOD] + [unexpected] = [result] [emoji]" | "HONEY + concrete = this building 🏗️" | Contrast + food | satisfying, food art |
 
 **⚠️ FOOD_BUILD VERB PREFERENCE:** Prefer **food-action verbs** over "built/made" — food verbs prime viewer for FOOD first. ✅ "I MELTED a lighthouse out of BUTTER 🧈" > ⚠️ "I built a lighthouse out of BUTTER 🧈". Choose verb matching food's PRIMARY ACTION: melted, stacked, poured, baked, fried, layered, smoked, glazed, stuffed, rolled.
 
@@ -2209,6 +2257,7 @@ You MUST generate exactly **4 title variants**. Choose 4 from these 6 formulas (
 5. Would make YOU stop scrolling
 
 **Rules:** Exactly 4 `title_variants`, `title` = strongest variant. No prices. Vary which 4 formulas you pick across videos.
+⛔ TITLE DIVERSITY: 4 variants MUST use ≥3 DIFFERENT formula codes.
 
 **⚠️ WEAK titles — ALGORITHM DEATH (AVOID):**
 - Too clever/abstract: "The Onion Ring Collider 🧅" (YouTube can't classify → no bucket → dies)
@@ -2646,9 +2695,9 @@ Pipeline validator handles structural checks (field presence, JSON format, durat
 1. **HOOK + FIRST FRAME:** Scene 1 reads as "food/satisfying" not "3D building"? MACRO_ENTRY default (cold start). `first_frame_composition` with `frame_coverage_pct` ≥ 70, `pareidolia_element`, food MOTION in first frame. If 3+ elements match examples → change them.
 2. **SCRIPT SYNC:** (a) Every `narrator_script` = zero tags. Every `voiceover_segment` = same words + ≥1 [tag]. (b) Word count: 2.0s=MAX 4, 3.0s=MAX 7. COUNT NOW. (c) Scene N-1: `narrator_script` = warning_line text, `voiceover_segment` = `"[whispers] {warning_line}"` — ONLY that, no bridges. (d) `full_script` = concatenation of ALL `voiceover_segment` in order. No extra text. Rebuild if mismatch.
 3. **SENSORY AUDIT:** (a) 4 channels in ACTUAL VO text: THERMAL (Scene 1), TACTILE, OLFACTORY, TEMPORAL FRESHNESS. Cite exact VO per channel. (b) Every `narrator_script` has ≥1 sensation word (touch/thermal/smell/taste/sound/moisture/weight). No labels, no events, no numbers, no "[food]. Everywhere." pattern. (c) Scene 1 starts with temperature word. Scene N has sensation word.
-4. **WARNING LINE:** [ACTION] from food-action whitelist + [ELEMENT] from architecture whitelist. Format A/B/C exact — no prepositions, no adjectives. In Scene N-1 VO + full_script. Description CTA derived from it.
+4. **WARNING LINE:** Format A/B/C: [ACTION] from food-action whitelist + [ELEMENT] from architecture whitelist, exact format — no prepositions, no adjectives. Format D/E/F: see rules above. In Scene N-1 VO + full_script. Description CTA derived from it.
 5. **LOOP + FOREGROUND:** Scene N duplicates Scene 1 `visual_concept` + `gen2_visual_params` (real values, not "SAME as"). Reversal-safe motion only. Foreground matches Scene 1. No banned foreground words (particles/flakes/crumbs/steam/fog/etc.) → solid objects only.
-6. **MONEY SHOT + ASMR:** Exactly 1 `money_shot` (SP ≥ 9, ≤ midpoint). `asmr_scenes` has 1-2 entries. Money shot VO: MODE A (CRISPY) = `"[silence]"`, MODE B (CREAMY) = `"[long pause] [whispers] <word>."`. `snap_moment` present.
+6. **MONEY SHOT + ASMR:** Exactly 1 `money_shot` (SP ≥ 9, ⌈N×0.5⌉ to ⌈N×0.7⌉). `asmr_scenes` has 1-2 entries. Money shot VO: MODE A (CRISPY) = `"[silence]"`, MODE B (CREAMY) = `"[long pause] [whispers] <word>."`. `snap_moment` present.
 7. **RETENTION HOOKS:** Scene 2 has `micro_open_loop` (≠ completion_bait text). 1 `pattern_interrupt` in second quarter. `completion_bait.vo_trigger` appears VERBATIM in its scene's `voiceover_segment`. No banned bridge starters (but/and/deeper/further...).
 8. **HUNGER GRADIENT:** SP average ≥ 5, peak 9-10, no two 9-10 adjacent. SP ramp before money_shot (K-1 ≥ 8). `replay_hooks` ≥ 2 (FEEL_AGAIN + MISSED_DETAIL). 1 `food_reclamation` in scenes 3-6.
 9. **GENERATION LOCK:** `_concept_reasoning` has all 11 points. Texture group + positions match DECISION RANGES. Structure A-E named. Anti-default check (CREAMY: no SKIN body_trigger, no THE_PRICE, no MOTION_MATCH).
@@ -2879,7 +2928,7 @@ YouTube algorithm 2025: completion rate > everything. A 15-second video with 85%
 |---|---|---|---|---|
 | **SCROLL STOP** | 0-2s | Scene 1 | Stop the thumb. | First frame: impossible visual. SP ≥ 5. Motion in frame. Hook VO ≤ 8 words. |
 | **COMMITMENT** | 3-5s | Scene 2-3 | Lock the viewer in. | Open loop: tease interior/reveal/"but the inside..." Viewer NEEDS to see what's next. |
-| **PAYOFF** | 60-80% of video | ASMR + Money Shot scene | Deliver the promise. | The moment they came for. Peak SP=10. Pure sensory. Zero VO. The screenshot moment. |
+| **PAYOFF** | Scene ⌈N×0.5⌉ to ⌈N×0.7⌉ | ASMR + Money Shot scene | Deliver the promise. | The moment they came for. Peak SP=10. Pure sensory. Zero VO. The screenshot moment. |
 | **REPLAY TRIGGER** | Last 2s | Loop Close scene | Force rewatch. | Seamless loop OR unanswered question OR hidden detail. NEVER a conclusion. |
 
 ### LOOP QUALITY RULES

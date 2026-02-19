@@ -63,6 +63,20 @@ VALID_ARCHITECTURE_ELEMENTS: set = {
     "pool", "fence", "chimney", "columns", "railing", "pipes", "beams", "tiles",
     "foundation", "ledge", "fountain", "bridge", "arch", "balcony", "tower",
     "dome", "porch", "gutter", "bars",
+    # Religious/cultural architecture
+    "altar", "pew", "pews", "nave", "aisle", "spire", "vault", "crypt",
+    "chancel", "apse", "pillar", "gargoyle", "buttress", "minaret", "bell",
+    # Industrial/special
+    "reactor", "turbine", "conveyor", "silo", "tank", "vent", "hatch",
+    "platform", "catwalk", "crane", "furnace", "boiler",
+    # Mechanical/security (bank vaults, factories, etc.)
+    "lock", "dial", "handle", "knob", "lever", "switch", "panel",
+    "grate", "grille", "shutter", "valve", "gauge", "gear",
+    # Nature-integrated
+    "terrace", "courtyard", "garden", "pathway", "canal", "well",
+    # Transport/vehicle structures
+    "wheel", "track", "rail", "mast", "hull", "rudder", "propeller",
+    "cockpit", "cabin", "deck",
 }
 
 # Food actions whitelist (for warning_line)
@@ -70,12 +84,32 @@ VALID_FOOD_ACTIONS: set = {
     "lick", "bite", "eat", "drink", "touch", "taste", "chew", "nibble",
     "swallow", "smell", "scrape", "peel", "squeeze", "sip", "crunch",
     "snap", "break", "crack", "slice", "dip",
+    # Extended actions (from smoke tests 22-26)
+    "poke", "bounce", "press", "pull", "twist", "scratch", "tap",
+    "rub", "pinch", "grab", "yank", "prod", "punch", "kick", "step",
 }
 
 # Temperature words for THERMAL first word auto-fix
 TEMPERATURE_WORDS: set = {
     "warm", "hot", "cold", "cool", "steaming", "frozen",
     "still warm", "still hot", "still cold",
+}
+
+# Number words that already serve as thermal/sensory hook openers
+# (e.g. "Seventy-two layers", "Three thousand degrees", "Ninety degrees")
+_NUMBER_WORDS: set = {
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+    "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen",
+    "sixteen", "seventeen", "eighteen", "nineteen", "twenty", "thirty",
+    "forty", "fifty", "sixty", "seventy", "eighty", "ninety",
+    "hundred", "thousand", "million", "billion",
+}
+
+# Words that already imply temperature/sensation and shouldn't be prefixed
+_THERMAL_HOOK_WORDS: set = TEMPERATURE_WORDS | {
+    "degrees", "celsius", "fahrenheit", "boiling", "sizzling", "melting",
+    "burning", "scalding", "icy", "chilled", "molten", "bubbling",
+    "fresh", "crisp",
 }
 
 # Reversal-safe motion elements for Scene N
@@ -117,6 +151,15 @@ _PURPOSE_FIXES: dict = {
     "HOOK": "ESTABLISHING",
     "REVEAL": "FEATURE_HIGHLIGHT",
     "TRANSITION": "CONTEXTUAL_ENVIRONMENT",
+    # New hallucinations from Gemini 3 Pro (smoke23+)
+    "CONTEXT": "CONTEXTUAL_ENVIRONMENT",
+    "ACTION": "DYNAMIC_ACTION",
+    "OVERVIEW": "EXTERIOR_ANGLE",
+    "INTRO": "ESTABLISHING",
+    "CLOSE": "LOOP_CLOSE",
+    "WIDE": "EXTERIOR_ANGLE",
+    "MACRO": "DETAIL",
+    "SENSATION": "FEATURE",
 }
 
 # Texture group → default temperature word mapping
@@ -220,10 +263,14 @@ def _strip_tags(text: str) -> str:
     return re.sub(r'\[[\w\s]+\]\s*', '', text).strip()
 
 
-def _closest_match(word: str, valid_set: set, default: str) -> str:
-    """Find closest match using simple substring/prefix matching."""
+def _closest_match(word: str, valid_set: set, default: str, cutoff: float = 0.7) -> str:
+    """Find closest match using difflib. Higher cutoff = more conservative.
+
+    Returns default only if no match found at given cutoff.
+    Use cutoff=0.7 (stricter) to avoid absurd replacements like 'lock' → 'silo'.
+    """
     import difflib
-    matches = difflib.get_close_matches(word, valid_set, n=1, cutoff=0.5)
+    matches = difflib.get_close_matches(word, valid_set, n=1, cutoff=cutoff)
     return matches[0] if matches else default
 
 
@@ -292,15 +339,27 @@ def autocorrect_gen1(data: Dict[str, Any]) -> Tuple[Dict[str, Any], List[AutoFix
 # ---------------------------------------------------------------------------
 
 def _fix_metadata_types(d: dict, w: list) -> None:
-    """Fix metadata type issues (scene_count as string, etc.)."""
+    """Fix metadata type issues (scene_count/target_duration_seconds as string, etc.)."""
     meta = d.get("metadata")
     if not isinstance(meta, dict):
         return
+
+    # scene_count: string → int
     sc = meta.get("scene_count")
     if isinstance(sc, str):
         try:
             meta["scene_count"] = int(sc)
             w.append(AutoFixWarning("metadata.scene_count", f"Auto-coerced string '{sc}' → int {int(sc)}"))
+        except ValueError:
+            pass
+
+    # target_duration_seconds: string → float (or int if whole number)
+    tds = meta.get("target_duration_seconds")
+    if isinstance(tds, str):
+        try:
+            val = float(tds)
+            meta["target_duration_seconds"] = int(val) if val == int(val) else val
+            w.append(AutoFixWarning("metadata.target_duration_seconds", f"Auto-coerced string '{tds}' → {meta['target_duration_seconds']}"))
         except ValueError:
             pass
 
@@ -321,28 +380,46 @@ def _fix_hook_type(d: dict, w: list) -> None:
 
 
 def _fix_narrative_purposes(d: dict, w: list) -> None:
-    """Fix narrative_purpose confusion with phase labels."""
+    """Fix narrative_purpose confusion with phase labels.
+
+    Priority order:
+    1. Scene 1 → ESTABLISHING
+    2. Scene N → LOOP_CLOSE
+    3. Scene N-1 → AERIAL
+    4. Money shot scene → FEATURE_HIGHLIGHT
+    5. Everything else → _PURPOSE_FIXES mapping
+    """
     scenes = d.get("scenes", [])
     total = len(scenes)
     for i, scene in enumerate(scenes):
         if not isinstance(scene, dict):
             continue
         purpose = scene.get("narrative_purpose", "")
-        if purpose in _PURPOSE_FIXES:
-            scene_num = i + 1
-            if scene_num == 1:
-                fixed = "ESTABLISHING"
-            elif scene_num == total:
-                fixed = "LOOP_CLOSE"
-            elif scene_num == total - 1:
-                fixed = "AERIAL"
+        if purpose not in _PURPOSE_FIXES:
+            continue
+        scene_num = i + 1
+
+        # Positional overrides (highest priority)
+        if scene_num == 1:
+            fixed = "ESTABLISHING"
+        elif scene_num == total:
+            fixed = "LOOP_CLOSE"
+        elif scene_num == total - 1:
+            fixed = "AERIAL"
+        else:
+            # Money shot → always FEATURE_HIGHLIGHT
+            ms = scene.get("money_shot")
+            is_money = isinstance(ms, dict) and ms.get("is_money_shot")
+            if is_money:
+                fixed = "FEATURE_HIGHLIGHT"
             else:
                 fixed = _PURPOSE_FIXES[purpose]
-            scene["narrative_purpose"] = fixed
-            w.append(AutoFixWarning(
-                f"scenes[{i}].narrative_purpose",
-                f"Auto-corrected '{purpose}' → '{fixed}' (was phase label)",
-            ))
+
+        scene["narrative_purpose"] = fixed
+        w.append(AutoFixWarning(
+            f"scenes[{i}].narrative_purpose",
+            f"Auto-corrected '{purpose}' → '{fixed}' (was phase label)",
+        ))
 
 
 def _fix_easter_egg_and_pinned(d: dict, w: list) -> None:
@@ -416,7 +493,12 @@ def _fix_food_visual_ratio(d: dict, scenes: list, w: list) -> None:
 
 
 def _fix_money_shot_vo(d: dict, scenes: list, w: list) -> None:
-    """Enforce money shot VO rules: MODE A = [silence], MODE B = [long pause] [whispers] <word>."""
+    """Enforce money shot VO rules: MODE A = [silence], MODE B = [long pause] [whispers] <word>.
+
+    SMART RULE: If VO already matches MODE_B_PATTERN, respect it as valid creative
+    choice regardless of texture classification. Gemini knows the food better than
+    a keyword lookup — if it chose a whisper, keep it.
+    """
     soft = _is_soft_texture(d)
     for i, scene in enumerate(scenes):
         if not isinstance(scene, dict):
@@ -427,8 +509,9 @@ def _fix_money_shot_vo(d: dict, scenes: list, w: list) -> None:
 
         vo_seg = scene.get("voiceover_segment", "")
         if vo_seg and vo_seg.strip() not in ("", "[silence]"):
-            if soft and _MODE_B_PATTERN.match(vo_seg.strip()):
-                pass  # MODE B valid
+            # MODE B pattern is valid for ANY texture — respect Gemini's creative choice
+            if _MODE_B_PATTERN.match(vo_seg.strip()):
+                pass  # Valid MODE B — keep as-is
             else:
                 scene["voiceover_segment"] = "[silence]"
                 scene["narrator_script"] = ""
@@ -436,12 +519,15 @@ def _fix_money_shot_vo(d: dict, scenes: list, w: list) -> None:
                     f"scenes[{i}].voiceover_segment",
                     f"Auto-forced '[silence]' on money_shot (was: '{vo_seg[:60]}')",
                 ))
+                continue  # narrator already cleared
 
         narrator = scene.get("narrator_script", "")
         if narrator and narrator.strip():
-            if soft and len(narrator.strip().split()) <= 1:
+            # Allow 1-word narrator for MODE B (any texture) or soft texture
+            vo_is_mode_b = vo_seg and _MODE_B_PATTERN.match(vo_seg.strip())
+            if (soft or vo_is_mode_b) and len(narrator.strip().split()) <= 1:
                 pass  # MODE B allows 1-word
-            else:
+            elif not vo_is_mode_b:
                 scene["narrator_script"] = ""
                 w.append(AutoFixWarning(
                     f"scenes[{i}].narrator_script",
@@ -574,27 +660,42 @@ def _fix_silence_speech_contradiction(d: dict, scenes: list, w: list) -> None:
 
 
 def _fix_on_screen_text(d: dict, scenes: list, w: list) -> None:
-    """Clean up on_screen_text: truncate to 6 words, fix parentheticals, prepend food name to Scene 1."""
+    """Clean up on_screen_text: truncate to 6 words, fix parentheticals.
+
+    SMART RULES:
+    - Scene 1: Only prepend food name if missing AND original ≤ 4 words (room to add).
+      Never overwrite original with generic fallback if it already has good content
+      (numbers, food names, emoji, concept keywords).
+    - Other scenes: Only fix broken parentheticals and >6 word truncation.
+    """
     food_name = _get_food_name(d)
 
-    # Prepend food name to Scene 1 OSD
+    # Scene 1: conditionally prepend food name (only if short enough & not already present)
     if food_name and scenes:
         scene1 = scenes[0] if isinstance(scenes[0], dict) else {}
         on_screen = scene1.get("on_screen_text", "")
-        if on_screen and food_name.lower() not in on_screen.lower():
-            scene1["on_screen_text"] = f"{food_name} — {on_screen}"
-            w.append(AutoFixWarning("scenes[0].on_screen_text",
-                f"Auto-prepended food name '{food_name}'"))
+        if on_screen and isinstance(on_screen, str):
+            ost_words = on_screen.strip().split()
+            food_present = food_name.lower() in on_screen.lower()
+            # Only prepend if: food not present, result would be ≤ 6 words
+            if not food_present and len(ost_words) <= 4:
+                new_ost = f"{food_name} — {on_screen.strip()}"
+                if len(new_ost.split()) <= 6:
+                    scene1["on_screen_text"] = new_ost
+                    w.append(AutoFixWarning("scenes[0].on_screen_text",
+                        f"Auto-prepended food name '{food_name}'"))
 
-    food_name_val = food_name or ""
     for i, scene in enumerate(scenes):
         if not isinstance(scene, dict):
             continue
         on_screen = scene.get("on_screen_text", "")
         if not isinstance(on_screen, str) or not on_screen.strip():
             continue
-        needs_fix = False
+
         cleaned = on_screen.strip()
+        needs_fix = False
+
+        # Fix broken parentheticals
         if "(" in cleaned and ")" not in cleaned:
             cleaned = re.sub(r'\s*\(.*$', '', cleaned).strip()
             needs_fix = True
@@ -604,24 +705,19 @@ def _fix_on_screen_text(d: dict, scenes: list, w: list) -> None:
         cleaned = cleaned.rstrip(",").strip()
         if cleaned != on_screen.strip():
             needs_fix = True
+
+        # Only truncate if > 6 words
         words = cleaned.split()
-        if len(words) > 6 or needs_fix:
-            if i == 0 and food_name_val:
-                meta = d.get("metadata", {})
-                concept = meta.get("concept", {}) if isinstance(meta, dict) else {}
-                subject = concept.get("subject", "") if isinstance(concept, dict) else ""
-                concept_word = subject.split()[-1].upper() if subject else ""
-                food_short = food_name_val.split()[-1].upper()
-                truncated = f"{food_short} {concept_word}".strip() if concept_word else food_short
-            else:
-                kept = [wd for wd in words if wd.strip("(,)")][:4]
-                if kept:
-                    kept[0] = kept[0].upper()
-                truncated = " ".join(kept)
-            if truncated != on_screen.strip():
-                scene["on_screen_text"] = truncated
-                w.append(AutoFixWarning(f"scenes[{i}].on_screen_text",
-                    f"Auto-cleaned: '{on_screen.strip()[:40]}' → '{truncated}'"))
+        if len(words) > 6:
+            # Keep first 6 words (preserve numbers, emoji, food names)
+            truncated = " ".join(words[:6])
+            scene["on_screen_text"] = truncated
+            w.append(AutoFixWarning(f"scenes[{i}].on_screen_text",
+                f"Auto-truncated: '{on_screen.strip()[:40]}' → '{truncated}'"))
+        elif needs_fix:
+            scene["on_screen_text"] = cleaned
+            w.append(AutoFixWarning(f"scenes[{i}].on_screen_text",
+                f"Auto-cleaned parentheticals: '{on_screen.strip()[:40]}' → '{cleaned}'"))
 
 
 def _fix_scene_n_minus_1_aerial(scenes: list, w: list) -> None:
@@ -711,6 +807,7 @@ def _fix_warning_line_element_sync(d: dict, scenes: list, w: list) -> None:
     """Sync warning_line action/element across scene VOs.
 
     Also auto-fix non-standard warning_line format (e.g. "Don't bounce.").
+    Supports formats A-F. Formats D/E/F skip action+element sync (different structure).
     """
     warning_line_raw = d.get("warning_line", "")
     if not isinstance(warning_line_raw, str) or not warning_line_raw.strip():
@@ -718,6 +815,20 @@ def _fix_warning_line_element_sync(d: dict, scenes: list, w: list) -> None:
 
     wl_stripped = _strip_tags(warning_line_raw)
 
+    # ---- NEW FORMATS D/E/F — early return (no action+element structure) ----
+    _CONSEQUENCE_VERBS = {"remember", "remembers", "know", "knows", "watch", "watches",
+                          "wait", "waits", "listen", "listens", "breathe", "breathes"}
+    _FORMAT_D = re.compile(r"^the\s+(\w+)\s+(\w+)\b", re.IGNORECASE)
+    _FORMAT_E = re.compile(r"^(\w+)\s+was\s+never\s+meant\s+for\s+(\w+)", re.IGNORECASE)
+    _FORMAT_F = re.compile(r"^nobody\s+warns\s+you\s+about\s+the\s+(.+)", re.IGNORECASE)
+
+    _d_match = _FORMAT_D.match(wl_stripped)
+    _d_is_format_d = _d_match and _d_match.group(2).lower() in _CONSEQUENCE_VERBS
+    if _d_is_format_d or _FORMAT_E.match(wl_stripped) or _FORMAT_F.match(wl_stripped):
+        # Formats D/E/F are structurally valid — skip action+element sync
+        return
+
+    # ---- FORMATS A/B/C — original logic ----
     # Parse warning_line for action + element
     wl_action, wl_element = None, None
     _formats = [
@@ -737,7 +848,7 @@ def _fix_warning_line_element_sync(d: dict, scenes: list, w: list) -> None:
         short_match = re.match(r"(?:don['\u2019]t)\s+(\w+)", wl_stripped, re.IGNORECASE)
         if short_match:
             raw_action = short_match.group(1).lower()
-            best_action = raw_action if raw_action in VALID_FOOD_ACTIONS else _closest_match(raw_action, VALID_FOOD_ACTIONS, "lick")
+            best_action = raw_action if raw_action in VALID_FOOD_ACTIONS else _closest_match(raw_action, VALID_FOOD_ACTIONS, raw_action)
             best_element = _infer_element(d)
             new_wl = f"Don't {best_action} the {best_element}."
             d["warning_line"] = new_wl
@@ -747,21 +858,29 @@ def _fix_warning_line_element_sync(d: dict, scenes: list, w: list) -> None:
     # Auto-fix invalid action/element
     if wl_action and wl_element:
         if wl_action not in VALID_FOOD_ACTIONS:
-            fixed_action = _closest_match(wl_action, VALID_FOOD_ACTIONS, "lick")
-            old = d.get("warning_line", "")
-            d["warning_line"] = old.replace(wl_action, fixed_action, 1)
-            w.append(AutoFixWarning("warning_line", f"Auto-fixed action '{wl_action}' → '{fixed_action}'"))
-            wl_action = fixed_action
+            fixed_action = _closest_match(wl_action, VALID_FOOD_ACTIONS, wl_action)
+            if fixed_action != wl_action:
+                old = d.get("warning_line", "")
+                d["warning_line"] = old.replace(wl_action, fixed_action, 1)
+                w.append(AutoFixWarning("warning_line", f"Auto-fixed action '{wl_action}' → '{fixed_action}'"))
+                wl_action = fixed_action
+            else:
+                # No close match — keep original, just warn
+                w.append(AutoFixWarning("warning_line", f"Non-standard action '{wl_action}' (kept as-is, no close match)"))
 
         if wl_element not in VALID_ARCHITECTURE_ELEMENTS:
-            fixed_elem = _closest_match(wl_element, VALID_ARCHITECTURE_ELEMENTS, "walls")
-            old = d.get("warning_line", "")
-            d["warning_line"] = re.sub(
-                r"(?i)the\s+" + re.escape(wl_element),
-                f"the {fixed_elem}", old, count=1,
-            )
-            w.append(AutoFixWarning("warning_line", f"Auto-fixed element '{wl_element}' → '{fixed_elem}'"))
-            wl_element = fixed_elem
+            fixed_elem = _closest_match(wl_element, VALID_ARCHITECTURE_ELEMENTS, wl_element)
+            if fixed_elem != wl_element:
+                old = d.get("warning_line", "")
+                d["warning_line"] = re.sub(
+                    r"(?i)the\s+" + re.escape(wl_element),
+                    f"the {fixed_elem}", old, count=1,
+                )
+                w.append(AutoFixWarning("warning_line", f"Auto-fixed element '{wl_element}' → '{fixed_elem}'"))
+                wl_element = fixed_elem
+            else:
+                # No close match — keep original creative choice, just warn
+                w.append(AutoFixWarning("warning_line", f"Non-standard element '{wl_element}' (kept as-is, no close match)"))
 
     # Sync element across scene VOs
     if wl_action and wl_element:
@@ -828,6 +947,11 @@ def _fix_thermal_first_word(d: dict, scenes: list, w: list) -> None:
 
     TOP RULE: THERMAL SLOT in Scene 1 is MANDATORY.
     Template: "[temperature]. [rest]"
+
+    SMART DETECTION: Skip prepend if narrator already opens with:
+    - A temperature/thermal word ("Warm.", "Steaming.", "Ninety degrees.")
+    - A number word ("Seventy-two layers") — numbers are strong hooks
+    - "Still X" pattern already present anywhere in first sentence
     """
     if not scenes or not isinstance(scenes[0], dict):
         return
@@ -836,12 +960,32 @@ def _fix_thermal_first_word(d: dict, scenes: list, w: list) -> None:
     if not isinstance(narrator, str) or not narrator.strip():
         return
 
-    # Check if already starts with temperature word
-    first_word = narrator.strip().split()[0].rstrip(".,!?;:").lower()
-    two_word = " ".join(narrator.strip().split()[:2]).rstrip(".,!?;:").lower()
+    words = narrator.strip().split()
+    first_word = words[0].rstrip(".,!?;:").lower()
+    two_word = " ".join(words[:2]).rstrip(".,!?;:").lower() if len(words) >= 2 else first_word
 
+    # Already starts with temperature word
     if first_word in TEMPERATURE_WORDS or two_word in TEMPERATURE_WORDS:
-        return  # already compliant
+        return
+
+    # Already starts with thermal/sensation hook word
+    if first_word in _THERMAL_HOOK_WORDS:
+        return
+
+    # Starts with a number word (strong sensory hook, don't weaken it)
+    # Handles both word-numbers ("Seventy-two") and digit-numbers ("72")
+    first_word_base = first_word.split("-")[0]  # "seventy-two" → "seventy"
+    if first_word_base in _NUMBER_WORDS or first_word.isdigit():
+        return
+
+    # Check if "Still warm" / "Still hot" etc. already exists in first sentence
+    first_sentence = narrator.strip().split(".")[0].lower()
+    if any(tw in first_sentence for tw in ("still warm", "still hot", "still cold")):
+        return
+
+    # "This [X] isn't [Y]" / "This [X] is [Y]" = impossibility hook — don't weaken with thermal prefix
+    if re.match(r"^this\s+\w+\s+(isn['\u2019]t|is|was|has|looks|smells|tastes)\b", narrator.strip(), re.IGNORECASE):
+        return
 
     # Determine temperature word from texture group
     texture = _get_texture_group(d)
@@ -1064,6 +1208,12 @@ def _fix_vo_trigger_injection(d: dict, scenes: list, w: list) -> None:
             continue
         if scene.get("scene_number") != cb_scene_num:
             continue
+
+        # Never inject vo_trigger into money shot scenes — would break [silence] / MODE_B_PATTERN
+        ms = scene.get("money_shot")
+        if isinstance(ms, dict) and ms.get("is_money_shot"):
+            return
+
         segment = scene.get("voiceover_segment", "")
         if trigger_clean in segment:
             return  # already present
@@ -1107,6 +1257,10 @@ def _fix_description_line1(d: dict, w: list) -> None:
         return  # already compliant
 
     subject = _get_subject(d)
+    # Don't generate broken line if subject is missing/generic
+    if not subject or subject.lower() in ("this", "n/a", "none", ""):
+        return  # can't build a meaningful line1 without subject
+
     new_line1 = f"A {subject} made of {food_name}."
 
     lines = desc.strip().split("\n")

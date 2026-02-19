@@ -20,6 +20,7 @@ Usage:
 
 from __future__ import annotations
 
+import math
 import re
 import time
 from dataclasses import dataclass, field
@@ -470,6 +471,22 @@ class Gen1Validator:
         elif mode not in AtmosphereMode.VALUES:
             self._warn("atmosphere_mode", f"Non-standard value '{mode}'", suggestion=f"Standard: {', '.join(sorted(AtmosphereMode.VALUES))}")
 
+        # Atmosphere + Lighting collision check
+        if mode:
+            light = self._data.get("lighting_master", {})
+            preset = light.get("preset", "") if isinstance(light, dict) else ""
+            if preset:
+                _COLLISION_BAN = {
+                    "CINEMATIC": {"OVERCAST_SOFT"},
+                    "NOIR": {"OVERCAST_SOFT"},
+                    "HAUNTED": {"OVERCAST_SOFT", "BLUE_HOUR"},
+                    "ETHEREAL": {"MOONLIT_SILVER"},
+                }
+                banned = _COLLISION_BAN.get(mode.upper(), set())
+                if preset.upper() in banned:
+                    self._warn("atmosphere_mode",
+                               f"Atmosphere '{mode}' + lighting '{preset}' = double-dim collision (low visibility)")
+
     def _validate_foreground_element(self) -> None:
         fg = self._get_field("foreground_element")
         if fg is None:
@@ -874,13 +891,15 @@ class Gen1Validator:
         elif ms_count > 1:
             self._warn("scenes", f"{ms_count} money_shot scenes (exactly 1 allowed)")
 
-        # Money shot timing — not past midpoint
-        midpoint = (total + 1) // 2
+        # Money shot timing — must be in optimal range [ceil(N*0.5), ceil(N*0.7)]
+        lower = math.ceil(total * 0.5)
+        upper = math.ceil(total * 0.7)
         for s in scenes:
             if isinstance(s, dict) and isinstance(s.get("money_shot"), dict) and s["money_shot"].get("is_money_shot"):
                 msn = s.get("scene_number", 0)
-                if msn > midpoint:
-                    self._warn(f"scenes[{msn}].money_shot", f"Scene {msn} past midpoint ({midpoint})")
+                if msn < lower or msn > upper:
+                    self._warn(f"scenes[{msn}].money_shot",
+                               f"money_shot Scene {msn} outside optimal range ({lower}-{upper})")
 
     def _validate_sensory_pressure(self) -> None:
         scenes = self._data.get("scenes", [])
