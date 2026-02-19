@@ -1,454 +1,212 @@
 """
-GEN1 Python Validator v1.0
+GEN1 Python Validator v2.0
 
-Детермінований валідатор для виходу GEN1 (Creative Director).
-Замінює LLM-валідатор VAL_GEN1.txt для швидшої та надійнішої валідації.
+Deterministic validator for GEN1 (Creative Director) output.
+Auto-corrections are handled by gen1_autocorrect.py (runs first).
+This module only VALIDATES — it never mutates data.
 
-Автор: Senior Python Backend Engineer + QA Automation Engineer
-Дата: 2025-01
-
-Переваги над LLM-валідатором:
-┌─────────────────┬──────────────┬─────────────────┐
-│ Метрика         │ LLM (GPT-4)  │ Python          │
-├─────────────────┼──────────────┼─────────────────┤
-│ Час             │ ~10-15 сек   │ ~5 мс           │
-│ Токени          │ ~3000-5000   │ 0               │
-│ Детермінізм     │ Ні           │ Так             │
-│ Галюцинації     │ Можливі      │ Неможливі       │
-│ Тестування      │ Складне      │ Unit-тести      │
-└─────────────────┴──────────────┴─────────────────┘
-
-Використання:
+Usage:
     from app.services.gen1_validator import Gen1Validator, validate_gen1
 
-    # Спосіб 1: Клас
     validator = Gen1Validator()
     result = validator.validate(gen1_json_data)
 
-    # Спосіб 2: Функція
-    result = validate_gen1(gen1_json_data)
-
     if result.passed:
-        # Передаємо в GEN2
-        gen2_handoff = result.gen2_handoff
+        corrected = result.corrected_data  # auto-fixed version
     else:
-        # Логуємо помилки
         for error in result.errors:
             logger.error(error)
-
-Сумісність:
-    Вихідний формат сумісний з Gen1ValidationResponse з validation_models.py
 """
 
 from __future__ import annotations
 
-import copy
-import difflib
 import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Set
 
 from loguru import logger
 
-# ============================================================================
-# MODULE-LEVEL CONSTANTS
-# ============================================================================
-
-# MODE B (CREAMY/CHEWY/SMOOTH) money-shot voiceover pattern:
-# "[long pause] [whispers] <word>."
-_MODE_B_PATTERN = re.compile(
-    r'^\s*\[long\s+pause\]\s*\[whispers\]\s*\S+\.?\s*$', re.IGNORECASE
+# Import enums from gen_models (single source of truth)
+from app.services.gen_models import (
+    ContentCategory,
+    HookType,
+    PsychologicalTrigger,
+    LightingPreset,
+    CameraMovement,
+    NarrativePurpose,
+    EnergyLevel,
+    SonicHookType,
+    ReferenceType,
 )
 
+# Import auto-corrector
+from app.services.gen1_autocorrect import (
+    autocorrect_gen1,
+    AutoFixWarning,
+    VALID_ARCHITECTURE_ELEMENTS,
+    VALID_FOOD_ACTIONS,
+    NARRATIVE_BRIDGE_STARTERS,
+    TEMPERATURE_WORDS,
+)
+
+
 # ============================================================================
-# BANLIST LOADER — Динамічне завантаження банлисту
+# BANLIST LOADER
 # ============================================================================
 
-def _load_banlist_from_file(banlist_path: Optional[Path] = None) -> Dict[str, Set[str]]:
-    """
-    Завантажує та парсить ban_list.txt.
+_BANLIST_CACHE: Optional[Dict[str, Set[str]]] = None
 
-    Формат файлу:
-    - Рядки що починаються з # — заголовки секцій (ігноруються як коментарі)
-    - Пусті рядки — роздільники
-    - Інші рядки — заборонені слова/фрази
 
-    Returns:
-        Dict з категоріями:
-        - "first_words": Заборонені перші слова хука
-        - "first_phrases": Заборонені початкові фрази
-        - "commands": Команди (викликають захисну реакцію)
-        - "fillers": Філери (мертвий ефір)
-        - "ai_markers": ШІ-маркери (КРИТИЧНО)
-        - "overused_adjectives": Перевикористані прикметники
-        - "generic_luxury": Generic luxury слова
-    """
-    if banlist_path is None:
-        banlist_path = Path(__file__).parent.parent.parent / "config" / "ban_list.txt"
-
+def _load_banlist(path: Optional[Path] = None) -> Dict[str, Set[str]]:
+    if path is None:
+        path = Path(__file__).parent.parent.parent / "config" / "ban_list.txt"
     result: Dict[str, Set[str]] = {
-        "first_words": set(),
-        "first_phrases": set(),
-        "commands": set(),
-        "fillers": set(),
-        "ai_markers": set(),
-        "overused_adjectives": set(),
+        "first_words": set(), "first_phrases": set(), "commands": set(),
+        "fillers": set(), "ai_markers": set(), "overused_adjectives": set(),
         "generic_luxury": set(),
     }
-
-    if not banlist_path.exists():
-        logger.warning(f"Banlist file not found: {banlist_path}. Using empty banlist.")
+    if not path.exists():
+        logger.warning(f"Banlist not found: {path}")
         return result
-
     try:
-        with open(banlist_path, "r", encoding="utf-8") as f:
-            content = f.read()
+        content = path.read_text(encoding="utf-8")
     except Exception as e:
         logger.error(f"Failed to read banlist: {e}")
         return result
-
-    # Парсинг секцій
-    current_section: Optional[str] = None
     section_map = {
         "заборонені перші слова": "first_words",
         "заборонені початкові фрази": "first_phrases",
-        "команди": "commands",
-        "філери": "fillers",
+        "команди": "commands", "філери": "fillers",
         "ші-маркери": "ai_markers",
         "перевикористані прикметники": "overused_adjectives",
         "generic luxury": "generic_luxury",
     }
-
+    current: Optional[str] = None
     for line in content.split("\n"):
         line = line.strip()
-
-        # Пуста лінія
         if not line:
             continue
-
-        # Заголовок секції (коментар)
         if line.startswith("#"):
             header = line.lstrip("#").strip().lower()
-            for key, section_name in section_map.items():
+            for key, name in section_map.items():
                 if key in header:
-                    current_section = section_name
+                    current = name
                     break
             continue
-
-        # Додаємо слово/фразу до поточної секції
-        if current_section and line:
-            result[current_section].add(line.lower())
-
-    # Логуємо результат
+        if current and line:
+            result[current].add(line.lower())
     total = sum(len(v) for v in result.values())
-    logger.debug(
-        f"Loaded banlist: {total} items "
-        f"(first_words: {len(result['first_words'])}, "
-        f"ai_markers: {len(result['ai_markers'])}, "
-        f"fillers: {len(result['fillers'])})"
-    )
-
+    logger.debug(f"Banlist loaded: {total} items")
     return result
 
 
-# Глобальний кеш банлисту (завантажується один раз)
-_BANLIST_CACHE: Optional[Dict[str, Set[str]]] = None
-
-
 def get_banlist() -> Dict[str, Set[str]]:
-    """Отримати банліст (з кешуванням)."""
     global _BANLIST_CACHE
     if _BANLIST_CACHE is None:
-        _BANLIST_CACHE = _load_banlist_from_file()
+        _BANLIST_CACHE = _load_banlist()
     return _BANLIST_CACHE
 
 
 def reload_banlist() -> Dict[str, Set[str]]:
-    """Перезавантажити банліст (скидає кеш)."""
     global _BANLIST_CACHE
-    _BANLIST_CACHE = _load_banlist_from_file()
+    _BANLIST_CACHE = _load_banlist()
     return _BANLIST_CACHE
 
 
-# ============================================================================
-# ENUMS — Дозволені значення згідно GEN1.txt / VAL_GEN1.txt
-# ============================================================================
-
-class Category(str, Enum):
-    """Категорії контенту з GEN1.txt v8.0.0."""
-    GRAND_STRUCTURES = "GRAND_STRUCTURES"
-    VEHICLES = "VEHICLES"
-    ENTERTAINMENT = "ENTERTAINMENT"
-    INFRASTRUCTURE = "INFRASTRUCTURE"
-    RESIDENTIAL = "RESIDENTIAL"
-    NATURE_FORMATIONS = "NATURE_FORMATIONS"
-    # Legacy categories (backwards compatibility)
-    LUXURY_LISTINGS = "LUXURY_LISTINGS"
-    TRANSIT = "TRANSIT"
-    LANDMARKS = "LANDMARKS"
-    COMMERCIAL = "COMMERCIAL"
-    NEIGHBORHOODS = "NEIGHBORHOODS"
-    NATURE = "NATURE"
-    FREESTYLE = "FREESTYLE"
-    # Gemini creative variations
-    INDUSTRIAL = "INDUSTRIAL"
-    MILITARY = "MILITARY"
-    SPECIALIZED = "SPECIALIZED"
-    HOSPITALITY = "HOSPITALITY"
-
-
-class HookType(str, Enum):
-    """Типи хуків з GEN1.txt v8.0.0 HOOK MATRIX."""
-    THE_IMPOSSIBLE = "THE_IMPOSSIBLE"
-    THE_ABSURD_LOGIC = "THE_ABSURD_LOGIC"
-    THE_SCALE_SHOCK = "THE_SCALE_SHOCK"
-    THE_SENSORY_ATTACK = "THE_SENSORY_ATTACK"
-    THE_WHISPER = "THE_WHISPER"
-    THE_SOUND_FIRST = "THE_SOUND_FIRST"
-    THE_TEXTURE_ZOOM = "THE_TEXTURE_ZOOM"
-
-
-class PsychologicalTrigger(str, Enum):
-    """Психологічні тригери з GEN1.txt v8.0.0."""
-    DISBELIEF = "DISBELIEF"
-    PATTERN_BREAK = "PATTERN_BREAK"
-    AWE = "AWE"
-    SENSORY = "SENSORY"
-    CONTRAST_HOOK = "CONTRAST_HOOK"
-    AUDIO_PRIME = "AUDIO_PRIME"
-    CURIOSITY_GAP = "CURIOSITY_GAP"
-
-
-class LightingPreset(str, Enum):
-    """Пресети освітлення з GEN1 v6 LIGHTING SYSTEM."""
-    MORNING_GOLDEN = "MORNING_GOLDEN"
-    SUNSET_DRAMATIC = "SUNSET_DRAMATIC"
-    BLUE_HOUR = "BLUE_HOUR"
-    NIGHT_NEON = "NIGHT_NEON"
-    TWILIGHT_PURPLE = "TWILIGHT_PURPLE"
-    OVERCAST_SOFT = "OVERCAST_SOFT"
-    CANDLELIT_WARM = "CANDLELIT_WARM"
-    MOONLIT_SILVER = "MOONLIT_SILVER"
-    # Legacy presets kept for backwards compat
-    AFTERNOON_WARM = "AFTERNOON_WARM"
-    MIDDAY_BRIGHT = "MIDDAY_BRIGHT"
-    HARSH_INDUSTRIAL = "HARSH_INDUSTRIAL"
-    FOGGY_DIFFUSED = "FOGGY_DIFFUSED"
-    STORMY_DRAMATIC = "STORMY_DRAMATIC"
-    FLUORESCENT_COLD = "FLUORESCENT_COLD"
-
-
-class AtmosphereMode(str, Enum):
-    """Режими атмосфери з GEN1.txt v8.0.0."""
-    CINEMATIC = "CINEMATIC"
-    VIBRANT = "VIBRANT"
-    PLAYFUL = "PLAYFUL"
-    GOLDEN_WARM = "GOLDEN_WARM"
-    TROPICAL = "TROPICAL"
-    ETHEREAL = "ETHEREAL"
-    NOIR = "NOIR"
-    HAUNTED = "HAUNTED"
-
-
-class SonicHookType(str, Enum):
-    """Типи sonic hook з GEN1.txt v8.0.0 AUDIO SYSTEM."""
-    THE_BOOM = "THE_BOOM"
-    THE_SIZZLE = "THE_SIZZLE"
-    THE_WHOOSH = "THE_WHOOSH"
-    THE_CHIME = "THE_CHIME"
-    THE_DROP = "THE_DROP"
-    THE_CRUNCH = "THE_CRUNCH"
-    THE_GLITCH = "THE_GLITCH"
-    THE_SILENCE = "THE_SILENCE"
-
-
-class VolumeLevel(str, Enum):
-    """Рівні гучності з GEN1.txt."""
-    LOUD = "LOUD"
-    MEDIUM = "MEDIUM"
-    CRISP = "CRISP"
-    SUBTLE = "SUBTLE"
-
-
-class EasterEggVisibility(str, Enum):
-    """Видимість Easter Egg з GEN1.txt."""
-    FINDABLE = "FINDABLE"
-    HIDDEN = "HIDDEN"
-    OBVIOUS = "OBVIOUS"
-
-
-class NarrativePurpose(str, Enum):
-    """Narrative purpose сцени з GEN1 v6 SCENE STRUCTURE."""
-    ESTABLISHING = "ESTABLISHING"
-    EXTERIOR_ANGLE = "EXTERIOR_ANGLE"
-    AERIAL = "AERIAL"
-    INTERIOR = "INTERIOR"
-    DETAIL = "DETAIL"
-    FEATURE = "FEATURE"
-    LOOP_CLOSE = "LOOP_CLOSE"
-    STRUCTURAL_DETAIL = "STRUCTURAL_DETAIL"
-    THEMATIC_INTERIOR = "THEMATIC_INTERIOR"
-    CONTEXTUAL_ENVIRONMENT = "CONTEXTUAL_ENVIRONMENT"
-    DYNAMIC_ACTION = "DYNAMIC_ACTION"
-    FEATURE_HIGHLIGHT = "FEATURE_HIGHLIGHT"
-    AERIAL_WOW = "AERIAL_WOW"
-    AERIAL_REVEAL = "AERIAL_REVEAL"
-
-
-class ReferenceHint(str, Enum):
-    """Reference hint з GEN1.txt v8.0.0."""
-    PRIMARY = "PRIMARY"
-    REQUIRES_REF = "REQUIRES_REF"
-    INDEPENDENT = "INDEPENDENT"
-    LOOP_CLOSE = "LOOP_CLOSE"
-
-
-class EnergyLevel(str, Enum):
-    """Рівні енергії сцени з GEN1.txt."""
-    EXPLOSIVE = "EXPLOSIVE"
-    HIGH = "HIGH"
-    MEDIUM = "MEDIUM"
-    LOW = "LOW"
-
-
-# ============================================================================
-# CONSTANTS — Правила валідації з VAL_GEN1.txt + ban_list.txt
-# ============================================================================
-
-# Заборонені перші слова для hook.first_words — ДИНАМІЧНО з ban_list.txt
-# Fallback значення якщо банліст не завантажено
-BANNED_FIRST_WORDS_FALLBACK: Set[str] = {"welcome", "so", "today", "hello", "hi", "hey", "this", "let", "here"}
-
 def get_banned_first_words() -> Set[str]:
-    """Отримати заборонені перші слова з банлисту."""
-    banlist = get_banlist()
-    words = banlist.get("first_words", set())
-    return words if words else BANNED_FIRST_WORDS_FALLBACK
+    words = get_banlist().get("first_words", set())
+    return words if words else {"welcome", "so", "today", "hello", "hi", "hey", "this", "let", "here"}
+
 
 def get_banned_first_phrases() -> Set[str]:
-    """Отримати заборонені початкові фрази з банлисту."""
     return get_banlist().get("first_phrases", set())
 
+
 def get_ai_markers() -> Set[str]:
-    """Отримати заборонені AI маркери з банлисту."""
     return get_banlist().get("ai_markers", set())
 
+
 def get_fillers() -> Set[str]:
-    """Отримати заборонені філери з банлисту."""
     return get_banlist().get("fillers", set())
 
+
 def get_overused_adjectives() -> Set[str]:
-    """Отримати перевикористані прикметники з банлисту."""
     return get_banlist().get("overused_adjectives", set())
 
+
 def get_generic_luxury() -> Set[str]:
-    """Отримати generic luxury слова з банлисту."""
     return get_banlist().get("generic_luxury", set())
-
-# Legacy alias for backwards compatibility
-BANNED_FIRST_WORDS: Set[str] = BANNED_FIRST_WORDS_FALLBACK
-
-# Дозволені camera movements
-VALID_CAMERA_MOVEMENTS: Set[str] = {
-    "APPROACH", "RETREAT", "ORBIT", "RISE", "DESCEND",
-    "RUSH", "REVEAL", "TRACK", "PUNCH", "PUSH", "STATIC",
-    "DOLLY", "CRANE",
-}
-
-# Заборонені camera movements (VAL_GEN1 рядок 239-244)
-BANNED_CAMERA_MOVEMENTS: Set[str] = {"DRIFT", "FLOAT", "GLIDE"}
-
-# ElevenLabs v3 підтримувані теги (GEN1.txt v8.5.0 — Brand Signature whitelist)
-# v8.5.0: sensory_witness uses [whispers], [calm], [warm], [gentle] for emotion.
-# COMEDY arc also allows [dry laugh].
-# Full ElevenLabs v3 tag set kept for backwards compat (old briefs may use [excited] etc.)
-ELEVENLABS_EMOTION_TAGS: Set[str] = {
-    "[whispers]", "[calm]", "[warm]", "[gentle]",
-    # Legacy (still work in ElevenLabs, but banned in v8.5.0 brand signature):
-    "[excited]", "[sad]", "[angry]", "[happily]", "[shouts]"
-}
-ELEVENLABS_DELIVERY_TAGS: Set[str] = {
-    "[pause]", "[short pause]", "[long pause]", "[silence]", "[laughs]", "[sighs]",
-    "[dry laugh]"
-}
-ELEVENLABS_STYLE_TAGS: Set[str] = {
-    "[rushed]", "[drawn out]"
-}
-ALL_ELEVENLABS_TAGS: Set[str] = (
-    ELEVENLABS_EMOTION_TAGS | ELEVENLABS_DELIVERY_TAGS | ELEVENLABS_STYLE_TAGS
-)
-
-# v8.4.0 Brand Signature — banned direction tags (sensory_witness never uses these)
-BANNED_DIRECTION_TAGS: list = [
-    "[excited]", "[rushed]", "[dramatic]", "[shouts]", "[loud]",
-    "[energetic]", "[cheerful]", "[screams]", "[urgent]", "[intense]"
-]
-
-# Scene count range
-MIN_SCENES: int = 6
-MAX_SCENES: int = 10
-MIN_YOUTUBE_DESCRIPTION_LENGTH: int = 100
-MAX_YOUTUBE_TITLE_LENGTH: int = 50  # GEN1.txt: "Max 50 characters (tighter for thumbnails)"
-MIN_VIRAL_SCORE: float = 0.7
-MIN_MOTION_ELEMENTS: int = 2  # GEN1.txt: "2+ items — first = start, second = change"
-MIN_DISTINCTIVE_FEATURES: int = 2
-MIN_TEXTURE_KEYWORDS: int = 2
-MIN_COLOR_KEYWORDS: int = 2
-MIN_PROMPT_SNIPPET_LENGTH: int = 10
-
-# v8.5.0: warning_line element/action whitelists
-VALID_ARCHITECTURE_ELEMENTS: Set[str] = {
-    "walls", "floor", "ceiling", "stairs", "door", "roof", "window",
-    "pool", "fence", "chimney", "columns", "railing", "pipes", "beams", "tiles",
-    "foundation", "ledge", "fountain", "bridge", "arch", "balcony", "tower", "dome", "porch", "gutter",
-}
-VALID_FOOD_ACTIONS: Set[str] = {
-    "lick", "bite", "eat", "drink", "touch", "taste", "chew", "nibble", "swallow", "smell",
-    "scrape", "peel", "squeeze", "sip", "crunch", "snap", "break", "crack", "slice", "dip",
-}
-
-# v8.5.0: Color words — visual descriptors banned in VO (sensory_witness rule)
-COLOR_WORDS: Set[str] = {
-    "golden", "white", "black", "red", "blue", "green", "pink",
-    "orange", "silver", "purple", "brown", "yellow",
-}
-
-# v8.5.0: Narrative bridge starters — banned first words for VO lines
-NARRATIVE_BRIDGE_STARTERS: Set[str] = {
-    "but", "and", "yet", "so", "then", "deeper", "further",
-    "inside", "below", "above", "beyond",
-}
-
-
-def _closest_match(word: str, valid_set: Set[str], default: str) -> str:
-    """Find the closest match in a set using difflib SequenceMatcher."""
-    matches = difflib.get_close_matches(word, valid_set, n=1, cutoff=0.5)
-    return matches[0] if matches else default
 
 
 # ============================================================================
-# VALIDATION ERROR — Структурована помилка
+# VALIDATOR-ONLY ENUMS (not in gen_models.py)
+# ============================================================================
+
+class AtmosphereMode:
+    VALUES = {"CINEMATIC", "VIBRANT", "PLAYFUL", "GOLDEN_WARM", "TROPICAL", "ETHEREAL", "NOIR", "HAUNTED"}
+
+
+class VolumeLevel:
+    VALUES = {"LOUD", "MEDIUM", "CRISP", "SUBTLE"}
+
+
+class EasterEggVisibility:
+    VALUES = {"FINDABLE", "HIDDEN", "OBVIOUS"}
+
+
+# ============================================================================
+# CONSTANTS
+# ============================================================================
+
+BANNED_FIRST_WORDS: Set[str] = {"welcome", "so", "today", "hello", "hi", "hey", "this", "let", "here"}
+VALID_CAMERA_MOVEMENTS: Set[str] = {m.value for m in CameraMovement}
+BANNED_CAMERA_MOVEMENTS: Set[str] = {"DRIFT", "FLOAT", "GLIDE"}
+
+ELEVENLABS_EMOTION_TAGS: Set[str] = {"[whispers]", "[calm]", "[warm]", "[gentle]", "[excited]", "[sad]", "[angry]", "[happily]", "[shouts]"}
+ELEVENLABS_DELIVERY_TAGS: Set[str] = {"[pause]", "[short pause]", "[long pause]", "[silence]", "[laughs]", "[sighs]", "[dry laugh]"}
+ELEVENLABS_STYLE_TAGS: Set[str] = {"[rushed]", "[drawn out]"}
+ALL_ELEVENLABS_TAGS: Set[str] = ELEVENLABS_EMOTION_TAGS | ELEVENLABS_DELIVERY_TAGS | ELEVENLABS_STYLE_TAGS
+
+BANNED_DIRECTION_TAGS: list = ["[excited]", "[rushed]", "[dramatic]", "[shouts]", "[loud]", "[energetic]", "[cheerful]", "[screams]", "[urgent]", "[intense]"]
+
+MIN_SCENES = 6
+MAX_SCENES = 10
+MAX_YOUTUBE_TITLE_LENGTH = 50
+MIN_YOUTUBE_DESCRIPTION_LENGTH = 100
+MIN_VIRAL_SCORE = 0.7
+MIN_MOTION_ELEMENTS = 2
+MIN_DISTINCTIVE_FEATURES = 2
+MIN_TEXTURE_KEYWORDS = 2
+MIN_COLOR_KEYWORDS = 2
+MIN_PROMPT_SNIPPET_LENGTH = 10
+
+COLOR_WORDS: Set[str] = {"golden", "white", "black", "red", "blue", "green", "pink", "orange", "silver", "purple", "brown", "yellow"}
+
+# Sensory channel keywords for 4-channel audit
+_THERMAL_WORDS = {"warm", "hot", "cold", "cool", "steaming", "frozen", "heat", "burning", "icy", "chilled", "sizzling", "boiling", "lukewarm", "scalding", "frosty", "molten"}
+_TACTILE_WORDS = {"stick", "sticky", "squishy", "rough", "smooth", "soft", "hard", "wet", "dry", "gooey", "crispy", "crunchy", "slippery", "gritty", "velvety", "silky", "pull", "sink", "press", "squeeze", "crumble", "flaky", "elastic", "rubbery", "brittle"}
+_OLFACTORY_WORDS = {"smell", "scent", "aroma", "fragrant", "yeast", "sweet", "nutty", "buttery", "vanilla", "caramel", "smoky", "earthy", "tangy", "pungent", "musky", "nose", "inhale", "breath"}
+_TEMPORAL_PATTERN = re.compile(r'\bstill\s+\w+ing\b', re.IGNORECASE)
+
+# STRUCTURAL_DETAIL key_elements food words
+_STRUCTURAL_FOOD_WORDS = {"glistening", "dripping", "crystallized", "melting", "sticky", "crispy", "steaming", "sizzling", "bubbling", "glossy", "crunchy", "oozing", "frosted", "caramelized", "glazed"}
+
+# MODE B money-shot pattern
+_MODE_B_PATTERN = re.compile(r'^\s*\[long\s+pause\]\s*\[whispers\]\s*\S+\.?\s*$', re.IGNORECASE)
+
+
+# ============================================================================
+# VALIDATION ERROR + RESULT
 # ============================================================================
 
 @dataclass
 class ValidationError:
-    """
-    Структурована помилка валідації.
-
-    Attributes:
-        field: Шлях до поля (напр. "hook.first_words")
-        message: Опис помилки
-        severity: "error" або "warning"
-        code: Код помилки для програмної обробки
-        suggestion: Пропозиція як виправити (опціонально)
-    """
     field: str
     message: str
-    severity: str = "error"  # "error" | "warning"
+    severity: str = "error"
     code: str = ""
     suggestion: str = ""
 
@@ -460,141 +218,72 @@ class ValidationError:
         return result
 
     def to_dict(self) -> Dict[str, str]:
-        return {
-            "field": self.field,
-            "message": self.message,
-            "severity": self.severity,
-            "code": self.code,
-            "suggestion": self.suggestion
-        }
+        return {"field": self.field, "message": self.message, "severity": self.severity, "code": self.code, "suggestion": self.suggestion}
 
-
-# ============================================================================
-# VALIDATION RESULT — Результат валідації
-# ============================================================================
 
 @dataclass
 class ValidationResult:
-    """
-    Результат валідації GEN1.
-
-    Сумісний з Gen1ValidationResponse з validation_models.py
-    """
     passed: bool
     errors: List[ValidationError] = field(default_factory=list)
     warnings: List[ValidationError] = field(default_factory=list)
-
-    # Метадані
     validation_time_ms: float = 0.0
     timestamp: str = field(default_factory=lambda: datetime.now().astimezone().isoformat())
-    validator_version: str = "1.0"
-
-    # Дані для передачі в GEN2
-    gen2_handoff: Dict[str, Any] = field(default_factory=dict)
-
-    # Auto-corrected data (v8.5.0) — dict з виправленнями auto_correct_gemini_confusions
+    validator_version: str = "2.0"
     corrected_data: Optional[Dict[str, Any]] = field(default=None)
+    # Keep gen2_handoff for backward compat (pipeline reads it)
+    gen2_handoff: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def error_messages(self) -> List[str]:
-        """Список текстових повідомлень про помилки."""
         return [str(e) for e in self.errors]
 
     @property
     def warning_messages(self) -> List[str]:
-        """Список текстових попереджень."""
         return [str(w) for w in self.warnings]
 
     @property
     def all_issues(self) -> List[ValidationError]:
-        """Всі проблеми (помилки + попередження)."""
         return self.errors + self.warnings
 
     def to_dict(self) -> Dict[str, Any]:
-        """
-        Конвертувати в словник.
-
-        Формат сумісний з Gen1ValidationResponse.
-        """
         return {
-            "validation": {
-                "stage": "VAL_GEN1",
-                "version": self.validator_version,
-                "timestamp": self.timestamp,
-                "validation_time_ms": round(self.validation_time_ms, 2)
-            },
-            "phase1_structural": {
-                "status": "PASS" if self.passed else "FAIL",
-                "errors": [e.to_dict() for e in self.errors],
-                "warnings": [w.to_dict() for w in self.warnings]
-            },
-            "phase2_quality": None,  # Не використовуємо якісну оцінку
-            "decision": {
-                "status": "PASSED" if self.passed else "FAILED",
-                "reasoning": self._build_reasoning(),
-                "proceed_to": "GEN2" if self.passed else None
-            },
+            "validation": {"stage": "VAL_GEN1", "version": self.validator_version, "timestamp": self.timestamp, "validation_time_ms": round(self.validation_time_ms, 2)},
+            "phase1_structural": {"status": "PASS" if self.passed else "FAIL", "errors": [e.to_dict() for e in self.errors], "warnings": [w.to_dict() for w in self.warnings]},
+            "phase2_quality": None,
+            "decision": {"status": "PASSED" if self.passed else "FAILED", "reasoning": self._build_reasoning(), "proceed_to": "GEN2" if self.passed else None},
             "gen2_handoff": self.gen2_handoff if self.passed else {},
-            "issues": {
-                "has_issues": len(self.errors) > 0 or len(self.warnings) > 0,
-                "concerns": [str(e) for e in self.all_issues]
-            },
-            "retry_guidance": self._build_retry_guidance() if not self.passed else None
+            "issues": {"has_issues": len(self.errors) > 0 or len(self.warnings) > 0, "concerns": [str(e) for e in self.all_issues]},
+            "retry_guidance": self._build_retry_guidance() if not self.passed else None,
         }
 
     def _build_reasoning(self) -> str:
-        """Побудувати reasoning для decision."""
         if self.passed:
-            if self.warnings:
-                return f"All structural checks passed with {len(self.warnings)} warning(s). Ready for GEN2."
-            return "All structural checks passed. Ready for GEN2."
-        return f"Validation failed with {len(self.errors)} error(s). See retry_guidance for fixes."
+            return f"All checks passed with {len(self.warnings)} warning(s). Ready for GEN2." if self.warnings else "All checks passed. Ready for GEN2."
+        return f"Validation failed with {len(self.errors)} error(s). See retry_guidance."
 
     def _build_retry_guidance(self) -> Dict[str, Any]:
-        """Побудувати guidance для повторної генерації."""
-        fixes = []
-        for error in self.errors:
-            fix = f"Fix {error.field}: {error.message}"
-            if error.suggestion:
-                fix += f" ({error.suggestion})"
-            fixes.append(fix)
-
-        return {
-            "fixes_needed": fixes,
-            "regenerate": True
-        }
+        return {"fixes_needed": [f"Fix {e.field}: {e.message}" + (f" ({e.suggestion})" if e.suggestion else "") for e in self.errors], "regenerate": True}
 
 
 # ============================================================================
-# VALIDATOR CLASS — Головний клас валідатора
+# VALIDATOR CLASS
 # ============================================================================
 
 class Gen1Validator:
-    """
-    Детермінований Python-валідатор для GEN1 виходу.
+    """Deterministic Python validator for GEN1 output (v2.0).
 
-    Замінює LLM-валідатор VAL_GEN1.txt.
-
-    Архітектура:
-    - Модульні перевірки для кожного розділу GEN1
-    - Збір всіх помилок (не зупиняємось на першій)
-    - Чіткий поділ errors vs warnings
-    - Actionable feedback в повідомленнях
-
-    Використання:
-        validator = Gen1Validator()
-        result = validator.validate(gen1_json)
-
-        if result.passed:
-            proceed_to_gen2(result.gen2_handoff)
+    Architecture: autocorrect → validate → report.
+    Auto-corrections live in gen1_autocorrect.py.
+    This class only validates and reports errors/warnings.
     """
 
-    def __init__(self, strict_mode: bool = True):
+    # Soft enum fields: produce warnings, not errors
+    _SOFT_ENUMS = {"metadata.concept.category", "lighting_master.preset", "atmosphere_mode", "audio.sonic_hook.type"}
+
+    def __init__(self, strict_mode: bool = False):
         """
-        Ініціалізація валідатора.
-
         Args:
-            strict_mode: Якщо True, warnings також блокують (default: True)
+            strict_mode: If True, warnings also block. Default False.
         """
         self.strict_mode = strict_mode
         self._errors: List[ValidationError] = []
@@ -602,39 +291,26 @@ class Gen1Validator:
         self._data: Dict[str, Any] = {}
 
     def validate(self, data: Dict[str, Any]) -> ValidationResult:
-        """
-        Валідувати GEN1 JSON вихід.
-
-        Args:
-            data: Словник з GEN1 JSON виходом
-
-        Returns:
-            ValidationResult з результатами валідації
-        """
         start_time = time.perf_counter()
-
-        # Reset state
         self._errors = []
         self._warnings = []
-        self._data = copy.deepcopy(data)
 
-        # Auto-correct known Gemini confusions before validation
-        self._auto_correct_gemini_confusions()
+        # Phase 1: Auto-correct (deterministic fixes)
+        corrected, fix_warnings = autocorrect_gen1(data)
+        self._data = corrected
 
-        # Виконуємо всі перевірки
+        # Convert AutoFixWarnings to ValidationErrors (as warnings)
+        for fw in fix_warnings:
+            self._warnings.append(ValidationError(field=fw.field, message=fw.message, severity="warning"))
+
+        # Phase 2: Validate
         self._run_all_validations()
 
-        # Визначаємо результат (strict_mode: warnings also block)
+        # Determine pass/fail
         passed = len(self._errors) == 0
         if self.strict_mode and self._warnings:
             passed = False
 
-        # Будуємо validation summary (метадані для логування, НЕ реальний handoff — DeliveryPayload робить handoff)
-        gen2_handoff = {}
-        if passed:
-            gen2_handoff = self._build_validation_summary()
-
-        # Рахуємо час
         validation_time_ms = (time.perf_counter() - start_time) * 1000
 
         result = ValidationResult(
@@ -642,2821 +318,899 @@ class Gen1Validator:
             errors=self._errors.copy(),
             warnings=self._warnings.copy(),
             validation_time_ms=validation_time_ms,
-            gen2_handoff=gen2_handoff,
             corrected_data=self._data,
+            gen2_handoff=self._build_summary() if passed else {},
         )
 
-        # Логування
         if passed:
-            logger.success(
-                f"GEN1 validation PASSED in {validation_time_ms:.2f}ms "
-                f"({len(self._warnings)} warnings)"
-            )
+            logger.success(f"GEN1 validation PASSED in {validation_time_ms:.2f}ms ({len(self._warnings)} warnings)")
         else:
-            logger.warning(
-                f"GEN1 validation FAILED in {validation_time_ms:.2f}ms "
-                f"({len(self._errors)} errors, {len(self._warnings)} warnings)"
-            )
+            logger.warning(f"GEN1 validation FAILED in {validation_time_ms:.2f}ms ({len(self._errors)} errors, {len(self._warnings)} warnings)")
 
         return result
 
     # ========================================================================
-    # AUTO-CORRECTION — Fix known Gemini confusions before validation
-    # ========================================================================
-
-    # Maps for hook.type: Gemini sometimes uses sonic_hook types here
-    _HOOK_TYPE_FIXES = {
-        "THE_SILENCE": "THE_WHISPER",       # THE_SILENCE is a sonic_hook type, closest hook = WHISPER
-        "THE_BOOM": "THE_SCALE_SHOCK",      # sonic_hook → closest hook
-        "THE_SIZZLE": "THE_SENSORY_ATTACK", # sonic_hook → closest hook
-        "THE_CRUNCH": "THE_SENSORY_ATTACK", # sonic_hook → closest hook
-        "THE_WHOOSH": "THE_SCALE_SHOCK",    # sonic_hook → closest hook
-        "THE_CHIME": "THE_WHISPER",         # sonic_hook → closest hook
-        "THE_DROP": "THE_SCALE_SHOCK",      # sonic_hook → closest hook
-        "THE_GLITCH": "THE_ABSURD_LOGIC",   # sonic_hook → closest hook
-    }
-
-    # Maps for narrative_purpose: Gemini uses phase labels from duration_config
-    _PURPOSE_FIXES = {
-        "EXPLORATION": "FEATURE",            # exploration phase → FEATURE (mid-video discovery)
-        "ESCALATION": "DYNAMIC_ACTION",      # escalation phase → DYNAMIC_ACTION (intensity ramp)
-        "CLIMAX": "FEATURE_HIGHLIGHT",       # climax phase → FEATURE_HIGHLIGHT
-        "HOOK": "ESTABLISHING",              # hook phase → ESTABLISHING
-        "REVEAL": "FEATURE_HIGHLIGHT",       # generic reveal → FEATURE_HIGHLIGHT
-        "TRANSITION": "CONTEXTUAL_ENVIRONMENT",  # transition → CONTEXTUAL_ENVIRONMENT
-    }
-
-    def _auto_correct_gemini_confusions(self) -> None:
-        """Fix known Gemini hallucinations in-place before validation.
-
-        Gemini often confuses:
-        - sonic_hook.type values with hook.type values
-        - duration_config phase labels with narrative_purpose enums
-
-        Auto-corrects and logs warnings so the pipeline doesn't fail on
-        predictable LLM mistakes.
-        """
-        # Fix hook.type confusion with sonic_hook.type
-        hook = self._data.get("hook")
-        if isinstance(hook, dict):
-            hook_type = hook.get("type", "")
-            if hook_type in self._HOOK_TYPE_FIXES:
-                fixed = self._HOOK_TYPE_FIXES[hook_type]
-                hook["type"] = fixed
-                self._add_warning(
-                    "hook.type",
-                    f"Auto-corrected '{hook_type}' → '{fixed}' (was sonic_hook type, not hook type)",
-                    suggestion="GEN1 prompt confusion: THE_SILENCE is audio.sonic_hook.type, not hook.type"
-                )
-
-        # Fix narrative_purpose confusion with phase labels
-        scenes = self._data.get("scenes", [])
-        total = len(scenes)
-        for i, scene in enumerate(scenes):
-            if not isinstance(scene, dict):
-                continue
-            purpose = scene.get("narrative_purpose", "")
-            if purpose in self._PURPOSE_FIXES:
-                scene_num = i + 1
-                # Don't auto-fix invariant positions (1, N-1, N)
-                if scene_num == 1:
-                    fixed = "ESTABLISHING"
-                elif scene_num == total:
-                    fixed = "LOOP_CLOSE"
-                elif scene_num == total - 1:
-                    fixed = "AERIAL"
-                else:
-                    fixed = self._PURPOSE_FIXES[purpose]
-                scene["narrative_purpose"] = fixed
-                self._add_warning(
-                    f"scenes[{i}].narrative_purpose",
-                    f"Auto-corrected '{purpose}' → '{fixed}' (was duration_config phase label)",
-                    suggestion="Valid values: ESTABLISHING, FEATURE, DYNAMIC_ACTION, STRUCTURAL_DETAIL, etc."
-                )
-
-        # Fix easter egg issues (Gemini consistently leaves comment_bait blank,
-        # or generates pinned_comment with egg-hunt language for fake eggs)
-        # Also handle easter_egg=null (Gemini sometimes outputs null instead of object)
-        engagement = self._data.get("engagement")
-        has_real_egg = False
-        if isinstance(engagement, dict):
-            egg = engagement.get("easter_egg")
-            if isinstance(egg, dict):
-                obj = egg.get("object", "")
-                scene_num_raw = egg.get("scene_number", 0)
-                try:
-                    scene_num = int(scene_num_raw)
-                except (ValueError, TypeError):
-                    scene_num = 0
-                is_audio_only = egg.get("format") == "AUDIO_ONLY"
-                has_real_egg = is_audio_only or (obj and obj != "none" and scene_num > 0)
-
-                if not egg.get("comment_bait"):
-                    if has_real_egg:
-                        egg["comment_bait"] = f"Did anyone spot the {obj}? 👀"
-                    else:
-                        egg["comment_bait"] = "Would you live here? 🏠"
-                    self._add_warning(
-                        "engagement.easter_egg.comment_bait",
-                        "Auto-filled empty comment_bait",
-                    )
-            # egg is None/null → no real egg
-
-        # Also check top-level easter_egg (prompt_router sometimes puts it here)
-        if not has_real_egg:
-            top_egg = self._data.get("easter_egg")
-            if isinstance(top_egg, dict):
-                obj = top_egg.get("object", "")
-                try:
-                    sn = int(top_egg.get("scene_number", 0))
-                except (ValueError, TypeError):
-                    sn = 0
-                is_audio = top_egg.get("format") == "AUDIO_ONLY"
-                has_real_egg = is_audio or (obj and obj != "none" and sn > 0)
-
-        # Fix pinned_comment that references egg hunt when no real egg exists
-        youtube = self._data.get("youtube", {})
-        if isinstance(youtube, dict) and not has_real_egg:
-            pinned = youtube.get("pinned_comment", "")
-            if isinstance(pinned, str):
-                egg_patterns = ["spot", "find", "hidden", "spotted", "hiding", "secret"]
-                if any(p in pinned.lower() for p in egg_patterns):
-                    _meta = self._data.get("metadata", {})
-                    _concept = _meta.get("concept", {}) if isinstance(_meta, dict) else {}
-                    subject = _concept.get("subject", "this") if isinstance(_concept, dict) else "this"
-                    youtube["pinned_comment"] = f"Would you visit a {subject}? 🏠"
-                    self._add_warning(
-                        "youtube.pinned_comment",
-                        "Auto-replaced egg-hunt reference (no real easter egg exists)",
-                    )
-
-        # Fix Scene 1 on_screen_text missing food name
-        food_name = self._get_food_name_from_data()
-        if food_name and scenes:
-            scene1 = scenes[0] if isinstance(scenes[0], dict) else {}
-            on_screen = scene1.get("on_screen_text", "")
-            if on_screen and food_name.lower() not in on_screen.lower():
-                # Prepend food name to existing text
-                scene1["on_screen_text"] = f"{food_name} — {on_screen}"
-                self._add_warning(
-                    "scenes[0].on_screen_text",
-                    f"Auto-prepended food name '{food_name}' for mute viewer recognition",
-                )
-
-        # Fix food_visual_ratio: auto-correct invalid values, infer missing (v8.5.0)
-        for i, scene in enumerate(scenes):
-            if not isinstance(scene, dict):
-                continue
-            fvr = scene.get("food_visual_ratio", "")
-            if fvr and isinstance(fvr, str) and fvr.strip().upper() == "ARCHITECTURE_DOMINANT":
-                # Scene 1, STRUCTURAL_DETAIL, money_shot → FOOD_DOMINANT; others → BALANCED
-                purpose_fix = scene.get("narrative_purpose", "")
-                ms_fix = scene.get("money_shot")
-                is_money_fix = isinstance(ms_fix, dict) and ms_fix.get("is_money_shot")
-                if i == 0 or purpose_fix == "STRUCTURAL_DETAIL" or is_money_fix:
-                    scene["food_visual_ratio"] = "FOOD_DOMINANT"
-                else:
-                    scene["food_visual_ratio"] = "BALANCED"
-                self._add_warning(
-                    f"scenes[{i}].food_visual_ratio",
-                    f"Auto-corrected 'ARCHITECTURE_DOMINANT' → '{scene['food_visual_ratio']}' (never allowed per v8.5.0)",
-                )
-            elif not fvr:
-                purpose = scene.get("narrative_purpose", "")
-                ms = scene.get("money_shot")
-                is_money = isinstance(ms, dict) and ms.get("is_money_shot")
-                if i == 0 or purpose == "STRUCTURAL_DETAIL" or is_money:
-                    scene["food_visual_ratio"] = "FOOD_DOMINANT"
-                else:
-                    scene["food_visual_ratio"] = "BALANCED"
-                self._add_warning(
-                    f"scenes[{i}].food_visual_ratio",
-                    f"Auto-filled missing food_visual_ratio → '{scene['food_visual_ratio']}'",
-                )
-
-        # ---- 1A: Money shot voiceover → mode-based enforcement ----
-        # MODE A (CRISPY/CRUNCHY/BRITTLE): pure [silence]
-        # MODE B (CREAMY/CHEWY/SMOOTH): allow "[long pause] [whispers] <word>."
-        _SOFT_TEXTURES = {"creamy", "chewy", "smooth", "gooey", "silky", "velvety", "soft", "melty"}
-        food_id = self._data.get("food_identity", {})
-        tex_kws = food_id.get("texture_keywords", []) if isinstance(food_id, dict) else []
-        is_soft_texture = any(
-            kw.lower().strip() in _SOFT_TEXTURES
-            for kw in tex_kws if isinstance(kw, str)
-        )
-        for i, scene in enumerate(scenes):
-            if not isinstance(scene, dict):
-                continue
-            ms = scene.get("money_shot")
-            if isinstance(ms, dict) and ms.get("is_money_shot"):
-                vo_seg = scene.get("voiceover_segment", "")
-                if vo_seg and vo_seg.strip() not in ("", "[silence]"):
-                    if is_soft_texture and _MODE_B_PATTERN.match(vo_seg.strip()):
-                        # MODE B: valid — one whispered word after [long pause]
-                        pass
-                    else:
-                        scene["voiceover_segment"] = "[silence]"
-                        scene["narrator_script"] = ""
-                        self._add_warning(
-                            f"scenes[{i}].voiceover_segment",
-                            f"Auto-forced '[silence]' on money_shot scene (was: '{vo_seg[:60]}')",
-                        )
-                narrator = scene.get("narrator_script", "")
-                if narrator and narrator.strip():
-                    # MODE B allows 1-word narrator_script
-                    if is_soft_texture and len(narrator.strip().split()) <= 1:
-                        pass
-                    else:
-                        scene["narrator_script"] = ""
-                        self._add_warning(
-                            f"scenes[{i}].narrator_script",
-                            "Auto-cleared narrator_script on money_shot scene",
-                        )
-
-        # ---- 1A-bis: ASMR scene whisper anchor (H3 cold-start fix) ----
-        # Pure ASMR scenes (not money_shot) must have "[whispers] <word>. [long pause]"
-        # If Gemini generates empty VO for ASMR scenes, auto-fix with default anchor word
-        asmr_scene_nums = self._data.get("asmr_scenes", [])
-        if isinstance(asmr_scene_nums, list):
-            for i, scene in enumerate(scenes):
-                if not isinstance(scene, dict):
-                    continue
-                scene_num = scene.get("scene_number", i + 1)
-                if scene_num not in asmr_scene_nums:
-                    continue
-                # Skip money_shot scenes — they follow MODE A/B rule (handled by 1A)
-                ms = scene.get("money_shot")
-                if isinstance(ms, dict) and ms.get("is_money_shot"):
-                    continue
-                # Pure ASMR scene: ensure whisper anchor
-                vo_seg = scene.get("voiceover_segment", "")
-                narrator = scene.get("narrator_script", "")
-                vo_empty = not vo_seg or vo_seg.strip() in ("", "[silence]")
-                narrator_empty = not narrator or not narrator.strip()
-                if vo_empty and narrator_empty:
-                    scene["voiceover_segment"] = "[whispers] Warm. [long pause]"
-                    scene["narrator_script"] = "Warm."
-                    self._add_warning(
-                        f"scenes[{i}].voiceover_segment",
-                        f"Auto-added whisper anchor to ASMR scene {scene_num} "
-                        f"(was empty — cold-start viewers need audio anchor)",
-                    )
-
-        # ---- 1B: Narrative bridge ban → strip bridge WORD from VO, keep content ----
-        for i, scene in enumerate(scenes):
-            if not isinstance(scene, dict):
-                continue
-            for field_key in ("voiceover_segment", "narrator_script"):
-                text = scene.get(field_key, "")
-                if not text or not isinstance(text, str):
-                    continue
-                # Check each line (some segments are multi-line)
-                lines = text.split("\n")
-                fixed_lines = []
-                changed = False
-                for line in lines:
-                    stripped = line.strip()
-                    # Get first real word (skip ElevenLabs tags)
-                    clean_line = re.sub(r'\[[\w\s]+\]', '', stripped).strip()
-                    if clean_line:
-                        first_word = clean_line.split()[0].rstrip(".,!?;:").lower()
-                        if first_word in NARRATIVE_BRIDGE_STARTERS:
-                            # Strip only the bridge word, preserve the rest
-                            # Find the bridge word in the original line (after any tags)
-                            bridge_pattern = re.compile(
-                                r'(\[[\w\s]+\]\s*)*' + re.escape(clean_line.split()[0]) + r'\s*',
-                                re.IGNORECASE,
-                            )
-                            fixed_line = bridge_pattern.sub(
-                                lambda m: m.group(1) or '' if m.group(1) else '',
-                                stripped,
-                                count=1,
-                            ).strip()
-                            # Capitalize first real word after stripping
-                            if fixed_line:
-                                # Preserve leading tags, capitalize first text char
-                                tag_prefix = re.match(r'((?:\[[\w\s]+\]\s*)*)', fixed_line)
-                                prefix = tag_prefix.group(1) if tag_prefix else ""
-                                rest = fixed_line[len(prefix):]
-                                if rest:
-                                    rest = rest[0].upper() + rest[1:]
-                                fixed_line = prefix + rest
-                            self._add_warning(
-                                f"scenes[{i}].{field_key}",
-                                f"Auto-stripped bridge word '{first_word}': '{stripped[:50]}' → '{fixed_line[:50]}'",
-                            )
-                            changed = True
-                            fixed_lines.append(fixed_line if fixed_line else line)
-                            continue
-                    fixed_lines.append(line)
-                if changed:
-                    scene[field_key] = "\n".join(fixed_lines).strip()
-            # Also strip from micro_open_loop.setup_line
-            mol = scene.get("micro_open_loop")
-            if isinstance(mol, dict):
-                setup = mol.get("setup_line", "")
-                if isinstance(setup, str) and setup.strip():
-                    clean_setup = re.sub(r'\[[\w\s]+\]', '', setup).strip()
-                    if clean_setup:
-                        first_w = clean_setup.split()[0].rstrip(".,!?;:").lower()
-                        if first_w in NARRATIVE_BRIDGE_STARTERS:
-                            # Strip only the bridge word, keep the rest
-                            fixed_setup = re.sub(
-                                r'(?i)^(\[[\w\s]+\]\s*)?' + re.escape(first_w) + r'\s*',
-                                lambda m: m.group(1) or '',
-                                setup, count=1
-                            ).strip()
-                            mol["setup_line"] = fixed_setup
-                            self._add_warning(
-                                f"scenes[{i}].micro_open_loop.setup_line",
-                                f"Auto-cleared narrative bridge setup_line: '{setup[:60]}'",
-                            )
-
-        # ---- 1E: Pinned comment — second pass with expanded patterns ----
-        # (has_real_egg already determined above in the easter egg block)
-        youtube_1e = self._data.get("youtube", {})
-        if isinstance(youtube_1e, dict) and not has_real_egg:
-            pinned_1e = youtube_1e.get("pinned_comment", "")
-            if isinstance(pinned_1e, str) and pinned_1e.strip():
-                expanded_egg_patterns = [
-                    "spot", "find", "hidden", "spotted", "hiding", "secret",
-                    "passenger", "who", "did you", "anyone", "notice",
-                ]
-                if any(p in pinned_1e.lower() for p in expanded_egg_patterns):
-                    _meta = self._data.get("metadata", {})
-                    _concept = _meta.get("concept", {}) if isinstance(_meta, dict) else {}
-                    subject = _concept.get("subject", "this") if isinstance(_concept, dict) else "this"
-                    youtube_1e["pinned_comment"] = f"Would you visit a {subject}? 🏠"
-                    self._add_warning(
-                        "youtube.pinned_comment",
-                        f"Auto-replaced egg-hunt/quiz reference (no real easter egg): '{pinned_1e[:60]}'",
-                    )
-
-            # Note: food-material reference in pinned comment is NOT auto-replaced.
-            # Legitimate comments like "That honey though..." are valid engagement.
-            # Only egg-hunt patterns (above) get auto-fixed.
-
-        # ---- 1G: [silence] + speech tag contradiction → auto-fix ----
-        speech_tags = {"[whispers]", "[calm]", "[warm]", "[gentle]", "[excited]", "[sad]", "[angry]", "[happily]", "[shouts]"}
-        for i, scene in enumerate(scenes):
-            if not isinstance(scene, dict):
-                continue
-            vo_seg = scene.get("voiceover_segment", "")
-            if not isinstance(vo_seg, str) or "[silence]" not in vo_seg:
-                continue
-            has_speech = any(tag in vo_seg for tag in speech_tags)
-            if not has_speech:
-                continue
-            ms = scene.get("money_shot")
-            is_money = isinstance(ms, dict) and ms.get("is_money_shot")
-            if is_money:
-                # MODE B: soft textures may have [silence] mixed in — strip it, keep [whispers]
-                if is_soft_texture and _MODE_B_PATTERN.match(
-                    vo_seg.replace("[silence]", "").strip()
-                ):
-                    fixed = vo_seg.replace("[silence]", "").strip()
-                    scene["voiceover_segment"] = fixed
-                    self._add_warning(
-                        f"scenes[{i}].voiceover_segment",
-                        f"Auto-stripped '[silence]' from MODE B money_shot (kept: '{fixed[:60]}')",
-                    )
-                else:
-                    scene["voiceover_segment"] = "[silence]"
-                    self._add_warning(
-                        f"scenes[{i}].voiceover_segment",
-                        f"Auto-forced '[silence]' (money_shot had mixed tags: '{vo_seg[:60]}')",
-                    )
-            else:
-                # Strip [silence], keep speech tags + text
-                fixed = vo_seg.replace("[silence]", "").strip()
-                if fixed:
-                    scene["voiceover_segment"] = fixed
-                    self._add_warning(
-                        f"scenes[{i}].voiceover_segment",
-                        f"Auto-stripped '[silence]' from mixed-tag VO (kept speech: '{fixed[:60]}')",
-                    )
-
-        # ---- 1H: on_screen_text cleanup + truncation → max 6 words ----
-        food_name_val = self._get_food_name_from_data() or ""
-        for i, scene in enumerate(scenes):
-            if not isinstance(scene, dict):
-                continue
-            on_screen = scene.get("on_screen_text", "")
-            if not isinstance(on_screen, str) or not on_screen.strip():
-                continue
-
-            needs_fix = False
-            cleaned = on_screen.strip()
-
-            # Strip parenthetical qualifiers and trailing commas (Gemini truncation artifacts)
-            if "(" in cleaned and ")" not in cleaned:
-                cleaned = re.sub(r'\s*\(.*$', '', cleaned).strip()
-                needs_fix = True
-            # Strip orphan closing paren without opening (e.g. "GREEN) BRIDGE")
-            if ")" in cleaned and "(" not in cleaned:
-                cleaned = cleaned.replace(")", "").strip()
-                needs_fix = True
-            cleaned = cleaned.rstrip(",").strip()
-            if cleaned != on_screen.strip():
-                needs_fix = True
-
-            words = cleaned.split()
-            if len(words) > 6 or needs_fix:
-                # Build clean OSD: food name + key concept word, max 4 words
-                # For Scene 1: use food + subject concept
-                if i == 0 and food_name_val:
-                    # Extract short subject from metadata
-                    _meta = self._data.get("metadata", {})
-                    _concept = _meta.get("concept", {}) if isinstance(_meta, dict) else {}
-                    subject = _concept.get("subject", "") if isinstance(_concept, dict) else ""
-                    # Take last word of subject as concept (e.g. "High-rise Apartment Tower" → "Tower")
-                    concept_word = subject.split()[-1].upper() if subject else ""
-                    food_short = food_name_val.split()[-1].upper()  # "Waffle"
-                    truncated = f"{food_short} {concept_word}".strip() if concept_word else food_short
-                else:
-                    # Non-Scene-1: keep first 4 clean words, uppercase key word
-                    kept = [w for w in words if w.strip("(,)")][:4]
-                    if kept:
-                        kept[0] = kept[0].upper()
-                    truncated = " ".join(kept)
-
-                if truncated != on_screen.strip():
-                    scene["on_screen_text"] = truncated
-                    self._add_warning(
-                        f"scenes[{i}].on_screen_text",
-                        f"Auto-cleaned OSD: '{on_screen.strip()[:40]}' → '{truncated}'",
-                    )
-
-        # ---- 1J: Scene N-1 narrative_purpose → AERIAL auto-fix ----
-        if len(scenes) >= 3:
-            penultimate_idx = len(scenes) - 2
-            penultimate = scenes[penultimate_idx]
-            if isinstance(penultimate, dict):
-                p_purpose = penultimate.get("narrative_purpose", "")
-                if p_purpose not in ("AERIAL", "AERIAL_WOW", "AERIAL_REVEAL"):
-                    penultimate["narrative_purpose"] = "AERIAL"
-                    self._add_warning(
-                        f"scenes[{penultimate_idx}].narrative_purpose",
-                        f"Auto-corrected '{p_purpose}' → 'AERIAL' (Scene N-1 must be AERIAL)",
-                    )
-
-        # ---- 1M: warning_line delivery — move from LOOP_CLOSE to AERIAL if needed ----
-        wl_raw = self._data.get("warning_line", "")
-        if isinstance(wl_raw, str) and wl_raw.strip() and len(scenes) >= 3:
-            wl_text = wl_raw.strip()
-            # Strip direction tags to get plain warning text for matching
-            wl_plain = re.sub(r'\[[\w\s]+\]\s*', '', wl_text).strip().rstrip(".")
-            aerial_idx = len(scenes) - 2
-            loop_idx = len(scenes) - 1
-            aerial_scene = scenes[aerial_idx] if isinstance(scenes[aerial_idx], dict) else {}
-            loop_scene = scenes[loop_idx] if isinstance(scenes[loop_idx], dict) else {}
-
-            aerial_vo = aerial_scene.get("voiceover_segment", "") or ""
-            loop_vo = loop_scene.get("voiceover_segment", "") or ""
-            loop_plain = re.sub(r'\[[\w\s]+\]\s*', '', loop_vo).strip().rstrip(".")
-
-            aerial_is_empty = not aerial_vo.strip() or aerial_vo.strip() == "[silence]"
-            loop_has_wl = wl_plain.lower() in loop_plain.lower() if wl_plain else False
-
-            if aerial_is_empty and loop_has_wl:
-                # Move warning_line VO from LOOP_CLOSE to AERIAL
-                aerial_scene["voiceover_segment"] = loop_vo
-                aerial_scene["narrator_script"] = loop_scene.get("narrator_script", "")
-                loop_scene["voiceover_segment"] = "[silence]"
-                loop_scene["narrator_script"] = ""
-                self._add_warning(
-                    f"scenes[{aerial_idx}].voiceover_segment",
-                    f"Auto-moved warning_line from Scene {loop_idx + 1} (LOOP_CLOSE) to Scene {aerial_idx + 1} (AERIAL)",
-                )
-
-        # ---- 1K: Direction tag enforcement — prepend [whispers] if missing ----
-        for i, scene in enumerate(scenes):
-            if not isinstance(scene, dict):
-                continue
-            vo_seg = scene.get("voiceover_segment", "")
-            if not isinstance(vo_seg, str) or not vo_seg.strip():
-                continue
-            if vo_seg.strip() == "[silence]":
-                continue
-            # Check if VO starts with a direction tag
-            stripped_vo = vo_seg.strip()
-            starts_with_tag = stripped_vo.startswith("[")
-            if not starts_with_tag:
-                scene["voiceover_segment"] = f"[whispers] {stripped_vo}"
-                self._add_warning(
-                    f"scenes[{i}].voiceover_segment",
-                    f"Auto-prepended [whispers] (was missing direction tag): '{stripped_vo[:50]}'",
-                )
-                # Also fix narrator_script if it matches
-                narrator = scene.get("narrator_script", "")
-                if narrator and narrator.strip() == stripped_vo.lstrip("[").split("]")[-1].strip():
-                    pass  # narrator_script doesn't need tags
-
-        # ---- 1N: narrator_script tag strip — narrator_script is plain text, no tags ----
-        for i, scene in enumerate(scenes):
-            if not isinstance(scene, dict):
-                continue
-            narrator = scene.get("narrator_script", "")
-            if not isinstance(narrator, str) or not narrator.strip():
-                continue
-            # Check if narrator_script contains any ElevenLabs tags
-            if re.search(r'\[[\w\s]+\]', narrator):
-                cleaned_narrator = re.sub(r'\[[\w\s]+\]\s*', '', narrator).strip()
-                if cleaned_narrator:
-                    scene["narrator_script"] = cleaned_narrator
-                    self._add_warning(
-                        f"scenes[{i}].narrator_script",
-                        f"Auto-stripped tags from narrator_script (plain text only): '{narrator[:50]}' → '{cleaned_narrator[:50]}'",
-                    )
-                else:
-                    # Tags only, no real text — clear it
-                    scene["narrator_script"] = ""
-                    self._add_warning(
-                        f"scenes[{i}].narrator_script",
-                        f"Auto-cleared narrator_script (was tags-only: '{narrator[:50]}')",
-                    )
-
-        # ---- 1L: Scene VO ↔ warning_line sync ----
-        # If a scene VO contains a warning pattern where element differs from
-        # warning_line's element, replace to match warning_line
-        warning_line_raw = self._data.get("warning_line", "")
-        if isinstance(warning_line_raw, str) and warning_line_raw.strip():
-            wl_stripped = re.sub(r'\[[\w\s]+\]', '', warning_line_raw).strip()
-            # Extract action/element from any of the 3 formats
-            wl_action = None
-            wl_element = None
-            for _sync_re in [
-                re.compile(r"(?:don['\u2019]t)\s+(\w+)\s+the\s+(\w+)", re.IGNORECASE),
-                re.compile(r"^(\w+)\s+the\s+(\w+)\.\s*I\s+dare\s+you", re.IGNORECASE),
-                re.compile(r"the\s+architect\s+says:\s*nobody\s+(\w+)\s+the\s+(\w+)", re.IGNORECASE),
-            ]:
-                _sync_m = _sync_re.search(wl_stripped)
-                if _sync_m:
-                    wl_action = _sync_m.group(1)
-                    wl_element = _sync_m.group(2)
-                    break
-            if wl_action and wl_element:
-                # Patterns for all 3 warning_line formats in scene VOs
-                _wl_scene_patterns = [
-                    # Format A: "Don't X the Y"
-                    (re.compile(r"(don['\u2019]t)\s+(\w+)\s+the\s+(\w+)", re.IGNORECASE), 3),
-                    # Format B: "X the Y. I dare you"
-                    (re.compile(r"(\w+)\s+the\s+(\w+)\.\s*I\s+dare\s+you", re.IGNORECASE), 2),
-                    # Format C: "The architect says: nobody X the Y"
-                    (re.compile(r"the\s+architect\s+says:\s*nobody\s+(\w+)\s+the\s+(\w+)", re.IGNORECASE), 2),
-                ]
-                for i, scene in enumerate(scenes):
-                    if not isinstance(scene, dict):
-                        continue
-                    vo_seg = scene.get("voiceover_segment", "")
-                    if not isinstance(vo_seg, str):
-                        continue
-                    for wl_re, elem_group in _wl_scene_patterns:
-                        m = wl_re.search(vo_seg)
-                        if m:
-                            scene_element = m.group(elem_group).lower()
-                            if scene_element != wl_element.lower():
-                                # Replace mismatched element with correct one from warning_line
-                                fixed_vo = vo_seg[:m.start(elem_group)] + wl_element + vo_seg[m.end(elem_group):]
-                                scene["voiceover_segment"] = fixed_vo
-                                self._add_warning(
-                                    f"scenes[{i}].voiceover_segment",
-                                    f"Auto-synced element with warning_line: '{scene_element}' → '{wl_element}'",
-                                )
-                                # Also fix narrator_script
-                                narrator = scene.get("narrator_script", "")
-                                if isinstance(narrator, str):
-                                    nm = wl_re.search(narrator)
-                                    if nm:
-                                        scene["narrator_script"] = narrator[:nm.start(elem_group)] + wl_element + narrator[nm.end(elem_group):]
-                            break  # Only match first pattern found
-
-        # ---- 1I: Rebuild full_script from per-scene voiceover_segment ----
-        vo = self._data.get("voiceover")
-        if isinstance(vo, dict) and scenes:
-            segments = []
-            for scene in scenes:
-                if not isinstance(scene, dict):
-                    continue
-                seg = scene.get("voiceover_segment", "")
-                if isinstance(seg, str) and seg.strip() and seg.strip() != "[silence]":
-                    segments.append(seg.strip())
-            if segments:
-                rebuilt = " ".join(segments)
-                old_script = vo.get("full_script", "")
-                if old_script != rebuilt:
-                    vo["full_script"] = rebuilt
-                    self._add_warning(
-                        "voiceover.full_script",
-                        "Auto-rebuilt full_script from per-scene voiceover_segments after auto-fixes",
-                    )
-
-    def _get_food_name_from_data(self) -> Optional[str]:
-        """Extract short food name from raw data (before validation runs).
-
-        Prefers food_identity.primary_food, strips parenthetical qualifiers.
-        E.g. 'Gummy Candy (Translucent Red, Orange, Green)' → 'Gummy Candy'.
-        Falls back to metadata.concept.food_material with same stripping.
-        """
-        # Prefer food_identity.primary_food
-        food_id = self._data.get("food_identity", {})
-        if isinstance(food_id, dict):
-            primary = food_id.get("primary_food", "")
-            if isinstance(primary, str) and primary.strip():
-                clean = re.sub(r'\s*\([^)]*\)', '', primary).strip()
-                return clean if clean else primary.split()[0]
-
-        # Fallback to metadata.concept.food_material
-        metadata = self._data.get("metadata", {})
-        concept = metadata.get("concept", {}) if isinstance(metadata, dict) else {}
-        fm = concept.get("food_material", "") if isinstance(concept, dict) else ""
-        if fm:
-            fm_clean = re.sub(r'\s*\([^)]*\)', '', fm).strip()
-            return fm_clean if fm_clean else fm.split()[0] if fm else None
-        return None
-
-    # ========================================================================
-    # ORCHESTRATION — Запуск всіх перевірок
+    # ORCHESTRATION
     # ========================================================================
 
     def _run_all_validations(self) -> None:
-        """Запустити всі перевірки в правильному порядку."""
-
-        # 1. Metadata
         self._validate_metadata()
-
-        # 2. Property
         self._validate_property()
-
-        # 3. Hook (критично важливий)
         self._validate_hook()
-
-        # 4. Architectural Identity
         self._validate_architectural_identity()
-
-        # 5. Food Identity
         self._validate_food_identity()
-
-        # 6. Lighting Master
         self._validate_lighting_master()
-
-        # 7. Atmosphere Mode
         self._validate_atmosphere_mode()
-
-        # 8. Foreground Element
         self._validate_foreground_element()
-
-        # 9. Voiceover
         self._validate_voiceover()
-
-        # 9b. Warning Line (AERIAL scene signature)
         self._validate_warning_line()
-
-        # 9c. VO sensory check (color words)
         self._validate_vo_sensory()
-
-        # 10. Audio
         self._validate_audio()
-
-        # 11. Engagement (Easter Egg)
         self._validate_engagement()
-
-        # 12. YouTube Metadata (CRITICAL)
         self._validate_youtube()
-
-        # 13. Viral Assessment (QUALITY GATE)
         self._validate_viral_assessment()
-
-        # 14. Scenes (найбільша перевірка)
         self._validate_scenes()
-
-        # 15. Sensory Pressure curve (v8.5.0)
         self._validate_sensory_pressure()
-
-        # 16. Total duration (TOP RULE #6)
         self._validate_total_duration()
-
-        # 17. Top-level required fields (v8.5.0)
         self._validate_top_level_fields()
-
-        # 18. Cross-field consistency (v8.5.1 — Gemini "No Spine" quirk fixes)
         self._validate_cross_field_consistency()
+        # New v2.0 validations
+        self._validate_structural_counts()
+        self._validate_sensory_channels()
+        self._validate_sp_curve_rules()
 
     # ========================================================================
-    # VALIDATION METHODS — Окремі перевірки
+    # VALIDATION METHODS
     # ========================================================================
 
     def _validate_metadata(self) -> None:
-        """Валідація metadata об'єкту."""
         metadata = self._get_field("metadata")
         if metadata is None:
             return
-
-        # status
-        status = self._get_nested(metadata, "status")
-        if status:
-            if status not in ("PRODUCTION_READY", "REJECTED_INPUT"):
-                self._add_error(
-                    "metadata.status",
-                    f"Must be 'PRODUCTION_READY' or 'REJECTED_INPUT', got '{status}'",
-                    code="INVALID_STATUS"
-                )
-
-        # concept
-        concept = self._get_nested(metadata, "concept")
+        status = self._nested(metadata, "status")
+        if status and status not in ("PRODUCTION_READY", "REJECTED_INPUT"):
+            self._error("metadata.status", f"Must be 'PRODUCTION_READY' or 'REJECTED_INPUT', got '{status}'", code="INVALID_STATUS")
+        concept = self._nested(metadata, "concept")
         if concept:
-            # category
-            category = self._get_nested(concept, "category")
-            self._validate_enum_field(category, Category, "metadata.concept.category")
-
-            # subject
-            self._require_non_empty(concept, "subject", "metadata.concept.subject")
-
-            # food_material
-            self._require_non_empty(concept, "food_material", "metadata.concept.food_material")
-
-        # scene_count
-        scene_count = self._get_nested(metadata, "scene_count")
-        if scene_count is not None:
-            if not isinstance(scene_count, int):
-                self._add_error(
-                    "metadata.scene_count",
-                    f"Expected integer, got {type(scene_count).__name__}",
-                    code="INVALID_SCENE_COUNT"
-                )
-            elif scene_count < MIN_SCENES or scene_count > MAX_SCENES:
-                self._add_error(
-                    "metadata.scene_count",
-                    f"Must be {MIN_SCENES}-{MAX_SCENES}, got {scene_count}",
-                    code="INVALID_SCENE_COUNT"
-                )
+            cat = self._nested(concept, "category")
+            self._check_enum(cat, [e.value for e in ContentCategory], "metadata.concept.category")
+            self._require(concept, "subject", "metadata.concept.subject")
+            self._require(concept, "food_material", "metadata.concept.food_material")
+        sc = self._nested(metadata, "scene_count")
+        if sc is not None:
+            if not isinstance(sc, int):
+                self._error("metadata.scene_count", f"Expected int, got {type(sc).__name__}", code="INVALID_SCENE_COUNT")
+            elif sc < MIN_SCENES or sc > MAX_SCENES:
+                self._error("metadata.scene_count", f"Must be {MIN_SCENES}-{MAX_SCENES}, got {sc}", code="INVALID_SCENE_COUNT")
 
     def _validate_property(self) -> None:
-        """Валідація property об'єкту (GEN1 може виводити як 'structure')."""
         prop = self._data.get("property") or self._data.get("structure")
         if prop is None:
-            self._add_error("property", "Required field is missing (also checked 'structure')", code="MISSING_PROPERTY")
+            self._error("property", "Required field missing (also checked 'structure')", code="MISSING_PROPERTY")
             return
-
-        required = ["name", "location", "tagline"]
-        for field_name in required:
-            self._require_non_empty(prop, field_name, f"property.{field_name}")
-        # price is optional (not all concepts have a price)
+        for f in ("name", "location", "tagline"):
+            self._require(prop, f, f"property.{f}")
 
     def _validate_hook(self) -> None:
-        """
-        Валідація hook об'єкту.
-
-        КРИТИЧНО: Hook — найважливіший елемент для retention.
-        """
         hook = self._get_field("hook")
         if hook is None:
             return
-
-        # type (ENUM)
-        hook_type = self._get_nested(hook, "type")
-        self._validate_enum_field(hook_type, HookType, "hook.type")
-
-        # psychological_trigger — accept any non-empty value (GEN1 prompt says "Create your OWN variations")
-        trigger = self._get_nested(hook, "psychological_trigger")
-        if not trigger:
-            self._add_error("hook.psychological_trigger", "Required field is missing or empty")
-
-        # first_words (складна перевірка)
-        first_words = self._get_nested(hook, "first_words", "")
-        if not first_words:
-            self._add_error(
-                "hook.first_words",
-                "Required and cannot be empty",
-                code="MISSING_FIRST_WORDS"
-            )
+        ht = self._nested(hook, "type")
+        self._check_enum(ht, [e.value for e in HookType], "hook.type")
+        if not self._nested(hook, "psychological_trigger"):
+            self._error("hook.psychological_trigger", "Required field missing or empty")
+        fw = self._nested(hook, "first_words", "")
+        if not fw:
+            self._error("hook.first_words", "Required and cannot be empty", code="MISSING_FIRST_WORDS")
         else:
-            self._validate_first_words(first_words)
+            self._validate_first_words(fw, hook)
+        self._require(hook, "complete_hook_vo", "hook.complete_hook_vo")
+        self._require(hook, "first_frame_visual", "hook.first_frame_visual")
+        self._require(hook, "scroll_stop_element", "hook.scroll_stop_element")
 
-        # complete_hook_vo
-        self._require_non_empty(hook, "complete_hook_vo", "hook.complete_hook_vo")
-
-        # first_frame_visual
-        self._require_non_empty(hook, "first_frame_visual", "hook.first_frame_visual")
-
-        # scroll_stop_element
-        self._require_non_empty(hook, "scroll_stop_element", "hook.scroll_stop_element")
-
-    def _validate_first_words(self, first_words: str) -> None:
-        """
-        Перевірка hook.first_words на заборонені слова та наявність emotion tag.
-
-        Правила (з ban_list.txt):
-        1. Не може починатися із заборонених слів (welcome, hello, so, today, etc.)
-        2. Не може починатися із заборонених фраз (in this video, did you know, etc.)
-        3. Повинен містити emotion tag як [excited], [whispers], etc.
-        """
-        # Видаляємо всі теги щоб отримати чистий текст
-        clean_text = re.sub(r'\[.*?\]', '', first_words).strip()
-        clean_text_lower = clean_text.lower()
-
-        # Отримуємо актуальні банлисти
+    def _validate_first_words(self, first_words: str, hook: dict) -> None:
+        clean = re.sub(r'\[.*?\]', '', first_words).strip()
+        clean_lower = clean.lower()
         banned_words = get_banned_first_words()
         banned_phrases = get_banned_first_phrases()
-
-        if clean_text:
-            # Перевіряємо перше слово
-            actual_first_word = clean_text.split()[0].lower()
-            if actual_first_word in banned_words:
-                self._add_warning(
-                    "hook.first_words",
-                    f"Starts with '{actual_first_word}' (weak first word)",
-                    suggestion="Use IMPACT words: numbers, sensory words, warnings, food nouns"
-                )
-
-            # Перевіряємо заборонені фрази
+        if clean:
+            actual = clean.split()[0].lower()
+            if actual in banned_words:
+                self._warn("hook.first_words", f"Starts with '{actual}' (weak)", suggestion="Use IMPACT words: numbers, sensory, warnings, food nouns")
             for phrase in banned_phrases:
-                if clean_text_lower.startswith(phrase):
-                    self._add_warning(
-                        "hook.first_words",
-                        f"Starts with generic phrase '{phrase}'",
-                        suggestion="Avoid generic YouTube opener phrases"
-                    )
+                if clean_lower.startswith(phrase):
+                    self._warn("hook.first_words", f"Starts with generic phrase '{phrase}'")
                     break
-
-        # Перевіряємо наявність emotion tag
-        # GEN1 v6: emotion tag is required in complete_hook_vo (full voiceover text).
-        # first_words is the impact opener — tag there is optional.
-        hook = self._get_field("hook")
-        complete_vo = self._get_nested(hook, "complete_hook_vo", "") if hook else ""
-        has_emotion_in_first = any(tag in first_words for tag in ELEVENLABS_EMOTION_TAGS)
-        has_emotion_in_vo = any(tag in complete_vo for tag in ELEVENLABS_EMOTION_TAGS)
-
-        if not has_emotion_in_first and not has_emotion_in_vo:
-            self._add_warning(
-                "hook.complete_hook_vo",
-                "Should contain an emotion tag for better delivery",
-                suggestion=f"Add one of: {', '.join(sorted(ELEVENLABS_EMOTION_TAGS))}"
-            )
+        complete_vo = self._nested(hook, "complete_hook_vo", "")
+        has_emotion = any(t in first_words for t in ELEVENLABS_EMOTION_TAGS) or any(t in complete_vo for t in ELEVENLABS_EMOTION_TAGS)
+        if not has_emotion:
+            self._warn("hook.complete_hook_vo", "Should contain an emotion tag", suggestion=f"Add: {', '.join(sorted(ELEVENLABS_EMOTION_TAGS))}")
 
     def _validate_architectural_identity(self) -> None:
-        """Валідація architectural_identity об'єкту."""
         arch = self._get_field("architectural_identity")
         if arch is None:
             return
-
-        # style_code
-        self._require_non_empty(arch, "style_code", "architectural_identity.style_code")
-
-        # silhouette_description
-        self._require_non_empty(arch, "silhouette_description", "architectural_identity.silhouette_description")
-
-        # distinctive_features (масив >= 2)
-        features = self._get_nested(arch, "distinctive_features", [])
+        self._require(arch, "style_code", "architectural_identity.style_code")
+        self._require(arch, "silhouette_description", "architectural_identity.silhouette_description")
+        features = self._nested(arch, "distinctive_features", [])
         if not isinstance(features, list) or len(features) < MIN_DISTINCTIVE_FEATURES:
-            self._add_warning(
-                "architectural_identity.distinctive_features",
-                f"Should have at least {MIN_DISTINCTIVE_FEATURES} items, got {len(features) if isinstance(features, list) else 0}",
-            )
+            self._warn("architectural_identity.distinctive_features", f"Should have ≥{MIN_DISTINCTIVE_FEATURES} items")
 
     def _validate_food_identity(self) -> None:
-        """Валідація food_identity об'єкту."""
         food = self._get_field("food_identity")
         if food is None:
             return
-
-        # primary_food
-        self._require_non_empty(food, "primary_food", "food_identity.primary_food")
-
-        # food_dna
-        dna = self._get_nested(food, "food_dna", {})
+        self._require(food, "primary_food", "food_identity.primary_food")
+        dna = self._nested(food, "food_dna", {})
         if not dna:
-            self._add_error(
-                "food_identity.food_dna",
-                "Required object is missing",
-                code="MISSING_FOOD_DNA"
-            )
+            self._error("food_identity.food_dna", "Required object missing", code="MISSING_FOOD_DNA")
         else:
-            self._require_non_empty(dna, "walls_become", "food_identity.food_dna.walls_become")
-            self._require_non_empty(dna, "roof_becomes", "food_identity.food_dna.roof_becomes")
-
-        # texture_keywords (масив >= 2)
-        textures = self._get_nested(food, "texture_keywords", [])
-        if not isinstance(textures, list) or len(textures) < MIN_TEXTURE_KEYWORDS:
-            self._add_warning(
-                "food_identity.texture_keywords",
-                f"Should have at least {MIN_TEXTURE_KEYWORDS} items",
-            )
-
-        # color_keywords (масив >= 2)
-        colors = self._get_nested(food, "color_keywords", [])
+            self._require(dna, "walls_become", "food_identity.food_dna.walls_become")
+            self._require(dna, "roof_becomes", "food_identity.food_dna.roof_becomes")
+        tex = self._nested(food, "texture_keywords", [])
+        if not isinstance(tex, list) or len(tex) < MIN_TEXTURE_KEYWORDS:
+            self._warn("food_identity.texture_keywords", f"Should have ≥{MIN_TEXTURE_KEYWORDS} items")
+        colors = self._nested(food, "color_keywords", [])
         if not isinstance(colors, list) or len(colors) < MIN_COLOR_KEYWORDS:
-            self._add_warning(
-                "food_identity.color_keywords",
-                f"Should have at least {MIN_COLOR_KEYWORDS} items",
-            )
+            self._warn("food_identity.color_keywords", f"Should have ≥{MIN_COLOR_KEYWORDS} items")
 
     def _validate_lighting_master(self) -> None:
-        """Валідація lighting_master об'єкту."""
-        lighting = self._get_field("lighting_master")
-        if lighting is None:
+        light = self._get_field("lighting_master")
+        if light is None:
             return
-
-        # preset (ENUM)
-        preset = self._get_nested(lighting, "preset")
-        self._validate_enum_field(preset, LightingPreset, "lighting_master.preset")
-
-        # prompt_snippet (min 10 chars)
-        snippet = self._get_nested(lighting, "prompt_snippet", "")
+        self._check_enum(self._nested(light, "preset"), [e.value for e in LightingPreset], "lighting_master.preset")
+        snippet = self._nested(light, "prompt_snippet", "")
         if not snippet or len(snippet) < MIN_PROMPT_SNIPPET_LENGTH:
-            self._add_error(
-                "lighting_master.prompt_snippet",
-                f"Must be at least {MIN_PROMPT_SNIPPET_LENGTH} characters",
-                code="SNIPPET_TOO_SHORT"
-            )
+            self._error("lighting_master.prompt_snippet", f"Must be ≥{MIN_PROMPT_SNIPPET_LENGTH} chars", code="SNIPPET_TOO_SHORT")
 
     def _validate_atmosphere_mode(self) -> None:
-        """Валідація atmosphere_mode."""
         mode = self._data.get("atmosphere_mode")
-
         if not mode:
-            self._add_warning(
-                "atmosphere_mode",
-                "Missing — defaulting to CINEMATIC",
-                suggestion="Add atmosphere_mode field"
-            )
-        else:
-            self._validate_enum_field(mode, AtmosphereMode, "atmosphere_mode")
+            self._warn("atmosphere_mode", "Missing — defaulting to CINEMATIC")
+        elif mode not in AtmosphereMode.VALUES:
+            self._warn("atmosphere_mode", f"Non-standard value '{mode}'", suggestion=f"Standard: {', '.join(sorted(AtmosphereMode.VALUES))}")
 
     def _validate_foreground_element(self) -> None:
-        """Валідація foreground_element об'єкту."""
         fg = self._get_field("foreground_element")
         if fg is None:
             return
-
-        # type
-        self._require_non_empty(fg, "type", "foreground_element.type")
-
-        # prompt_snippet (min 10 chars)
-        snippet = self._get_nested(fg, "prompt_snippet", "")
+        self._require(fg, "type", "foreground_element.type")
+        snippet = self._nested(fg, "prompt_snippet", "")
         if not snippet or len(snippet) < MIN_PROMPT_SNIPPET_LENGTH:
-            self._add_error(
-                "foreground_element.prompt_snippet",
-                f"Must be at least {MIN_PROMPT_SNIPPET_LENGTH} characters",
-                code="SNIPPET_TOO_SHORT"
-            )
+            self._error("foreground_element.prompt_snippet", f"Must be ≥{MIN_PROMPT_SNIPPET_LENGTH} chars", code="SNIPPET_TOO_SHORT")
 
     def _validate_voiceover(self) -> None:
-        """Валідація voiceover об'єкту."""
         vo = self._get_field("voiceover")
         if vo is None:
             return
-
-        # full_script
-        script = self._get_nested(vo, "full_script", "")
+        script = self._nested(vo, "full_script", "")
         if not script:
-            self._add_error(
-                "voiceover.full_script",
-                "Required and cannot be empty",
-                code="MISSING_SCRIPT"
-            )
+            self._error("voiceover.full_script", "Required and cannot be empty", code="MISSING_SCRIPT")
         else:
-            # Перевіряємо наявність хоча б одного тегу
-            has_any_tag = any(tag in script for tag in ALL_ELEVENLABS_TAGS)
-            if not has_any_tag:
-                self._add_warning(
-                    "voiceover.full_script",
-                    "Should contain ElevenLabs tags for better delivery",
-                    suggestion=f"Add tags like [pause], [whispers], etc."
-                )
-
-            # === BANLIST CHECKS ===
-            script_lower = script.lower()
-
-            # Перевірка на AI маркери (КРИТИЧНО — YouTube детектить)
-            ai_markers = get_ai_markers()
-            found_ai_markers = [m for m in ai_markers if re.search(r'\b' + re.escape(m) + r'\b', script_lower)]
-            if found_ai_markers:
-                self._add_error(
-                    "voiceover.full_script",
-                    f"Contains AI markers: {', '.join(found_ai_markers[:5])}{'...' if len(found_ai_markers) > 5 else ''}",
-                    code="AI_MARKERS_DETECTED",
-                    suggestion="Remove AI-sounding words like 'delve', 'nestled', 'tapestry', etc."
-                )
-
-            # Перевірка на перевикористані прикметники
+            if not any(t in script for t in ALL_ELEVENLABS_TAGS):
+                self._warn("voiceover.full_script", "Should contain ElevenLabs tags")
+            sl = script.lower()
+            ai = get_ai_markers()
+            found_ai = [m for m in ai if re.search(r'\b' + re.escape(m) + r'\b', sl)]
+            if found_ai:
+                self._error("voiceover.full_script", f"AI markers: {', '.join(found_ai[:5])}", code="AI_MARKERS_DETECTED", suggestion="Remove AI words like 'delve', 'nestled', 'tapestry'")
             overused = get_overused_adjectives()
-            found_overused = [w for w in overused if re.search(r'\b' + re.escape(w) + r'\b', script_lower)]
-            if found_overused:
-                self._add_warning(
-                    "voiceover.full_script",
-                    f"Contains overused adjectives: {', '.join(found_overused[:3])}",
-                    suggestion="Use more specific, unique descriptors"
-                )
-
-            # Перевірка на філери (мертвий ефір — wasted screen time)
+            found_o = [ow for ow in overused if re.search(r'\b' + re.escape(ow) + r'\b', sl)]
+            if found_o:
+                self._warn("voiceover.full_script", f"Overused adjectives: {', '.join(found_o[:3])}")
             fillers = get_fillers()
-            found_fillers = [f for f in fillers if re.search(r'\b' + re.escape(f) + r'\b', script_lower)]
-            if found_fillers:
-                self._add_warning(
-                    "voiceover.full_script",
-                    f"Contains filler phrases: {', '.join(found_fillers[:3])}",
-                    suggestion="Remove filler words — every second counts in Shorts"
-                )
-
-            # Перевірка на generic luxury слова
+            found_f = [fl for fl in fillers if re.search(r'\b' + re.escape(fl) + r'\b', sl)]
+            if found_f:
+                self._warn("voiceover.full_script", f"Filler phrases: {', '.join(found_f[:3])}")
             generic = get_generic_luxury()
-            found_generic = [w for w in generic if re.search(r'\b' + re.escape(w) + r'\b', script_lower)]
-            if len(found_generic) >= 2:
-                self._add_warning(
-                    "voiceover.full_script",
-                    f"Contains multiple generic luxury words: {', '.join(found_generic[:3])}",
-                    suggestion="Be more specific and creative with descriptions"
-                )
-
-            # v8.4.0: Check for banned direction tags in full_script
-            found_banned = [tag for tag in BANNED_DIRECTION_TAGS if tag in script_lower]
+            found_g = [gl for gl in generic if re.search(r'\b' + re.escape(gl) + r'\b', sl)]
+            if len(found_g) >= 2:
+                self._warn("voiceover.full_script", f"Multiple generic luxury words: {', '.join(found_g[:3])}")
+            found_banned = [t for t in BANNED_DIRECTION_TAGS if t in sl]
             if found_banned:
-                self._add_warning(
-                    "voiceover.full_script",
-                    f"Contains banned direction tags (v8.4.0): {', '.join(found_banned)}",
-                    suggestion="sensory_witness uses [whispers], [calm], [warm], [gentle], [pause], [silence], [long pause], [drawn out], [dry laugh]"
-                )
-
-        # character
-        self._require_non_empty(vo, "character", "voiceover.character")
-
-        # voice_id
-        self._require_non_empty(vo, "voice_id", "voiceover.voice_id")
+                self._warn("voiceover.full_script", f"Banned direction tags: {', '.join(found_banned)}", suggestion="Use [whispers], [calm], [warm], [gentle], [pause], [silence], [long pause]")
+        self._require(vo, "character", "voiceover.character")
+        self._require(vo, "voice_id", "voiceover.voice_id")
 
     def _validate_vo_sensory(self) -> None:
-        """1F: Detect color words in voiceover (visual descriptors, not sensory)."""
+        """Detect color words in voiceover (visual, not sensory)."""
         scenes = self._data.get("scenes", [])
         if not isinstance(scenes, list):
             return
-        # Match color word followed by another word OR standalone at end (e.g., "Golden." or "Golden walls.")
-        color_pattern = re.compile(
-            r'\b(' + '|'.join(re.escape(c) for c in COLOR_WORDS) + r')\b(?:\s+\w+|[.\s]*$)',
-            re.IGNORECASE,
-        )
+        color_re = re.compile(r'\b(' + '|'.join(re.escape(c) for c in COLOR_WORDS) + r')\b(?:\s+\w+|[.\s]*$)', re.IGNORECASE)
         for i, scene in enumerate(scenes):
             if not isinstance(scene, dict):
                 continue
-            vo_seg = scene.get("voiceover_segment", "")
-            if not isinstance(vo_seg, str) or not vo_seg.strip() or vo_seg.strip() == "[silence]":
+            vo = scene.get("voiceover_segment", "")
+            if not isinstance(vo, str) or not vo.strip() or vo.strip() == "[silence]":
                 continue
-            # Strip tags before checking
-            clean = re.sub(r'\[[\w\s]+\]', '', vo_seg)
-            matches = color_pattern.findall(clean)
+            clean = re.sub(r'\[[\w\s]+\]', '', vo)
+            matches = color_re.findall(clean)
             if matches:
-                self._add_warning(
-                    f"scenes[{i}].voiceover_segment",
-                    f"Color word(s) in VO: {', '.join(set(m.lower() for m in matches))} — visual, not sensory",
-                    suggestion="Replace color descriptions with sensation: texture, temperature, taste, smell"
-                )
+                self._warn(f"scenes[{i}].voiceover_segment", f"Color word(s): {', '.join(set(m.lower() for m in matches))} — visual, not sensory", suggestion="Replace with sensation: texture, temperature, taste, smell")
 
     def _validate_warning_line(self) -> None:
-        """Validate warning_line — catchy warning for AERIAL (N-1) scene."""
-        warning = self._data.get("warning_line")
-
-        # Check if Scene N-1 is actually AERIAL
+        wl = self._data.get("warning_line")
         scenes = self._data.get("scenes", [])
-        penultimate_is_aerial = True  # assume true by default
+        pen_aerial = True
         if len(scenes) >= 2:
-            penultimate = scenes[-2]
-            purpose = self._get_nested(penultimate, "narrative_purpose", "")
-            penultimate_is_aerial = purpose in ("AERIAL", "AERIAL_WOW", "AERIAL_REVEAL")
-
-        # Must exist and be a non-empty string
-        if not warning or not isinstance(warning, str) or not warning.strip():
-            if penultimate_is_aerial:
-                self._add_error(
-                    "warning_line",
-                    "Missing or empty warning_line",
-                    code="MISSING_WARNING_LINE",
-                    suggestion="Add a 3-8 word catchy warning for the AERIAL scene"
-                )
+            pen = scenes[-2]
+            pen_aerial = self._nested(pen, "narrative_purpose", "") in ("AERIAL", "AERIAL_WOW", "AERIAL_REVEAL")
+        if not wl or not isinstance(wl, str) or not wl.strip():
+            sev = "error" if pen_aerial else "warning"
+            if sev == "error":
+                self._error("warning_line", "Missing or empty", code="MISSING_WARNING_LINE", suggestion="3-8 word warning for AERIAL scene")
             else:
-                self._add_warning(
-                    "warning_line",
-                    "Missing warning_line (Scene N-1 is not AERIAL, so warning is optional)",
-                    suggestion="Consider adding a warning_line if Scene N-1 has a dramatic reveal"
-                )
+                self._warn("warning_line", "Missing (N-1 not AERIAL, so optional)")
             return
-
-        warning = warning.strip()
-        # Strip ElevenLabs SSML-like tags before counting words (e.g. [excited], [whispers], [pause])
-        warning_clean = re.sub(r'\[[\w\s]+\]', '', warning).strip()
-        word_count = len(warning_clean.split()) if warning_clean else 0
-
-        if word_count < 3 or word_count > 8:
-            self._add_error(
-                "warning_line",
-                f"warning_line has {word_count} words (allowed 3-8)",
-                code="WARNING_LINE_LENGTH",
-                suggestion="Formats: A) \"Don't [action] the [element].\" B) \"[Action] the [element]. I dare you.\" C) \"The architect says: nobody [action] the [element].\""
-            )
-
-        # 1C: Validate action + element — supports 3 warning_line formats
-        # Format A: "Don't [action] the [element]."
-        # Format B: "[Action] the [element]. I dare you."
-        # Format C: "The architect says: nobody [action] the [element]."
-        _WL_FORMAT_A = re.compile(
-            r"(?:don['\u2019]t)\s+(\w+)\s+the\s+(\w+)", re.IGNORECASE
-        )
-        _WL_FORMAT_B = re.compile(
-            r"^(\w+)\s+the\s+(\w+)\.\s*I\s+dare\s+you", re.IGNORECASE
-        )
-        _WL_FORMAT_C = re.compile(
-            r"the\s+architect\s+says:\s*nobody\s+(\w+)\s+the\s+(\w+)", re.IGNORECASE
-        )
-
-        action_word = None
-        element_word = None
-        matched_format = None
-
-        for fmt_name, fmt_re in [("A", _WL_FORMAT_A), ("B", _WL_FORMAT_B), ("C", _WL_FORMAT_C)]:
-            m = fmt_re.search(warning_clean)
-            if m:
-                action_word = m.group(1).lower()
-                element_word = m.group(2).lower()
-                matched_format = fmt_name
-                break
-
-        if matched_format and action_word and element_word:
-            if action_word not in VALID_FOOD_ACTIONS:
-                closest_action = _closest_match(action_word, VALID_FOOD_ACTIONS, "lick")
-                old_warning = self._data.get("warning_line", "")
-                new_warning = old_warning.replace(action_word, closest_action, 1)
-                if action_word[0].isupper():
-                    new_warning = old_warning.replace(
-                        action_word.capitalize(), closest_action.capitalize(), 1
-                    )
-                self._data["warning_line"] = new_warning
-                self._add_warning(
-                    "warning_line",
-                    f"Auto-fixed invalid action '{action_word}' → '{closest_action}'",
-                )
-                warning = new_warning.strip()
-                warning_clean = re.sub(r'\[[\w\s]+\]', '', warning).strip()
-
-            if element_word not in VALID_ARCHITECTURE_ELEMENTS:
-                closest_elem = _closest_match(element_word, VALID_ARCHITECTURE_ELEMENTS, "walls")
-                old_warning = self._data.get("warning_line", "")
-                new_warning = re.sub(
-                    r"(?i)the\s+" + re.escape(element_word),
-                    f"the {closest_elem}",
-                    old_warning,
-                    count=1,
-                )
-                self._data["warning_line"] = new_warning
-                self._add_warning(
-                    "warning_line",
-                    f"Auto-fixed invalid element '{element_word}' → '{closest_elem}'",
-                )
-
-        elif warning_clean.lower().startswith("don") and "the" not in warning_clean.lower():
-            # 1C-fallback: Non-standard format like "Don't bounce." (missing "the [element]")
-            # Parse: "Don't [word]." → try to use word as action, infer element
-            short_match = re.match(
-                r"(?:don['\u2019]t)\s+(\w+)",
-                warning_clean,
-                re.IGNORECASE,
-            )
-            if short_match:
-                raw_action = short_match.group(1).lower()
-
-                # Determine best action: use raw_action if valid, else find closest
-                if raw_action in VALID_FOOD_ACTIONS:
-                    best_action = raw_action
-                else:
-                    best_action = _closest_match(raw_action, VALID_FOOD_ACTIONS, "lick")
-
-                # Infer architecture element from architectural_identity
-                best_element = "walls"  # safe default
-                arch = self._data.get("architectural_identity", {})
-                if isinstance(arch, dict):
-                    features = arch.get("distinctive_features", [])
-                    if isinstance(features, list):
-                        for feat in features:
-                            if not isinstance(feat, str):
-                                continue
-                            feat_lower = feat.lower()
-                            for elem in VALID_ARCHITECTURE_ELEMENTS:
-                                if re.search(r'\b' + re.escape(elem) + r'\b', feat_lower):
-                                    best_element = elem
-                                    break
-                            if best_element != "walls":
-                                break
-                    # Also check food_dna keys for relevant elements
-                    if best_element == "walls":
-                        food_id = self._data.get("food_identity", {})
-                        food_dna = food_id.get("food_dna", {}) if isinstance(food_id, dict) else {}
-                        if isinstance(food_dna, dict):
-                            # Map food_dna keys to elements (singular + plural)
-                            dna_to_elem = {
-                                "columns_become": "columns",
-                                "columns": "columns",
-                                "stairs_become": "stairs",
-                                "stairs": "stairs",
-                                "fence_becomes": "fence",
-                                "fence": "fence",
-                                "floors_become": "floor",
-                                "floor_becomes": "floor",
-                                "roof_becomes": "roof",
-                                "roof": "roof",
-                                "ceiling_becomes": "ceiling",
-                                "ceiling": "ceiling",
-                                "door_becomes": "door",
-                                "doors_become": "door",
-                                "walls_become": "walls",
-                                "walls": "walls",
-                                "chimney_becomes": "chimney",
-                                "chimney": "chimney",
-                                "windows_become": "window",
-                                "window_becomes": "window",
-                            }
-                            for dna_key, elem in dna_to_elem.items():
-                                val = food_dna.get(dna_key, "")
-                                if isinstance(val, str) and val.strip() and val.strip().upper() != "N/A":
-                                    best_element = elem
-                                    break
-
-                old_wl = self._data.get("warning_line", "")
-                new_wl = f"Don't {best_action} the {best_element}."
-                self._data["warning_line"] = new_wl
-                self._add_warning(
-                    "warning_line",
-                    f"Auto-fixed non-standard format: '{old_wl}' → '{new_wl}'",
-                )
-                warning = new_wl
-                warning_clean = new_wl
-
-                # Propagate new warning_line to scene VOs that had the old text
-                old_plain = re.sub(r'\[[\w\s]+\]\s*', '', old_wl).strip().rstrip(".")
-                if old_plain:
-                    scenes_data = self._data.get("scenes", [])
-                    for si, sc in enumerate(scenes_data):
-                        if not isinstance(sc, dict):
-                            continue
-                        for fkey in ("voiceover_segment", "narrator_script"):
-                            fval = sc.get(fkey, "")
-                            if not isinstance(fval, str):
-                                continue
-                            fval_plain = re.sub(r'\[[\w\s]+\]\s*', '', fval).strip().rstrip(".")
-                            if old_plain.lower() == fval_plain.lower():
-                                # Preserve direction tags, replace text
-                                tags = re.findall(r'\[[\w\s]+\]', fval)
-                                tag_prefix = " ".join(tags) + " " if tags else ""
-                                sc[fkey] = f"{tag_prefix}{new_wl}".strip()
-                                if fkey == "narrator_script":
-                                    sc[fkey] = new_wl  # narrator has no tags
-                                self._add_warning(
-                                    f"scenes[{si}].{fkey}",
-                                    f"Auto-synced with rewritten warning_line: '{fval[:40]}' → '{sc[fkey]}'",
-                                )
-                    # Rebuild full_script after VO changes
-                    vo_obj = self._data.get("voiceover")
-                    if isinstance(vo_obj, dict) and scenes_data:
-                        segs = []
-                        for sc in scenes_data:
-                            if not isinstance(sc, dict):
-                                continue
-                            seg = sc.get("voiceover_segment", "")
-                            if isinstance(seg, str) and seg.strip() and seg.strip() != "[silence]":
-                                segs.append(seg.strip())
-                        if segs:
-                            vo_obj["full_script"] = " ".join(segs)
-
-        # Cross-check: warning_line should appear in voiceover.full_script
-        # Re-read warning_line (may have been rewritten by 1C / 1C-fallback)
-        warning_final = self._data.get("warning_line", "")
-        if isinstance(warning_final, str) and warning_final.strip():
-            vo = self._data.get("voiceover")
-            if isinstance(vo, dict):
-                full_script = vo.get("full_script", "")
-                if isinstance(full_script, str):
-                    # Strip tags and trailing period for comparison
-                    wl_plain = re.sub(r'\[[\w\s]+\]\s*', '', warning_final).strip().rstrip(".")
-                    fs_plain = re.sub(r'\[[\w\s]+\]\s*', '', full_script)
-                    if wl_plain.lower() not in fs_plain.lower():
-                        self._add_warning(
-                            "warning_line",
-                            f"warning_line '{warning_final.strip()}' not found in voiceover.full_script",
-                            suggestion="The warning should appear in the AERIAL scene voiceover"
-                        )
+        clean = re.sub(r'\[[\w\s]+\]', '', wl).strip()
+        wc = len(clean.split()) if clean else 0
+        if wc < 3 or wc > 8:
+            self._error("warning_line", f"{wc} words (need 3-8)", code="WARNING_LINE_LENGTH")
+        # Cross-check with full_script
+        vo = self._data.get("voiceover", {})
+        fs = vo.get("full_script", "") if isinstance(vo, dict) else ""
+        if isinstance(fs, str):
+            wl_plain = re.sub(r'\[[\w\s]+\]\s*', '', wl).strip().rstrip(".")
+            if wl_plain.lower() not in re.sub(r'\[[\w\s]+\]\s*', '', fs).lower():
+                self._warn("warning_line", f"'{wl.strip()}' not in full_script", suggestion="Must appear in AERIAL scene VO")
 
     def _validate_audio(self) -> None:
-        """Валідація audio об'єкту."""
         audio = self._get_field("audio")
         if audio is None:
             return
-
-        # sonic_hook
-        sonic = self._get_nested(audio, "sonic_hook", {})
+        sonic = self._nested(audio, "sonic_hook", {})
         if not sonic:
-            self._add_error(
-                "audio.sonic_hook",
-                "Required object is missing",
-                code="MISSING_SONIC_HOOK"
-            )
+            self._error("audio.sonic_hook", "Required object missing", code="MISSING_SONIC_HOOK")
         else:
-            # type (ENUM)
-            sonic_type = self._get_nested(sonic, "type")
-            self._validate_enum_field(sonic_type, SonicHookType, "audio.sonic_hook.type")
-
-            # volume (ENUM)
-            volume = self._get_nested(sonic, "volume")
-            self._validate_enum_field(volume, VolumeLevel, "audio.sonic_hook.volume")
-
-        # suno_prompt
-        self._require_non_empty(audio, "suno_prompt", "audio.suno_prompt")
-
-        # foley_palette
-        if not self._get_nested(audio, "foley_palette"):
-            self._add_error(
-                "audio.foley_palette",
-                "Required object is missing",
-                code="MISSING_FOLEY"
-            )
-
-        # sfx_per_scene
-        sfx = self._get_nested(audio, "sfx_per_scene")
+            self._check_enum(self._nested(sonic, "type"), [e.value for e in SonicHookType], "audio.sonic_hook.type")
+            vol = self._nested(sonic, "volume")
+            if vol and vol not in VolumeLevel.VALUES:
+                self._warn("audio.sonic_hook.volume", f"Non-standard: '{vol}'")
+        self._require(audio, "suno_prompt", "audio.suno_prompt")
+        if not self._nested(audio, "foley_palette"):
+            self._error("audio.foley_palette", "Required object missing", code="MISSING_FOLEY")
+        sfx = self._nested(audio, "sfx_per_scene")
         if not isinstance(sfx, list):
-            self._add_error(
-                "audio.sfx_per_scene",
-                "Must be an array",
-                code="INVALID_SFX"
-            )
+            self._error("audio.sfx_per_scene", "Must be array", code="INVALID_SFX")
 
     def _validate_engagement(self) -> None:
-        """Валідація engagement об'єкту (Easter Egg / Replay Hooks)."""
-        engagement = self._get_field("engagement")
-        if engagement is None:
+        eng = self._get_field("engagement")
+        if eng is None:
             return
-
-        # easter_egg — optional in v8.0.0 (replaced by replay_hooks)
-        egg = self._get_nested(engagement, "easter_egg", {})
+        egg = self._nested(eng, "easter_egg", {})
         if not egg:
-            # v8.0.0: easter_egg no longer required, check for replay_hooks instead
-            replay_hooks = self._get_nested(engagement, "replay_hooks", [])
-            if not replay_hooks:
-                self._add_warning(
-                    "engagement",
-                    "Neither easter_egg nor replay_hooks found — engagement may be weak",
-                    suggestion="Add replay_hooks (v8.0.0+) or easter_egg for viewer engagement"
-                )
-        else:
-            # GEN1 v6: AUDIO_ONLY easter eggs don't require visual fields
-            egg_format = self._get_nested(egg, "format", "VISUAL")
-            is_audio_only = (egg_format == "AUDIO_ONLY")
-
-            if is_audio_only:
-                # AUDIO_ONLY: requires audio_hint and comment_bait
-                self._require_non_empty(egg, "audio_hint", "engagement.easter_egg.audio_hint")
-                self._require_non_empty(egg, "comment_bait", "engagement.easter_egg.comment_bait")
+            rh = self._nested(eng, "replay_hooks", [])
+            if not rh:
+                self._warn("engagement", "Neither easter_egg nor replay_hooks found")
+        elif isinstance(egg, dict):
+            fmt = self._nested(egg, "format", "VISUAL")
+            if fmt == "AUDIO_ONLY":
+                self._require(egg, "audio_hint", "engagement.easter_egg.audio_hint")
+                self._require(egg, "comment_bait", "engagement.easter_egg.comment_bait")
             else:
-                # VISUAL: requires object, scene_number, placement, visibility, validation_check
-                self._require_non_empty(egg, "object", "engagement.easter_egg.object")
-
-                # scene_number (must be 2 to N-1)
-                scene_num_raw = self._get_nested(egg, "scene_number")
+                self._require(egg, "object", "engagement.easter_egg.object")
+                sn = self._nested(egg, "scene_number")
+                total = len(self._data.get("scenes", []))
                 try:
-                    scene_num = int(scene_num_raw) if scene_num_raw is not None else None
+                    sn_int = int(sn) if sn is not None else None
                 except (ValueError, TypeError):
-                    scene_num = None
-                scenes_list = self._data.get("scenes", [])
-                meta_for_count = self._data.get("metadata", {})
-                total_scenes = len(scenes_list) if scenes_list else (meta_for_count.get("scene_count", 8) if isinstance(meta_for_count, dict) else 8)
-                if scene_num is None:
-                    self._add_error(
-                        "engagement.easter_egg.scene_number",
-                        "Required field is missing",
-                        code="MISSING_SCENE_NUMBER"
-                    )
-                elif not (2 <= scene_num <= total_scenes - 1):
-                    self._add_error(
-                        "engagement.easter_egg.scene_number",
-                        f"Must be 2-{total_scenes - 1} (not in hook or loop scene), got {scene_num}",
-                        code="INVALID_EGG_SCENE"
-                    )
-
-                # placement
-                self._require_non_empty(egg, "placement", "engagement.easter_egg.placement")
-
-                # visibility (ENUM)
-                visibility = self._get_nested(egg, "visibility")
-                self._validate_enum_field(visibility, EasterEggVisibility, "engagement.easter_egg.visibility")
-
-                # validation_check
-                self._require_non_empty(egg, "validation_check", "engagement.easter_egg.validation_check")
-
-                # comment_bait
-                self._require_non_empty(egg, "comment_bait", "engagement.easter_egg.comment_bait")
-
-        # share_trigger — REQUIRED per GEN1 contract
-        share_trigger = self._get_nested(engagement, "share_trigger")
-        if share_trigger is None:
-            self._add_error(
-                "engagement.share_trigger",
-                "Missing share_trigger — required for viewer engagement",
-                code="MISSING_SHARE_TRIGGER",
-                suggestion='Add: "Send this to someone who..." or "Tag a [relevant identity]"'
-            )
-        elif isinstance(share_trigger, dict):
-            text = share_trigger.get("text", "")
-            if not text or not text.strip():
-                self._add_error(
-                    "engagement.share_trigger.text",
-                    "Share trigger text cannot be empty",
-                    code="EMPTY_SHARE_TRIGGER"
-                )
-        elif isinstance(share_trigger, str):
-            if not share_trigger.strip():
-                self._add_error(
-                    "engagement.share_trigger",
-                    "Share trigger text cannot be empty",
-                    code="EMPTY_SHARE_TRIGGER"
-                )
-
-        # save_trigger — REQUIRED per GEN1 v8.5.0
-        save_trigger = self._get_nested(engagement, "save_trigger")
-        if save_trigger is None:
-            self._add_warning(
-                "engagement.save_trigger",
-                "Missing save_trigger — required for bookmark engagement",
-                code="MISSING_SAVE_TRIGGER"
-            )
-        elif isinstance(save_trigger, str):
-            st_text = save_trigger.strip()
-            if not st_text:
-                self._add_warning(
-                    "engagement.save_trigger",
-                    "Save trigger text cannot be empty",
-                    code="EMPTY_SAVE_TRIGGER"
-                )
-            elif len(st_text) > 60:
-                self._add_warning(
-                    "engagement.save_trigger",
-                    f"Save trigger too long ({len(st_text)} chars, max 60)",
-                    suggestion="Shorten to ≤60 characters"
-                )
-
-        # hashtags — optional in v6 (may be embedded in youtube.description instead)
-        # v8.2.0: hashtags increased from 3 to 6-8 for algorithm discovery
-        hashtags = self._get_nested(engagement, "hashtags", [])
+                    sn_int = None
+                if sn_int is None:
+                    self._error("engagement.easter_egg.scene_number", "Required field missing", code="MISSING_SCENE_NUMBER")
+                elif total > 0 and not (2 <= sn_int <= total - 1):
+                    self._error("engagement.easter_egg.scene_number", f"Must be 2-{total - 1}, got {sn_int}", code="INVALID_EGG_SCENE")
+                self._require(egg, "placement", "engagement.easter_egg.placement")
+                vis = self._nested(egg, "visibility")
+                if vis and vis not in EasterEggVisibility.VALUES:
+                    self._warn("engagement.easter_egg.visibility", f"Non-standard: '{vis}'")
+                self._require(egg, "comment_bait", "engagement.easter_egg.comment_bait")
+        st = self._nested(eng, "share_trigger")
+        if st is None:
+            self._error("engagement.share_trigger", "Missing share_trigger", code="MISSING_SHARE_TRIGGER")
+        elif isinstance(st, dict) and not (st.get("text") or "").strip():
+            self._error("engagement.share_trigger.text", "Cannot be empty", code="EMPTY_SHARE_TRIGGER")
+        elif isinstance(st, str) and not st.strip():
+            self._error("engagement.share_trigger", "Cannot be empty", code="EMPTY_SHARE_TRIGGER")
+        sv = self._nested(eng, "save_trigger")
+        if sv is None:
+            self._warn("engagement.save_trigger", "Missing save_trigger")
+        elif isinstance(sv, str) and len(sv.strip()) > 60:
+            self._warn("engagement.save_trigger", f"Too long ({len(sv.strip())} chars, max 60)")
+        hashtags = self._nested(eng, "hashtags", [])
         if isinstance(hashtags, list) and hashtags and not (3 <= len(hashtags) <= 10):
-            self._add_warning(
-                "engagement.hashtags",
-                f"Expected 3-10 items, got {len(hashtags)}",
-                suggestion="Provide 6-8 hashtags for optimal discovery (min 3, max 10)"
-            )
+            self._warn("engagement.hashtags", f"Expected 3-10, got {len(hashtags)}")
 
     def _validate_youtube(self) -> None:
-        """
-        Валідація YouTube metadata.
-
-        КРИТИЧНО: YouTube поля НІКОЛИ не можуть бути null (VAL_GEN1.txt).
-        Потрібні обидва формати: nested і flat.
-        """
-        # ===== NESTED YOUTUBE OBJECT =====
-        youtube = self._get_field("youtube")
-        if youtube is None:
-            # youtube — критичне поле, помилка вже додана в _get_field
-            pass
-        else:
-            # title (max 60 chars, NEVER NULL)
-            title = self._get_nested(youtube, "title", "")
-            if not title:
-                self._add_error(
-                    "youtube.title",
-                    "REQUIRED and NEVER NULL",
-                    code="NULL_YOUTUBE_TITLE"
-                )
-            elif len(title) > MAX_YOUTUBE_TITLE_LENGTH:
-                self._add_error(
-                    "youtube.title",
-                    f"Must be max {MAX_YOUTUBE_TITLE_LENGTH} chars, got {len(title)}",
-                    code="TITLE_TOO_LONG"
-                )
-
-            # description (min 100 chars, NEVER NULL)
-            desc = self._get_nested(youtube, "description", "")
-            if not desc:
-                self._add_error(
-                    "youtube.description",
-                    "REQUIRED and NEVER NULL",
-                    code="NULL_YOUTUBE_DESC"
-                )
-            elif len(desc) < MIN_YOUTUBE_DESCRIPTION_LENGTH:
-                self._add_warning(
-                    "youtube.description",
-                    f"Short description ({len(desc)} chars, {MIN_YOUTUBE_DESCRIPTION_LENGTH}+ recommended)",
-                )
-
-            # Description hashtag validation (v8.3.0)
-            if desc:
-                hashtags_in_desc = re.findall(r'#[\w\-]+', desc.lower())
-                if len(hashtags_in_desc) < 6:
-                    self._add_warning(
-                        "youtube.description",
-                        f"Only {len(hashtags_in_desc)} hashtags — minimum 6 recommended",
-                        suggestion="Add more discovery hashtags"
-                    )
-                if '#glazecity' in hashtags_in_desc:
-                    self._add_error(
-                        "youtube.description",
-                        "Contains #glazecity — banned brand hashtag (0 search volume for <10k sub channel)",
-                        code="BANNED_HASHTAG_GLAZECITY",
-                        suggestion="Replace with #shorts or #dreamcore"
-                    )
-
-            # Validate description_variants for same hashtag rules
-            desc_variants = self._data.get("youtube", {}).get("description_variants") if isinstance(self._data.get("youtube"), dict) else None
-            if not desc_variants:
-                desc_variants = self._data.get("metadata_variants", {})
-                if isinstance(desc_variants, dict):
-                    desc_variants = [v.get("description", "") for v in desc_variants.values() if isinstance(v, dict) and v.get("description")]
-            if isinstance(desc_variants, list):
-                for vi, variant_desc in enumerate(desc_variants):
-                    if isinstance(variant_desc, str) and variant_desc:
-                        variant_hashtags = re.findall(r'#[\w\-]+', variant_desc.lower())
-                        if '#glazecity' in variant_hashtags:
-                            self._add_error(
-                                f"description_variant[{vi}]",
-                                "Contains #glazecity — banned brand hashtag",
-                                code="BANNED_HASHTAG_GLAZECITY",
-                                suggestion="Replace with #shorts or #dreamcore"
-                            )
-
-            # 1D: Description CTA must be derived from warning_line
-            warning_line_val = self._data.get("warning_line", "")
-            if desc and isinstance(warning_line_val, str) and warning_line_val.strip():
-                wl_clean = re.sub(r'\[[\w\s]+\]', '', warning_line_val).strip()
-                # Support all 3 warning_line formats for CTA derivation
-                wl_action = None
-                wl_element = None
-                for _cta_re in [
-                    re.compile(r"(?:don['\u2019]t)\s+(\w+)\s+the\s+(\w+)", re.IGNORECASE),
-                    re.compile(r"^(\w+)\s+the\s+(\w+)\.\s*I\s+dare\s+you", re.IGNORECASE),
-                    re.compile(r"the\s+architect\s+says:\s*nobody\s+(\w+)\s+the\s+(\w+)", re.IGNORECASE),
-                ]:
-                    _cta_m = _cta_re.search(wl_clean)
-                    if _cta_m:
-                        wl_action = _cta_m.group(1).lower()
-                        wl_element = _cta_m.group(2).lower()
-                        break
-                if wl_action and wl_element:
-                    derived_cta = f"would you {wl_action} the {wl_element}?"
-                    desc_lower = desc.lower()
-                    # Check if derived CTA already present
-                    if derived_cta not in desc_lower:
-                        # Try to replace existing generic CTA question line
-                        # Common patterns: "Which floor would you eat first?" etc.
-                        cta_pattern = re.compile(
-                            r'^(which|would|could|can|do|have|what|where|want|ever)[^\n]*\?[^\n]*$',
-                            re.IGNORECASE | re.MULTILINE,
-                        )
-                        cta_line = f"Would you {wl_action} the {wl_element}?"
-                        new_desc, count = cta_pattern.subn(cta_line, desc, count=1)
-                        if count > 0:
-                            youtube["description"] = new_desc
-                            self._add_warning(
-                                "youtube.description",
-                                f"Auto-replaced generic CTA with warning_line-derived: '{cta_line}'",
-                            )
-                        else:
-                            # No existing CTA to replace — append before hashtags
-                            lines = desc.split("\n")
-                            insert_idx = len(lines)
-                            for li, line in enumerate(lines):
-                                if line.strip().startswith("#"):
-                                    insert_idx = li
-                                    break
-                            lines.insert(insert_idx, cta_line)
-                            youtube["description"] = "\n".join(lines)
-                            self._add_warning(
-                                "youtube.description",
-                                f"Auto-inserted CTA from warning_line: '{cta_line}'",
-                            )
-
-            # pinned_comment
-            # pinned_comment — optional in v6 (can be null)
-            pinned = self._get_nested(youtube, "pinned_comment")
-            if pinned is not None and not isinstance(pinned, str):
-                self._add_warning(
-                    "youtube.pinned_comment",
-                    "Should be a string or null",
-                    suggestion="Provide a string value or null"
-                )
-
-            # Pinned comment ↔ easter egg consistency (v8.3.0)
-            if pinned and isinstance(pinned, str):
-                engagement = self._data.get("engagement", {})
-                egg = engagement.get("easter_egg") if isinstance(engagement, dict) else None
-
-                is_audio_only = egg and isinstance(egg, dict) and egg.get("format") == "AUDIO_ONLY"
-                has_real_egg = (
-                    is_audio_only
-                    or (
-                        egg and isinstance(egg, dict)
-                        and egg.get("object") and egg.get("object") != "none"
-                        and egg.get("scene_number", 0) > 0
-                    )
-                )
-
-                # Check if pinned references an object ("spotted the X", "find the X", etc.)
-                reference_patterns = ["spot", "find", "hidden", "spotted", "hiding", "secret"]
-                looks_like_egg_hunt = any(p in pinned.lower() for p in reference_patterns)
-
-                if looks_like_egg_hunt and not has_real_egg:
-                    self._add_warning(
-                        "youtube.pinned_comment",
-                        "References easter egg hunt but no real easter egg exists (auto-fix should have replaced it)",
-                        suggestion="Use generic CTA instead"
-                    )
-
-            # tags (5-8 per-video, expanded from 3 in v8.3.0)
-            tags = self._get_nested(youtube, "tags", [])
-            if not isinstance(tags, list) or len(tags) < 3:
-                self._add_warning(
-                    "youtube.tags",
-                    f"Only {len(tags) if isinstance(tags, list) else 0} tags — 5-8 recommended",
-                )
-            elif len(tags) < 5:
-                self._add_warning(
-                    "youtube.tags",
-                    f"Only {len(tags)} tags — 5-8 recommended for better discovery",
-                    suggestion="Add more specific tags"
-                )
-
-            # Banned tags check (v8.3.0)
-            _BANNED_TAGS = {
-                "glaze city", "ai art", "blender 3d", "midjourney", "kling",
-                "yumestate", "edible architecture", "weirdcore", "visual asmr",
-                "food art", "satisfying", "shorts",
-            }
-            if isinstance(tags, list):
-                for tag in tags:
-                    if isinstance(tag, str) and tag.lower().strip() in _BANNED_TAGS:
-                        self._add_warning(
-                            "youtube.tags",
-                            f"Tag '{tag}' is banned or a channel default (merged at upload)",
-                            suggestion="Replace with a video-specific search term"
-                        )
-
-        # ===== FLAT YOUTUBE FIELDS (backwards compatibility — now OPTIONAL) =====
-        # GEN1 v6 only requires nested youtube object; flat fields are optional fallbacks
-
-        yt_title = self._data.get("youtube_title")
-        yt_desc = self._data.get("youtube_description")
-
-        # If no nested youtube AND no flat fields, that's an error
-        if not youtube:
-            if not yt_title:
-                self._add_error(
-                    "youtube_title",
-                    "Either youtube.title or youtube_title must exist",
-                    code="MISSING_FLAT_TITLE"
-                )
-            if not yt_desc:
-                self._add_error(
-                    "youtube_description",
-                    "Either youtube.description or youtube_description must exist",
-                    code="MISSING_FLAT_DESC"
-                )
-
-        # Validate flat fields only if they are present
-        # v8.2.0: hashtags increased from 3 to 6-8 for algorithm discovery
-        yt_hashtags = self._data.get("youtube_hashtags", [])
-        if yt_hashtags and isinstance(yt_hashtags, list) and (len(yt_hashtags) < 3 or len(yt_hashtags) > 10):
-            self._add_warning(
-                "youtube_hashtags",
-                f"Expected 3-10 items, got {len(yt_hashtags)}",
-                suggestion="Provide 6-8 hashtags for optimal discovery (min 3, max 10)"
-            )
-
-        yt_tags = self._data.get("youtube_tags", [])
-        if yt_tags and isinstance(yt_tags, list) and len(yt_tags) < 3:
-            self._add_warning(
-                "youtube_tags",
-                f"Expected at least 3 items, got {len(yt_tags)}",
-                suggestion="Provide at least 3 tags"
-            )
-
-        # Validate title_variants if present
-        if youtube:
-            title_variants = youtube.get("title_variants")
-            if title_variants is not None and not isinstance(title_variants, list):
-                self._add_warning(
-                    "youtube.title_variants",
-                    "Must be an array of strings",
-                    suggestion="Provide a list of title variants"
-                )
-
-        # Перевірка консистентності nested vs flat
-        if youtube and yt_title and youtube.get("title") != yt_title:
-            self._add_warning(
-                "youtube_title",
-                "Does not match youtube.title",
-                suggestion="Ensure both values are identical"
-            )
+        yt = self._get_field("youtube")
+        if yt is None:
+            if not self._data.get("youtube_title"):
+                self._error("youtube_title", "Either youtube.title or youtube_title must exist", code="MISSING_FLAT_TITLE")
+            if not self._data.get("youtube_description"):
+                self._error("youtube_description", "Either youtube.description or youtube_description must exist", code="MISSING_FLAT_DESC")
+            return
+        title = self._nested(yt, "title", "")
+        if not title:
+            self._error("youtube.title", "REQUIRED and NEVER NULL", code="NULL_YOUTUBE_TITLE")
+        elif len(title) > MAX_YOUTUBE_TITLE_LENGTH:
+            self._error("youtube.title", f"Max {MAX_YOUTUBE_TITLE_LENGTH} chars, got {len(title)}", code="TITLE_TOO_LONG")
+        desc = self._nested(yt, "description", "")
+        if not desc:
+            self._error("youtube.description", "REQUIRED and NEVER NULL", code="NULL_YOUTUBE_DESC")
+        elif len(desc) < MIN_YOUTUBE_DESCRIPTION_LENGTH:
+            self._warn("youtube.description", f"Short ({len(desc)} chars, {MIN_YOUTUBE_DESCRIPTION_LENGTH}+ recommended)")
+        if desc:
+            ht_in_desc = re.findall(r'#[\w\-]+', desc.lower())
+            if len(ht_in_desc) < 6:
+                self._warn("youtube.description", f"Only {len(ht_in_desc)} hashtags — min 6 recommended")
+            if '#glazecity' in ht_in_desc:
+                self._error("youtube.description", "#glazecity banned (0 search volume)", code="BANNED_HASHTAG_GLAZECITY")
+        tags = self._nested(yt, "tags", [])
+        if isinstance(tags, list):
+            if len(tags) < 3:
+                self._warn("youtube.tags", f"Only {len(tags)} tags — 5-8 recommended")
+            _BANNED_TAGS = {"glaze city", "ai art", "blender 3d", "midjourney", "kling", "yumestate", "edible architecture", "weirdcore", "visual asmr", "food art", "satisfying", "shorts"}
+            for t in tags:
+                if isinstance(t, str) and t.lower().strip() in _BANNED_TAGS:
+                    self._warn("youtube.tags", f"'{t}' is banned/default tag")
+        # Title/description variants count
+        tv = self._nested(yt, "title_variants")
+        if tv is not None and isinstance(tv, list) and len(tv) != 4:
+            self._warn("youtube.title_variants", f"Expected 4, got {len(tv)}")
+        dv = self._nested(yt, "description_variants")
+        if dv is not None and isinstance(dv, list) and len(dv) != 3:
+            self._warn("youtube.description_variants", f"Expected 3, got {len(dv)}")
 
     def _validate_viral_assessment(self) -> None:
-        """
-        Валідація viral_assessment.
-
-        GEN1 v5: Uses numeric scores (overall_score, hook_strength, etc.)
-        GEN1 v6: Uses verdict strings (hook_verdict, retention_verdict, share_verdict)
-        Both formats are accepted.
-        """
-        viral = self._get_field("viral_assessment")
-        if viral is None:
+        va = self._get_field("viral_assessment")
+        if va is None:
             return
-
-        # Detect format: v6 uses verdict strings, v5 uses numeric scores
-        has_verdicts = any(
-            self._get_nested(viral, f) is not None
-            for f in ("hook_verdict", "retention_verdict", "share_verdict")
-        )
-        has_scores = self._get_nested(viral, "overall_score") is not None
-
+        has_verdicts = any(self._nested(va, f) is not None for f in ("hook_verdict", "retention_verdict", "share_verdict"))
+        has_scores = self._nested(va, "overall_score") is not None
         if has_verdicts:
-            # GEN1 v6 format: validate verdict strings
-            verdict_fields = ["hook_verdict", "retention_verdict", "share_verdict"]
-            for field_name in verdict_fields:
-                verdict = self._get_nested(viral, field_name)
-                if verdict is not None and not isinstance(verdict, str):
-                    self._add_warning(
-                        f"viral_assessment.{field_name}",
-                        "Should be a string",
-                        suggestion="Provide a verdict string"
-                    )
+            for vf in ("hook_verdict", "retention_verdict", "share_verdict"):
+                v = self._nested(va, vf)
+                if v is not None and not isinstance(v, str):
+                    self._warn(f"viral_assessment.{vf}", "Should be string")
         elif has_scores:
-            # GEN1 v5 format: validate numeric scores
-            overall = self._get_nested(viral, "overall_score")
+            overall = self._nested(va, "overall_score")
             if isinstance(overall, (int, float)) and overall < MIN_VIRAL_SCORE:
-                self._add_warning(
-                    "viral_assessment.overall_score",
-                    f"Low viral score: {overall} (>= {MIN_VIRAL_SCORE} recommended)",
-                    suggestion="Consider stronger hook/concept"
-                )
-
-            score_fields = [
-                "hook_strength", "humor_quotient", "shareability",
-                "comment_potential", "visual_uniqueness"
-            ]
-            for field_name in score_fields:
-                score = self._get_nested(viral, field_name)
-                if score is None:
-                    self._add_warning(
-                        f"viral_assessment.{field_name}",
-                        "Score is missing",
-                    )
-                elif not isinstance(score, (int, float)):
-                    self._add_warning(
-                        f"viral_assessment.{field_name}",
-                        f"Expected numeric score, got {type(score).__name__}",
-                    )
-                elif not (0.0 <= score <= 1.0):
-                    self._add_warning(
-                        f"viral_assessment.{field_name}",
-                        f"Score out of range: {score} (expected 0.0-1.0)",
-                        suggestion="Ensure score is between 0.0 and 1.0"
-                    )
+                self._warn("viral_assessment.overall_score", f"Low: {overall} (≥{MIN_VIRAL_SCORE} recommended)")
         else:
-            # Neither format present
-            self._add_warning(
-                "viral_assessment",
-                "Missing verdict strings and numeric scores",
-            )
-
-        # v8.3.0 verdict fields (optional — validate type if present)
-        for v83_field in ("mute_test_verdict", "categorization_verdict", "niche_alignment_verdict"):
-            v83_val = self._get_nested(viral, v83_field)
-            if v83_val is not None and not isinstance(v83_val, str):
-                self._add_warning(
-                    f"viral_assessment.{v83_field}",
-                    "Should be a string",
-                    suggestion="Provide a verdict string"
-                )
-
-        # strength_points (at least 1) — common to both formats
-        strengths = self._get_nested(viral, "strength_points", [])
-        if not isinstance(strengths, list) or len(strengths) < 1:
-            self._add_warning(
-                "viral_assessment.strength_points",
-                "Should have at least 1 item",
-            )
+            self._warn("viral_assessment", "Missing both verdicts and scores")
 
     def _validate_scenes(self) -> None:
-        """
-        Валідація scenes масиву.
-
-        Найбільша і найважливіша перевірка.
-        Перевіряє 6-10 сцен + спеціальні правила для Scene 1 і last scene.
-        """
         scenes = self._data.get("scenes")
-
         if not isinstance(scenes, list):
-            self._add_error(
-                "scenes",
-                "Must be an array",
-                code="INVALID_SCENES_TYPE"
-            )
+            self._error("scenes", "Must be array", code="INVALID_SCENES_TYPE")
             return
-
         if len(scenes) < MIN_SCENES or len(scenes) > MAX_SCENES:
-            self._add_error(
-                "scenes",
-                f"Must have {MIN_SCENES}-{MAX_SCENES} items, got {len(scenes)}",
-                code="INVALID_SCENE_COUNT"
-            )
+            self._error("scenes", f"Must have {MIN_SCENES}-{MAX_SCENES}, got {len(scenes)}", code="INVALID_SCENE_COUNT")
             return
+        total = len(scenes)
+        meta = self._data.get("metadata")
+        if isinstance(meta, dict):
+            dc = meta.get("scene_count")
+            if dc is not None and dc != total:
+                self._warn("metadata.scene_count", f"Declared {dc} but actual {total}")
 
-        total_scenes = len(scenes)
+        scene1_movement = ""
+        low_count = 0
+        prev_low = False
 
-        # Cross-validate metadata.scene_count vs actual scenes
-        metadata = self._data.get("metadata")
-        if isinstance(metadata, dict):
-            declared_count = metadata.get("scene_count")
-            if declared_count is not None and declared_count != total_scenes:
-                self._add_warning(
-                    "metadata.scene_count",
-                    f"metadata.scene_count={declared_count} but actual scenes={total_scenes}",
-                    suggestion="Ensure metadata.scene_count matches the number of scenes in the array"
-                )
-
-        # Check for duplicate scene_numbers upfront
-        seen_scene_nums: set = set()
         for i, scene in enumerate(scenes):
             if not isinstance(scene, dict):
-                self._add_error(f"scenes[{i}]", f"Expected object, got {type(scene).__name__}")
+                self._error(f"scenes[{i}]", f"Expected object, got {type(scene).__name__}")
                 continue
-            sn = scene.get("scene_number")
-            if sn is not None:
-                if sn in seen_scene_nums:
-                    self._add_error(
-                        f"scenes[{i}].scene_number",
-                        f"Duplicate scene_number {sn}",
-                        code="DUPLICATE_SCENE_NUMBER",
-                        suggestion="Each scene must have a unique scene_number"
-                    )
-                seen_scene_nums.add(sn)
-
-        # Зберігаємо Scene 1 movement для перевірки loop
-        scene1_movement: str = ""
-        low_energy_count: int = 0
-
-        for i, scene in enumerate(scenes):
-            if not isinstance(scene, dict):
-                continue  # Already reported in duplicate check loop above
-            scene_num_raw = scene.get("scene_number", i + 1)
-            try:
-                scene_num = int(scene_num_raw)
-            except (ValueError, TypeError):
-                scene_num = i + 1
+            sn = i + 1
             prefix = f"scenes[{i}]"
+            purpose = self._nested(scene, "narrative_purpose", "")
+            hint = self._nested(scene, "reference_hint", "")
+            energy = self._nested(scene, "energy_level", "")
 
-            # scene_number validation — must be sequential
-            if scene_num != i + 1:
-                self._add_warning(
-                    f"{prefix}.scene_number",
-                    f"Expected {i + 1}, got {scene_num}",
-                    suggestion="Ensure sequential scene numbering"
-                )
+            self._check_enum(purpose, [e.value for e in NarrativePurpose], f"{prefix}.narrative_purpose")
+            self._check_enum(hint, [e.value for e in ReferenceType], f"{prefix}.reference_hint")
+            self._check_enum(energy, [e.value for e in EnergyLevel], f"{prefix}.energy_level")
 
-            # narrative_purpose (ENUM)
-            purpose = self._get_nested(scene, "narrative_purpose")
-            self._validate_enum_field(purpose, NarrativePurpose, f"{prefix}.narrative_purpose")
+            # Energy rules
+            is_low = energy == "LOW"
+            if is_low:
+                low_count += 1
+                if sn <= 3 and purpose != "STRUCTURAL_DETAIL":
+                    self._warn(f"{prefix}.energy_level", f"Scene {sn} LOW — prefer HIGH/MEDIUM for retention")
+                if prev_low:
+                    self._warn(f"{prefix}.energy_level", f"Consecutive LOW energy (Scene {sn-1} and {sn})")
+            prev_low = is_low
+            if energy and sn == total - 1 and energy != "EXPLOSIVE":
+                self._warn(f"{prefix}.energy_level", f"N-1 (AERIAL) should be EXPLOSIVE, got '{energy}'")
+            if energy and sn == total and energy not in ("HIGH", "EXPLOSIVE"):
+                self._warn(f"{prefix}.energy_level", f"N (LOOP_CLOSE) should be HIGH, got '{energy}'")
 
-            # reference_hint (ENUM)
-            hint = self._get_nested(scene, "reference_hint")
-            self._validate_enum_field(hint, ReferenceHint, f"{prefix}.reference_hint")
-
-            # energy_level (ENUM)
-            energy = self._get_nested(scene, "energy_level")
-            self._validate_enum_field(energy, EnergyLevel, f"{prefix}.energy_level")
-            if energy == "LOW":
-                low_energy_count += 1
-                if scene_num <= 3:
-                    if purpose == "STRUCTURAL_DETAIL":
-                        # Hungry Human Rule: ASMR scene requires LOW energy (breathing room)
-                        self._add_warning(
-                            f"{prefix}.energy_level",
-                            f"Scene {scene_num} has LOW energy (allowed for STRUCTURAL_DETAIL/ASMR)",
-                        )
-                    else:
-                        self._add_warning(
-                            f"{prefix}.energy_level",
-                            f"Scene {scene_num} has LOW energy — Scenes 1-3 prefer HIGH or MEDIUM",
-                            suggestion="Consider raising energy for better early retention"
-                        )
-
-            # Scene N-1 energy should be EXPLOSIVE, Scene N should be HIGH
-            if energy and scene_num == total_scenes - 1 and energy.upper() != "EXPLOSIVE":
-                self._add_warning(
-                    f"{prefix}.energy_level",
-                    f"Scene N-1 (AERIAL) should be EXPLOSIVE, got '{energy}'",
-                    suggestion="Scene N-1 is the climax — use EXPLOSIVE energy"
-                )
-            if energy and scene_num == total_scenes and energy.upper() not in ("HIGH", "EXPLOSIVE"):
-                self._add_warning(
-                    f"{prefix}.energy_level",
-                    f"Scene N (LOOP_CLOSE) should be HIGH, got '{energy}'",
-                    suggestion="Loop close needs HIGH energy for seamless loop"
-                )
-
-            # visual_concept
-            visual = self._get_nested(scene, "visual_concept", {})
-            if not visual:
-                self._add_error(
-                    f"{prefix}.visual_concept",
-                    "Required object is missing",
-                    code="MISSING_VISUAL"
-                )
+            # Visual concept
+            vc = self._nested(scene, "visual_concept", {})
+            if not vc:
+                self._error(f"{prefix}.visual_concept", "Required object missing", code="MISSING_VISUAL")
             else:
-                self._require_non_empty(visual, "subject", f"{prefix}.visual_concept.subject")
-                self._require_non_empty(visual, "environment", f"{prefix}.visual_concept.environment")
+                self._require(vc, "subject", f"{prefix}.visual_concept.subject")
+                self._require(vc, "environment", f"{prefix}.visual_concept.environment")
+                motion = self._nested(vc, "motion_elements", [])
+                mc = len(motion) if isinstance(motion, list) else 0
+                if mc < MIN_MOTION_ELEMENTS:
+                    self._warn(f"{prefix}.visual_concept.motion_elements", f"Only {mc} ({MIN_MOTION_ELEMENTS}+ recommended)")
 
-                # motion_elements: error if <2, warning if 2 for HIGH/EXPLOSIVE
-                motion = self._get_nested(visual, "motion_elements", [])
-                motion_count = len(motion) if isinstance(motion, list) else 0
-                if motion_count < MIN_MOTION_ELEMENTS:
-                    self._add_warning(
-                        f"{prefix}.visual_concept.motion_elements",
-                        f"Only {motion_count} motion_elements ({MIN_MOTION_ELEMENTS}+ recommended)",
-                    )
-                elif motion_count == 2 and energy in ("HIGH", "EXPLOSIVE"):
-                    self._add_warning(
-                        f"{prefix}.visual_concept.motion_elements",
-                        f"{energy} scene has only 2 motion_elements — 3+ recommended for better dynamics",
-                        suggestion="Add a third motion element for richer video movement"
-                    )
-
-            # camera_intent
-            camera = self._get_nested(scene, "camera_intent", {})
-            if not camera:
-                self._add_error(
-                    f"{prefix}.camera_intent",
-                    "Required object is missing",
-                    code="MISSING_CAMERA"
-                )
+            # Camera
+            cam = self._nested(scene, "camera_intent", {})
+            if not cam:
+                self._error(f"{prefix}.camera_intent", "Required object missing", code="MISSING_CAMERA")
             else:
-                movement = self._get_nested(camera, "movement", "")
-                if not movement:
-                    self._add_error(
-                        f"{prefix}.camera_intent.movement",
-                        "Required field is missing",
-                        code="MISSING_MOVEMENT"
-                    )
+                mv = self._nested(cam, "movement", "")
+                if not mv:
+                    self._error(f"{prefix}.camera_intent.movement", "Required field missing", code="MISSING_MOVEMENT")
                 else:
-                    # Перевірка на заборонені movements
-                    movement_upper = movement.upper()
+                    mv_up = mv.upper()
                     for banned in BANNED_CAMERA_MOVEMENTS:
-                        if banned in movement_upper:
-                            self._add_error(
-                                f"{prefix}.camera_intent.movement",
-                                f"Contains banned movement '{banned}'",
-                                code="BANNED_MOVEMENT",
-                                suggestion="Use PUSH, TRACK, ORBIT, APPROACH, RISE instead"
-                            )
+                        if banned in mv_up:
+                            self._error(f"{prefix}.camera_intent.movement", f"Banned: '{banned}'", code="BANNED_MOVEMENT")
+                    if sn == 1 and mv_up in ("STATIC", "ORBIT"):
+                        self._warn(f"{prefix}.camera_intent.movement", f"'{mv_up}' too slow for hook scene")
+                    if mv_up not in VALID_CAMERA_MOVEMENTS:
+                        self._warn(f"{prefix}.camera_intent.movement", f"Non-standard: '{mv_up}'")
+                if sn == 1:
+                    scene1_movement = self._nested(cam, "movement", "")
 
-                    # Scene 1 specific: STATIC and ORBIT are too slow for hook
-                    if scene_num == 1 and movement_upper in ("STATIC", "ORBIT"):
-                        self._add_warning(
-                            f"{prefix}.camera_intent.movement",
-                            f"Scene 1 should not use '{movement_upper}' (too slow for hook)",
-                            suggestion="Use RUSH, APPROACH, REVEAL, or PUNCH for Scene 1"
-                        )
+            # VO AI marker check
+            vo_text = self._nested(scene, "voiceover_segment", "") or self._nested(scene, "narrator_script", "")
+            if vo_text:
+                ai = get_ai_markers()
+                found = [m for m in ai if re.search(r'\b' + re.escape(m) + r'\b', vo_text.lower())]
+                if found:
+                    self._error(f"{prefix}.voiceover_segment", f"AI markers: {', '.join(found[:3])}", code="AI_MARKERS_IN_SCENE")
 
-                    # Validate movement against valid list
-                    if movement_upper not in VALID_CAMERA_MOVEMENTS:
-                        self._add_warning(
-                            f"{prefix}.camera_intent.movement",
-                            f"Non-standard movement '{movement_upper}'",
-                            suggestion=f"Standard: {', '.join(sorted(VALID_CAMERA_MOVEMENTS))}"
-                        )
-
-                # Зберігаємо Scene 1 movement
-                if scene_num == 1:
-                    scene1_movement = movement
-
-            # VO text (v8.0.0 uses narrator_script / voiceover_segment, legacy used broker_script)
-            if scene_num <= 4:
-                vo_text = (
-                    self._get_nested(scene, "voiceover_segment", "")
-                    or self._get_nested(scene, "narrator_script", "")
-                    or self._get_nested(scene, "broker_script", "")
-                )
-                if not vo_text:
-                    # ASMR scenes should have whisper anchor (auto-fixed by 1A-bis),
-                    # but STRUCTURAL_DETAIL may still pass through with empty VO
-                    purpose = self._get_nested(scene, "narrative_purpose", "")
-                    if purpose != "STRUCTURAL_DETAIL":
-                        self._add_warning(
-                            f"{prefix}.voiceover_segment",
-                            "No VO text for early scene (1-4) — may reduce retention",
-                            suggestion="Add voiceover to early scenes for better viewer retention"
-                        )
-                else:
-                    # Check for AI markers
-                    vo_lower = vo_text.lower()
-                    ai_markers = get_ai_markers()
-                    found_ai = [m for m in ai_markers if re.search(r'\b' + re.escape(m) + r'\b', vo_lower)]
-                    if found_ai:
-                        self._add_error(
-                            f"{prefix}.voiceover_segment",
-                            f"Contains AI markers: {', '.join(found_ai[:3])}",
-                            code="AI_MARKERS_IN_SCENE",
-                            suggestion="Remove AI-sounding words"
-                        )
-
-            # voiceover_segment - check for AI markers (skip scenes 1-4, already checked above)
-            if scene_num > 4:
-                vo_segment = self._get_nested(scene, "voiceover_segment", "")
-                if vo_segment:
-                    vo_lower = vo_segment.lower()
-                    ai_markers = get_ai_markers()
-                    found_ai = [m for m in ai_markers if re.search(r'\b' + re.escape(m) + r'\b', vo_lower)]
-                    if found_ai:
-                        self._add_error(
-                            f"{prefix}.voiceover_segment",
-                            f"Contains AI markers: {', '.join(found_ai[:3])}",
-                            code="AI_MARKERS_IN_SCENE",
-                            suggestion="Remove AI-sounding words"
-                        )
-
-            # ===== NARRATOR_SCRIPT WORD COUNT vs DURATION ("Rap God Rule") =====
-            # GEN1.txt: word count measured on narrator_script (clean text), NOT voiceover_segment.
-            # Applies STRICTLY to MIDDLE SCENES (2 through N-2). Scene 1 hook allows 6-8 words.
-            # Anchor scenes (N-1 AERIAL, N LOOP_CLOSE) also exempt.
-            narrator_text = self._get_nested(scene, "narrator_script", "")
-            scene_dur = scene.get("duration_seconds")
-            is_middle_scene = 1 < scene_num < total_scenes - 1
-            if (is_middle_scene
-                    and narrator_text and isinstance(narrator_text, str)
-                    and narrator_text.strip()
-                    and scene_dur is not None):
+            # Narrator word count vs duration
+            narrator = self._nested(scene, "narrator_script", "")
+            dur = scene.get("duration_seconds")
+            is_middle = 1 < sn < total - 1
+            if is_middle and narrator and isinstance(narrator, str) and narrator.strip() and dur is not None:
                 try:
-                    dur_val = float(scene_dur)
+                    dv = float(dur)
                 except (ValueError, TypeError):
-                    dur_val = None
-                if dur_val and dur_val > 0:
-                    ns_words = len(narrator_text.strip().split())
-                    # GEN1.txt lookup table: 2.0s=4, 2.5s=5, 3.0s=7, 4.0s=10
-                    _WORD_LIMITS = {2.0: 4, 2.5: 5, 3.0: 7, 3.5: 8, 4.0: 10}
-                    max_words = _WORD_LIMITS.get(dur_val)
-                    if max_words is None:
-                        # Fallback for non-standard durations
-                        max_words = int(dur_val * 2.5)
-                        if max_words < 4:
-                            max_words = 4
-                    if ns_words > max_words:
-                        self._add_warning(
-                            f"{prefix}.narrator_script",
-                            f"Too many words ({ns_words}) for {dur_val}s scene (max {max_words})",
-                            suggestion=f"Trim narrator_script to ≤{max_words} words or increase scene duration"
-                        )
+                    dv = None
+                if dv and dv > 0:
+                    wds = len(narrator.strip().split())
+                    _LIMITS = {2.0: 4, 2.5: 5, 3.0: 7, 3.5: 8, 4.0: 10}
+                    mx = _LIMITS.get(dv, int(dv * 2.5) if dv else 10)
+                    if mx < 4:
+                        mx = 4
+                    if wds > mx:
+                        self._warn(f"{prefix}.narrator_script", f"Too many words ({wds}) for {dv}s (max {mx})")
 
-            # ===== ON-SCREEN TEXT VALIDATION (v8.3.0) =====
-            on_screen = self._get_nested(scene, "on_screen_text", "")
-            if scene_num == total_scenes:
-                # LOOP_CLOSE — empty is acceptable (warning only)
-                pass
-            elif not on_screen or not on_screen.strip():
-                self._add_warning(
-                    f"{prefix}.on_screen_text",
-                    "Missing on_screen_text — mute viewers benefit from headline text",
-                )
-            else:
-                words = on_screen.strip().split()
-                if len(words) < 2:
-                    self._add_warning(
-                        f"{prefix}.on_screen_text",
-                        f"Too short ({len(words)} word) — min 2 words for meaningful headline",
-                        suggestion="Use 2-6 word headline for impact"
-                    )
-                elif len(words) > 6:
-                    self._add_warning(
-                        f"{prefix}.on_screen_text",
-                        f"Too long ({len(words)} words) — max 6 recommended for Shorts",
-                        suggestion="Shorten to 2-6 word headline"
-                    )
-                # Scene 1: must contain food name (critical for mute Shorts viewers)
-                if scene_num == 1:
-                    food = self._get_food_name()
-                    if food:
-                        osd_lower = on_screen.lower()
-                        # Full name match OR last word match (auto-fix may truncate to last word)
-                        food_words = food.lower().split()
-                        has_food = (
-                            food.lower() in osd_lower
-                            or any(w in osd_lower for w in food_words if len(w) > 2)
-                        )
-                        if not has_food:
-                            self._add_warning(
-                                f"{prefix}.on_screen_text",
-                                f"Scene 1 should contain food name '{food}' for mute viewer recognition",
-                            )
+            # Numbers in narrator_script ban
+            if narrator and isinstance(narrator, str) and narrator.strip():
+                if re.search(r'\d', narrator) and sn != 1:
+                    self._warn(f"{prefix}.narrator_script", "Contains numbers (banned except Scene 1 hook)")
 
-            # ===== MONEY SHOT + SNAP MOMENT VALIDATION (v8.4.0) =====
-            # Note: auto-fix 1A already enforces MODE A/B voiceover rules.
-            # This validation is a fallback check — mode-aware.
+            # On-screen text
+            ost = self._nested(scene, "on_screen_text", "")
+            if sn != total and (not ost or not ost.strip()):
+                self._warn(f"{prefix}.on_screen_text", "Missing — mute viewers need headlines")
+            elif ost and ost.strip():
+                ost_words = ost.strip().split()
+                if len(ost_words) > 6:
+                    self._warn(f"{prefix}.on_screen_text", f"Too long ({len(ost_words)} words, max 6)")
+
+            # Money shot
             ms = scene.get("money_shot")
             if isinstance(ms, dict) and ms.get("is_money_shot"):
-                vo_seg = self._get_nested(scene, "voiceover_segment", "")
-                narrator = self._get_nested(scene, "narrator_script", "")
-                # MODE A (CRISPY) = [silence], MODE B (CREAMY) = [long pause] [whispers] <word>.
-                # Both modes handled by auto-fix 1A; this is a safety net.
+                vo_seg = self._nested(scene, "voiceover_segment", "")
                 if vo_seg and vo_seg.strip() not in ("", "[silence]"):
-                    # Check if it matches MODE B pattern before warning
                     if not _MODE_B_PATTERN.match(vo_seg.strip()):
-                        self._add_warning(
-                            f"{prefix}.voiceover_segment",
-                            f"Money shot VO should be '[silence]' (MODE A) or '[long pause] [whispers] <word>.' (MODE B), got '{vo_seg[:40]}'",
-                            suggestion="Auto-fix 1A should have corrected this. Check texture group."
-                        )
-                # snap_moment should be present
+                        self._warn(f"{prefix}.voiceover_segment", "Money shot should be [silence] or MODE B pattern")
                 snap = scene.get("snap_moment")
                 if not snap or not isinstance(snap, dict):
-                    self._add_warning(
-                        f"{prefix}.snap_moment",
-                        "Money shot scene missing snap_moment object (v8.4.0)",
-                        suggestion="Add snap_moment with enabled=true, snap_sfx, and timing fields"
-                    )
+                    self._warn(f"{prefix}.snap_moment", "Missing snap_moment on money_shot")
                 elif not snap.get("snap_sfx"):
-                    self._add_warning(
-                        f"{prefix}.snap_moment.snap_sfx",
-                        "snap_sfx is empty — should describe the ASMR sound",
-                        suggestion="e.g. 'Wet fruit scooping, close-mic, juice welling'"
-                    )
+                    self._warn(f"{prefix}.snap_moment.snap_sfx", "snap_sfx is empty")
 
-            # ===== FOOD VISUAL RATIO VALIDATION (v8.5.0) =====
-            fvr = self._get_nested(scene, "food_visual_ratio", "")
+            # food_visual_ratio
+            fvr = self._nested(scene, "food_visual_ratio", "")
             valid_fvr = {"FOOD_DOMINANT", "BALANCED", "ARCHITECTURE_DOMINANT"}
             if fvr:
-                fvr_upper = fvr.strip().upper()
-                if fvr_upper not in valid_fvr:
-                    self._add_error(
-                        f"{prefix}.food_visual_ratio",
-                        f"Invalid value '{fvr}' — must be FOOD_DOMINANT | BALANCED | ARCHITECTURE_DOMINANT",
-                        code="INVALID_FOOD_VISUAL_RATIO"
-                    )
-                elif fvr_upper == "ARCHITECTURE_DOMINANT":
-                    self._add_error(
-                        f"{prefix}.food_visual_ratio",
-                        "ARCHITECTURE_DOMINANT is NEVER allowed (v8.5.0)",
-                        code="ARCHITECTURE_DOMINANT_BANNED",
-                        suggestion="Rewrite visual_concept with food as the noun in subject position"
-                    )
-                elif fvr_upper != "FOOD_DOMINANT":
-                    # Scenes that MUST be FOOD_DOMINANT
-                    is_money = isinstance(ms, dict) and ms.get("is_money_shot")
-                    if scene_num == 1 or purpose == "STRUCTURAL_DETAIL" or is_money:
-                        self._add_warning(
-                            f"{prefix}.food_visual_ratio",
-                            f"Scene {scene_num} ({purpose}) should be FOOD_DOMINANT, got '{fvr_upper}'",
-                            suggestion="Scene 1, STRUCTURAL_DETAIL, and Money Shot require FOOD_DOMINANT"
-                        )
-            else:
-                self._add_warning(
-                    f"{prefix}.food_visual_ratio",
-                    "Missing food_visual_ratio field (v8.5.0)",
-                    suggestion="Add food_visual_ratio: FOOD_DOMINANT | BALANCED for each scene"
-                )
+                fu = fvr.strip().upper()
+                if fu not in valid_fvr:
+                    self._error(f"{prefix}.food_visual_ratio", f"Invalid: '{fvr}'", code="INVALID_FOOD_VISUAL_RATIO")
+                elif fu == "ARCHITECTURE_DOMINANT":
+                    self._error(f"{prefix}.food_visual_ratio", "ARCHITECTURE_DOMINANT NEVER allowed", code="ARCHITECTURE_DOMINANT_BANNED")
 
-            # v8.4.0: Check per-scene voiceover_segment for banned tags
-            vo_seg_check = self._get_nested(scene, "voiceover_segment", "")
-            if vo_seg_check:
-                found_banned_scene = [t for t in BANNED_DIRECTION_TAGS if t in vo_seg_check.lower()]
-                if found_banned_scene:
-                    self._add_warning(
-                        f"{prefix}.voiceover_segment",
-                        f"Contains banned direction tags (v8.4.0): {', '.join(found_banned_scene)}",
-                        suggestion="Use only [whispers], [calm], [warm], [gentle], [pause], [silence], [long pause], [drawn out], [dry laugh]"
-                    )
+            # Banned direction tags in VO
+            vo_check = self._nested(scene, "voiceover_segment", "")
+            if vo_check:
+                found_banned = [t for t in BANNED_DIRECTION_TAGS if t in vo_check.lower()]
+                if found_banned:
+                    self._warn(f"{prefix}.voiceover_segment", f"Banned tags: {', '.join(found_banned)}")
 
-            # ===== SCENE 1 SPECIFIC RULES =====
-            if scene_num == 1:
+            # Scene 1 rules
+            if sn == 1:
                 if hint != "PRIMARY":
-                    self._add_error(
-                        f"{prefix}.reference_hint",
-                        f"Scene 1 must be 'PRIMARY', got '{hint}'",
-                        code="INVALID_SCENE1_REF"
-                    )
+                    self._error(f"{prefix}.reference_hint", f"Scene 1 must be PRIMARY, got '{hint}'", code="INVALID_SCENE1_REF")
                 if purpose != "ESTABLISHING":
-                    self._add_error(
-                        f"{prefix}.narrative_purpose",
-                        f"Scene 1 must be 'ESTABLISHING', got '{purpose}'",
-                        code="INVALID_SCENE1_PURPOSE"
-                    )
-                # first_frame_composition — MANDATORY on Scene 1 (GEN1 v8.5.0)
+                    self._error(f"{prefix}.narrative_purpose", f"Scene 1 must be ESTABLISHING, got '{purpose}'", code="INVALID_SCENE1_PURPOSE")
                 ffc = scene.get("first_frame_composition")
                 if not isinstance(ffc, dict):
-                    self._add_warning(
-                        f"{prefix}.first_frame_composition",
-                        "Missing first_frame_composition on Scene 1 — required for thumbnail optimization",
-                        code="MISSING_FIRST_FRAME"
-                    )
+                    self._warn(f"{prefix}.first_frame_composition", "Missing — required for thumbnail")
                 else:
-                    for ffc_field in ("dominant_subject", "silhouette_clarity", "pareidolia_element"):
-                        if not ffc.get(ffc_field):
-                            self._add_warning(
-                                f"{prefix}.first_frame_composition.{ffc_field}",
-                                f"Missing required field '{ffc_field}' in first_frame_composition"
-                            )
-                    ffc_pct = ffc.get("frame_coverage_pct")
-                    if ffc_pct is not None:
-                        try:
-                            pct_val = int(ffc_pct) if not isinstance(ffc_pct, int) else ffc_pct
-                            if pct_val < 40:
-                                self._add_warning(
-                                    f"{prefix}.first_frame_composition.frame_coverage_pct",
-                                    f"frame_coverage_pct={pct_val}% is too low (min 40%, recommend 70%+)"
-                                )
-                        except (ValueError, TypeError):
-                            pass
+                    for ff in ("dominant_subject", "silhouette_clarity", "pareidolia_element"):
+                        if not ffc.get(ff):
+                            self._warn(f"{prefix}.first_frame_composition.{ff}", f"Missing '{ff}'")
 
-            # ===== LAST SCENE SPECIFIC RULES (LOOP_CLOSE) =====
-            if scene_num == total_scenes:
+            # Scene N rules
+            if sn == total:
                 if purpose != "LOOP_CLOSE":
-                    self._add_error(
-                        f"{prefix}.narrative_purpose",
-                        f"Last scene (Scene {total_scenes}) must be 'LOOP_CLOSE', got '{purpose}'",
-                        code="INVALID_LAST_SCENE_PURPOSE"
-                    )
+                    self._error(f"{prefix}.narrative_purpose", f"Last scene must be LOOP_CLOSE, got '{purpose}'", code="INVALID_LAST_SCENE_PURPOSE")
+                if cam and scene1_movement:
+                    last_mv = self._nested(cam, "movement", "")
+                    if last_mv and scene1_movement.upper() == last_mv.upper():
+                        self._warn(f"{prefix}.camera_intent.movement", f"Same as Scene 1 — use complementary")
 
-                # Перевірка complementary movement
-                if camera and scene1_movement:
-                    last_scene_movement = self._get_nested(camera, "movement", "")
-                    if last_scene_movement and scene1_movement.upper() == last_scene_movement.upper():
-                        self._add_warning(
-                            f"{prefix}.camera_intent.movement",
-                            f"Same as Scene 1 ('{last_scene_movement}')",
-                            suggestion="Use COMPLEMENTARY movement (e.g., RISE, ORBIT) for better loop"
-                        )
-
-            # ===== PENULTIMATE SCENE RULES (AERIAL) =====
-            if scene_num == total_scenes - 1:
+            # Scene N-1 rules
+            if sn == total - 1:
                 if purpose not in ("AERIAL", "AERIAL_WOW", "AERIAL_REVEAL"):
-                    self._add_warning(
-                        f"{prefix}.narrative_purpose",
-                        f"Scene {total_scenes - 1} should be AERIAL/AERIAL_WOW/AERIAL_REVEAL, got '{purpose}'",
-                        suggestion="Penultimate scene is typically the aerial reveal"
-                    )
+                    self._warn(f"{prefix}.narrative_purpose", f"N-1 should be AERIAL, got '{purpose}'")
+                wl = self._data.get("warning_line")
+                if wl and isinstance(wl, str):
+                    vs = self._nested(scene, "voiceover_segment", "")
+                    if isinstance(vs, str):
+                        wl_cmp = re.sub(r'\[[\w\s]+\]\s*', '', wl).strip().rstrip(".")
+                        vs_cmp = re.sub(r'\[[\w\s]+\]\s*', '', vs)
+                        if wl_cmp.lower() not in vs_cmp.lower():
+                            self._warn(f"{prefix}.voiceover_segment", f"warning_line not found in N-1 VO")
 
-                # Cross-validate: warning_line should appear in Scene N-1 voiceover_segment
-                wl_check = self._data.get("warning_line")
-                if wl_check and isinstance(wl_check, str):
-                    vo_segment = self._get_nested(scene, "voiceover_segment", "")
-                    if isinstance(vo_segment, str):
-                        wl_cmp = re.sub(r'\[[\w\s]+\]\s*', '', wl_check).strip().rstrip(".")
-                        vo_cmp = re.sub(r'\[[\w\s]+\]\s*', '', vo_segment)
-                        if wl_cmp.lower() not in vo_cmp.lower():
-                            self._add_warning(
-                                f"{prefix}.voiceover_segment",
-                                f"warning_line '{wl_check.strip()}' not found in Scene {scene_num} voiceover_segment",
-                                suggestion="AERIAL scene should deliver the warning_line"
-                            )
+        if low_count > 1:
+            self._warn("scenes", f"{low_count} LOW energy scenes (max 1 recommended)")
 
-        # Energy pattern check
-        if low_energy_count > 1:
-            self._add_warning(
-                "scenes",
-                f"Energy pattern has {low_energy_count} LOW scenes",
-                suggestion="Recommended max is 1 LOW scene per video"
-            )
+        # Money shot count
+        ms_count = sum(1 for s in scenes if isinstance(s, dict) and isinstance(s.get("money_shot"), dict) and s["money_shot"].get("is_money_shot"))
+        if ms_count == 0:
+            self._warn("scenes", "No money_shot scene (exactly 1 required)")
+        elif ms_count > 1:
+            self._warn("scenes", f"{ms_count} money_shot scenes (exactly 1 allowed)")
 
-        # v8.4.0: Exactly one money_shot scene required
-        money_shot_count = sum(
-            1 for s in scenes
-            if isinstance(s, dict) and isinstance(s.get("money_shot"), dict)
-            and s["money_shot"].get("is_money_shot")
-        )
-        if money_shot_count == 0:
-            self._add_warning(
-                "scenes",
-                "No money_shot scene found — exactly 1 required per v8.4.0",
-                suggestion="Mark one scene as money_shot with snap_moment for brand signature"
-            )
-        elif money_shot_count > 1:
-            self._add_warning(
-                "scenes",
-                f"Found {money_shot_count} money_shot scenes — exactly 1 allowed",
-                suggestion="Only ONE scene per video gets money_shot (the ASMR snap moment)"
-            )
-
-    # ========================================================================
-    # HELPER METHODS — Утиліти
-    # ========================================================================
-
-    def _get_food_name(self) -> Optional[str]:
-        """Extract primary food name, with parenthetical qualifier stripping.
-
-        Delegates to _get_food_name_from_data() for consistent behavior.
-        """
-        return self._get_food_name_from_data()
-
-    def _get_field(self, field_name: str) -> Optional[Any]:
-        """
-        Отримати top-level поле, додати помилку якщо відсутнє.
-
-        Returns:
-            Значення поля або None якщо відсутнє
-        """
-        value = self._data.get(field_name)
-        if value is None:
-            self._add_error(
-                field_name,
-                "Required field is missing",
-                code=f"MISSING_{field_name.upper()}"
-            )
-            return None
-        return value
-
-    def _get_nested(self, obj: Dict[str, Any], key: str, default: Any = None) -> Any:
-        """Безпечно отримати nested значення."""
-        if not isinstance(obj, dict):
-            return default
-        return obj.get(key, default)
-
-    def _require_non_empty(
-        self,
-        obj: Dict[str, Any],
-        key: str,
-        full_path: str
-    ) -> bool:
-        """
-        Перевірити що поле існує і не пусте.
-
-        Returns:
-            True якщо валідне
-        """
-        value = self._get_nested(obj, key)
-        if not value:
-            self._add_error(
-                full_path,
-                "Required and cannot be empty",
-                code="EMPTY_FIELD"
-            )
-            return False
-        return True
-
-    # Enum fields that should only warn (not error) when Gemini uses creative values
-    _SOFT_ENUM_FIELDS = {"metadata.concept.category", "lighting_master.preset", "atmosphere_mode", "audio.sonic_hook.type"}
-
-    def _validate_enum_field(
-        self,
-        value: Any,
-        enum_class: type,
-        field_path: str
-    ) -> bool:
-        """
-        Валідація enum значення.
-        Soft enums (category, lighting, atmosphere) produce warnings, not errors.
-
-        Returns:
-            True якщо валідне
-        """
-        if value is None:
-            self._add_error(
-                field_path,
-                "Required field is missing",
-                code="MISSING_ENUM"
-            )
-            return False
-
-        valid_values = [e.value for e in enum_class]
-        if value not in valid_values:
-            if field_path in self._SOFT_ENUM_FIELDS:
-                # Gemini is creative — accept non-standard values with warning
-                self._add_warning(
-                    field_path,
-                    f"Non-standard value '{value}' (accepted)",
-                    suggestion=f"Standard values: {', '.join(valid_values[:5])}..."
-                )
-                return True  # Accept it
-            self._add_error(
-                field_path,
-                f"Invalid value '{value}'",
-                code="INVALID_ENUM",
-                suggestion=f"Must be one of: {', '.join(valid_values)}"
-            )
-            return False
-
-        return True
-
-    def _add_error(
-        self,
-        field: str,
-        message: str,
-        code: str = "",
-        suggestion: str = ""
-    ) -> None:
-        """Додати помилку."""
-        self._errors.append(ValidationError(
-            field=field,
-            message=message,
-            severity="error",
-            code=code,
-            suggestion=suggestion
-        ))
-
-    def _add_warning(
-        self,
-        field: str,
-        message: str,
-        suggestion: str = ""
-    ) -> None:
-        """Додати попередження."""
-        self._warnings.append(ValidationError(
-            field=field,
-            message=message,
-            severity="warning",
-            suggestion=suggestion
-        ))
-
-    # ========================================================================
-    # NEW VALIDATIONS (v8.5.0 audit fixes)
-    # ========================================================================
+        # Money shot timing — not past midpoint
+        midpoint = (total + 1) // 2
+        for s in scenes:
+            if isinstance(s, dict) and isinstance(s.get("money_shot"), dict) and s["money_shot"].get("is_money_shot"):
+                msn = s.get("scene_number", 0)
+                if msn > midpoint:
+                    self._warn(f"scenes[{msn}].money_shot", f"Scene {msn} past midpoint ({midpoint})")
 
     def _validate_sensory_pressure(self) -> None:
-        """Validate sensory_pressure curve across scenes (GEN1 SP hard rules)."""
-        scenes = self._data.get("scenes", [])
-        if not isinstance(scenes, list) or not scenes:
-            return
-
-        sp_values = []
-        for scene in scenes:
-            if not isinstance(scene, dict):
-                continue
-            sp = scene.get("sensory_pressure")
-            if sp is not None:
-                try:
-                    sp_val = int(sp) if not isinstance(sp, int) else sp
-                    sp_values.append(sp_val)
-                except (ValueError, TypeError):
-                    pass
-
-        if not sp_values:
-            self._add_warning(
-                "scenes.sensory_pressure",
-                "No sensory_pressure values found in any scene",
-                suggestion="Add sensory_pressure (1-10) to each scene"
-            )
-            return
-
-        # Validate range
-        for i, sp in enumerate(sp_values):
-            if sp < 1 or sp > 10:
-                self._add_warning(
-                    f"scenes[{i}].sensory_pressure",
-                    f"SP value {sp} out of range (must be 1-10)"
-                )
-
-        # Average >= 5
-        avg_sp = sum(sp_values) / len(sp_values)
-        if avg_sp < 5:
-            self._add_warning(
-                "scenes.sensory_pressure",
-                f"SP average too low ({avg_sp:.1f}, min 5.0)",
-                suggestion="Increase SP in middle scenes to raise average"
-            )
-
-        # Peak >= 9
-        peak = max(sp_values)
-        if peak < 9:
-            self._add_warning(
-                "scenes.sensory_pressure",
-                f"SP peak too low ({peak}, need at least one 9-10)",
-                suggestion="Set money_shot or climax scene SP to 9 or 10"
-            )
-
-        # S1 = 5-8 (if present)
-        if len(sp_values) >= 1 and (sp_values[0] < 5 or sp_values[0] > 8):
-            self._add_warning(
-                "scenes[0].sensory_pressure",
-                f"Scene 1 SP should be 5-8, got {sp_values[0]}"
-            )
-
-        # SN = 5-8 (if present)
-        if len(sp_values) >= 2 and (sp_values[-1] < 5 or sp_values[-1] > 8):
-            self._add_warning(
-                f"scenes[{len(sp_values)-1}].sensory_pressure",
-                f"Last scene SP should be 5-8, got {sp_values[-1]}"
-            )
-
-    def _validate_total_duration(self) -> None:
-        """Validate total video duration (TOP RULE #6: 13-16s preferred)."""
-        scenes = self._data.get("scenes", [])
-        if not isinstance(scenes, list) or not scenes:
-            return
-
-        total_dur = 0.0
-        for scene in scenes:
-            if not isinstance(scene, dict):
-                continue
-            dur = scene.get("duration_seconds")
-            if dur is not None:
-                try:
-                    total_dur += float(dur)
-                except (ValueError, TypeError):
-                    pass
-
-        if total_dur <= 0:
-            return
-
-        if total_dur > 20:
-            self._add_warning(
-                "total_duration",
-                f"Total duration {total_dur:.1f}s exceeds 20s maximum",
-                suggestion="Remove weakest middle scene to reduce duration"
-            )
-        elif total_dur > 18:
-            self._add_warning(
-                "total_duration",
-                f"Total duration {total_dur:.1f}s is long (13-16s preferred for loop optimization)",
-                suggestion="Consider removing 1 scene — each second >16s costs ~6-8% fewer loops"
-            )
-        elif total_dur < 12:
-            self._add_warning(
-                "total_duration",
-                f"Total duration {total_dur:.1f}s may be too short (min ~12s)",
-                suggestion="Add 1-2 more scenes for better retention"
-            )
-
-    def _validate_top_level_fields(self) -> None:
-        """Validate required top-level fields added in v8.5.0 waves."""
-        # _concept_reasoning — MUST exist and be non-empty
-        cr = self._data.get("_concept_reasoning")
-        if not cr or (isinstance(cr, str) and not cr.strip()):
-            self._add_warning(
-                "_concept_reasoning",
-                "Missing or empty _concept_reasoning — required as first field",
-                suggestion="Add _concept_reasoning with 12 numbered analysis points"
-            )
-
-        # completion_bait — MANDATORY
-        cb = self._data.get("completion_bait")
-        if not isinstance(cb, dict):
-            self._add_warning(
-                "completion_bait",
-                "Missing completion_bait object — required for retention",
-                suggestion="Add completion_bait with scene_number, technique, vo_trigger, resolution_scene"
-            )
-        else:
-            for cb_field in ("scene_number", "technique", "vo_trigger"):
-                if not cb.get(cb_field):
-                    self._add_warning(
-                        f"completion_bait.{cb_field}",
-                        f"Missing required field '{cb_field}' in completion_bait"
-                    )
-
-        # food_reclamation — at least 1 scene should have it
-        scenes = self._data.get("scenes", [])
-        has_reclamation = False
-        if isinstance(scenes, list):
-            for scene in scenes:
-                if isinstance(scene, dict) and scene.get("food_reclamation"):
-                    has_reclamation = True
-                    break
-        if not has_reclamation:
-            self._add_warning(
-                "scenes.food_reclamation",
-                "No food_reclamation found in any scene — at least 1 required",
-                suggestion="Add food_reclamation to 1 middle scene (SP 6-8) to prevent appetite loss"
-            )
-
-        # replay_hooks — minimum 2
-        engagement = self._data.get("engagement", {})
-        if isinstance(engagement, dict):
-            rh = engagement.get("replay_hooks", [])
-            if isinstance(rh, list) and len(rh) < 2:
-                self._add_warning(
-                    "engagement.replay_hooks",
-                    f"Only {len(rh)} replay hook(s) — minimum 2 required (1 FEEL_AGAIN + 1 MISSED_DETAIL)",
-                    suggestion="Add replay_hooks for rewatch motivation"
-                )
-
-    def _validate_cross_field_consistency(self) -> None:
-        """Cross-field consistency checks (v8.5.1).
-
-        Gemini 3 Pro "No Spine" quirk: sacrifices accuracy for narrative
-        coherence, leading to mismatches between related fields.
-        These checks catch what the LLM can't self-verify.
-        """
         scenes = self._data.get("scenes", [])
         if not isinstance(scenes, list):
             return
+        sp_vals = []
+        for s in scenes:
+            if not isinstance(s, dict):
+                continue
+            sp = s.get("sensory_pressure")
+            if sp is not None:
+                try:
+                    sp_vals.append(int(sp) if not isinstance(sp, int) else sp)
+                except (ValueError, TypeError):
+                    pass
+        if not sp_vals:
+            self._warn("scenes.sensory_pressure", "No SP values found")
+            return
+        for i, sp in enumerate(sp_vals):
+            if sp < 1 or sp > 10:
+                self._warn(f"scenes[{i}].sensory_pressure", f"SP {sp} out of range (1-10)")
+        avg = sum(sp_vals) / len(sp_vals)
+        if avg < 5:
+            self._warn("scenes.sensory_pressure", f"Average {avg:.1f} too low (min 5.0)")
+        peak = max(sp_vals)
+        if peak < 9:
+            self._warn("scenes.sensory_pressure", f"Peak {peak} too low (need ≥9)")
+        if len(sp_vals) >= 1 and (sp_vals[0] < 5 or sp_vals[0] > 8):
+            self._warn("scenes[0].sensory_pressure", f"Scene 1 SP should be 5-8, got {sp_vals[0]}")
+        if len(sp_vals) >= 2 and (sp_vals[-1] < 5 or sp_vals[-1] > 8):
+            self._warn(f"scenes[{len(sp_vals)-1}].sensory_pressure", f"Last SP should be 5-8, got {sp_vals[-1]}")
 
-        # --- 1. full_script = exact concatenation of voiceover_segments ---
+    def _validate_total_duration(self) -> None:
+        scenes = self._data.get("scenes", [])
+        total_dur = 0.0
+        for s in scenes:
+            if isinstance(s, dict):
+                d = s.get("duration_seconds")
+                if d is not None:
+                    try:
+                        total_dur += float(d)
+                    except (ValueError, TypeError):
+                        pass
+        if total_dur <= 0:
+            return
+        if total_dur > 20:
+            self._warn("total_duration", f"{total_dur:.1f}s exceeds 20s max")
+        elif total_dur > 18:
+            self._warn("total_duration", f"{total_dur:.1f}s long (13-16s preferred)")
+        elif total_dur < 12:
+            self._warn("total_duration", f"{total_dur:.1f}s too short (min ~12s)")
+
+    def _validate_top_level_fields(self) -> None:
+        cr = self._data.get("_concept_reasoning") or self._data.get("concept_reasoning")
+        if not cr or (isinstance(cr, str) and not cr.strip()):
+            self._warn("_concept_reasoning", "Missing or empty — required as first field")
+        cb = self._data.get("completion_bait")
+        if not isinstance(cb, dict):
+            self._warn("completion_bait", "Missing completion_bait object")
+        else:
+            for f in ("scene_number", "technique", "vo_trigger"):
+                if not cb.get(f):
+                    self._warn(f"completion_bait.{f}", f"Missing '{f}'")
+        scenes = self._data.get("scenes", [])
+        has_recl = any(isinstance(s, dict) and s.get("food_reclamation") for s in scenes) if isinstance(scenes, list) else False
+        if not has_recl:
+            self._warn("scenes.food_reclamation", "No food_reclamation found (≥1 required)")
+        eng = self._data.get("engagement", {})
+        if isinstance(eng, dict):
+            rh = eng.get("replay_hooks", [])
+            if isinstance(rh, list) and len(rh) < 2:
+                self._warn("engagement.replay_hooks", f"Only {len(rh)} hooks (min 2)")
+
+    def _validate_cross_field_consistency(self) -> None:
+        scenes = self._data.get("scenes", [])
+        if not isinstance(scenes, list):
+            return
+        # full_script = concat of voiceover_segments
         vo = self._data.get("voiceover", {})
-        full_script = vo.get("full_script", "") if isinstance(vo, dict) else ""
-        if full_script and scenes:
-            segments = []
-            for scene in scenes:
-                if not isinstance(scene, dict):
-                    continue
-                seg = scene.get("voiceover_segment", "")
-                if seg:
-                    segments.append(seg)
-            expected = " ".join(segments)
-            if expected and full_script.strip() != expected.strip():
-                self._add_warning(
-                    "voiceover.full_script",
-                    "full_script doesn't match concatenation of voiceover_segments",
-                    suggestion="Rebuild: full_script = ' '.join(all voiceover_segments)"
-                )
+        fs = vo.get("full_script", "") if isinstance(vo, dict) else ""
+        if fs and scenes:
+            segs = []
+            for s in scenes:
+                if isinstance(s, dict):
+                    seg = s.get("voiceover_segment", "")
+                    # Skip [silence] — not spoken text, excluded from full_script
+                    if seg and seg.strip() and seg.strip() != "[silence]":
+                        segs.append(seg.strip())
+            expected = " ".join(segs)
+            if expected and fs.strip() != expected.strip():
+                self._warn("voiceover.full_script", "Doesn't match concatenation of voiceover_segments")
 
-        # --- 2. completion_bait.vo_trigger must be in its scene's voiceover_segment ---
+        # completion_bait.vo_trigger in scene VO
         cb = self._data.get("completion_bait")
         if isinstance(cb, dict):
-            vo_trigger = cb.get("vo_trigger", "")
-            cb_scene_num = cb.get("scene_number")
-            if vo_trigger and cb_scene_num is not None:
-                found_in_segment = False
-                for scene in scenes:
-                    if not isinstance(scene, dict):
-                        continue
-                    if scene.get("scene_number") == cb_scene_num:
-                        segment = scene.get("voiceover_segment", "")
-                        if vo_trigger.rstrip(".").rstrip("…").strip() in segment:
-                            found_in_segment = True
+            vt = cb.get("vo_trigger", "")
+            csn = cb.get("scene_number")
+            if vt and csn is not None:
+                found = False
+                for s in scenes:
+                    if isinstance(s, dict) and s.get("scene_number") == csn:
+                        seg = s.get("voiceover_segment", "")
+                        if vt.rstrip(".…").strip() in seg:
+                            found = True
                         break
-                if not found_in_segment:
-                    self._add_warning(
-                        "completion_bait.vo_trigger",
-                        f"vo_trigger '{vo_trigger}' not found in Scene {cb_scene_num} voiceover_segment",
-                        suggestion="Add vo_trigger text to the voiceover_segment of its scene"
-                    )
-
-            # Check completion bait distance
-            resolution = cb.get("resolution_scene")
-            if cb_scene_num is not None and resolution is not None:
+                if not found:
+                    self._warn("completion_bait.vo_trigger", f"Not found in Scene {csn} VO")
+            res = cb.get("resolution_scene")
+            if csn is not None and res is not None:
                 try:
-                    distance = int(resolution) - int(cb_scene_num)
-                    if distance > 3:
-                        self._add_warning(
-                            "completion_bait",
-                            f"Distance {distance} scenes (S{cb_scene_num}→S{resolution}) — max recommended 3",
-                            suggestion="Move completion_bait closer to resolution or add a reminder"
-                        )
+                    dist = int(res) - int(csn)
+                    if dist > 3:
+                        self._warn("completion_bait", f"Distance {dist} scenes (max 3)")
                 except (TypeError, ValueError):
                     pass
 
-        # --- 3. series_hook.element must appear in specified scene ---
-        series = self._data.get("series_identity", {})
-        if isinstance(series, dict):
-            hook = series.get("series_hook", {})
-            if isinstance(hook, dict):
-                element = hook.get("element", "")
-                placement = hook.get("placement", "")
-                if element and placement:
-                    # Extract scene number from placement like "Scene 2 on_screen_text"
-                    placement_lower = placement.lower()
-                    scene_num_match = re.search(r'scene\s*(\d+)', placement_lower)
-                    if scene_num_match:
-                        target_scene_num = int(scene_num_match.group(1))
-                        # Check if "on_screen_text" placement
-                        if "on_screen_text" in placement_lower:
-                            for scene in scenes:
-                                if not isinstance(scene, dict):
-                                    continue
-                                if scene.get("scene_number") == target_scene_num:
-                                    ost = scene.get("on_screen_text", "")
-                                    # Extract a key word from element to check
-                                    element_words = [w for w in element.split() if len(w) > 3]
-                                    found_any = any(w.lower() in ost.lower() for w in element_words[:3]) if element_words else False
-                                    if not found_any and ost:
-                                        self._add_warning(
-                                            "series_identity.series_hook",
-                                            f"series_hook.element not found in Scene {target_scene_num} on_screen_text ('{ost}')",
-                                            suggestion="Insert series_hook.element into the scene's on_screen_text or change placement"
-                                        )
-                                    break
-
-        # --- 4. money_shot scene not past midpoint ---
-        total_scenes = len([s for s in scenes if isinstance(s, dict)])
-        if total_scenes > 0:
-            midpoint = (total_scenes + 1) // 2  # Scene 4 for 7-8 scenes, Scene 5 for 9-10
-            for scene in scenes:
-                if not isinstance(scene, dict):
+        # micro_open_loop.setup_line ≠ completion_bait.vo_trigger
+        vt2 = cb.get("vo_trigger", "") if isinstance(cb, dict) else ""
+        if vt2:
+            for s in scenes:
+                if not isinstance(s, dict):
                     continue
-                ms = scene.get("money_shot")
-                if isinstance(ms, dict) and ms.get("is_money_shot"):
-                    scene_num = scene.get("scene_number", 0)
-                    if scene_num > midpoint:
-                        self._add_warning(
-                            f"scenes[{scene_num}].money_shot",
-                            f"Money shot at Scene {scene_num} is past midpoint (Scene {midpoint}) — payoff too late",
-                            suggestion=f"Move money_shot to Scene {midpoint} or earlier"
-                        )
-
-        # --- 5. micro_open_loop.setup_line ≠ completion_bait.vo_trigger ---
-        cb = self._data.get("completion_bait", {})
-        vo_trigger = cb.get("vo_trigger", "") if isinstance(cb, dict) else ""
-        if vo_trigger:
-            for scene in scenes:
-                if not isinstance(scene, dict):
-                    continue
-                mol = scene.get("micro_open_loop", {})
+                mol = s.get("micro_open_loop", {})
                 if isinstance(mol, dict):
-                    setup_line = mol.get("setup_line", "")
-                    if setup_line and setup_line.strip().lower() == vo_trigger.strip().lower():
-                        self._add_warning(
-                            f"scenes[{scene.get('scene_number', '?')}].micro_open_loop.setup_line",
-                            f"micro_open_loop.setup_line is identical to completion_bait.vo_trigger ('{vo_trigger[:40]}') — wasting a retention slot",
-                            suggestion="Use different text for micro_open_loop and completion_bait"
-                        )
+                    sl = mol.get("setup_line", "")
+                    if sl and sl.strip().lower() == vt2.strip().lower():
+                        self._warn(f"scenes[{s.get('scene_number', '?')}].micro_open_loop.setup_line", "Identical to vo_trigger — wasting retention slot")
                         break
 
-        # --- 6. Scene N-1 narrative_purpose = AERIAL ---
-        if len(scenes) >= 3:
-            n_minus_1 = scenes[-2]
-            if isinstance(n_minus_1, dict):
-                np_val = n_minus_1.get("narrative_purpose", "")
-                if np_val and np_val.upper() != "AERIAL":
-                    self._add_warning(
-                        f"scenes[{n_minus_1.get('scene_number', '?')}].narrative_purpose",
-                        f"Scene N-1 narrative_purpose should be 'AERIAL', got '{np_val}'",
-                        suggestion="Change to 'AERIAL' per anchor scene rules"
-                    )
+    # ========================================================================
+    # NEW v2.0 VALIDATIONS
+    # ========================================================================
 
-    def _build_validation_summary(self) -> Dict[str, Any]:
-        """
-        Побудувати validation summary (метадані для логування).
-
-        NOTE: Це НЕ реальний GEN1→GEN2 handoff. Реальний handoff будує
-        DeliveryPayload.from_gen1_output() в gen_models.py.
-        Поле gen2_handoff збережено для backward compatibility.
-        """
-        metadata = self._data.get("metadata", {})
-        if not isinstance(metadata, dict):
-            metadata = {}
-        concept = metadata.get("concept", {})
-        if not isinstance(concept, dict):
-            concept = {}
-        lighting = self._data.get("lighting_master", {})
-        if not isinstance(lighting, dict):
-            lighting = {}
+    def _validate_structural_counts(self) -> None:
+        """Validate exact-count structural requirements."""
         scenes = self._data.get("scenes", [])
         if not isinstance(scenes, list):
-            scenes = []
+            return
+        total = len(scenes)
 
-        # Отримуємо movements для loop strategy
-        scene1_movement = ""
-        last_scene_movement = ""
-        last_scene_num = len(scenes)
-        for scene in scenes:
-            if not isinstance(scene, dict):
-                continue
-            sn = scene.get("scene_number", 0)
-            if sn == 1:
-                cam = scene.get("camera_intent", {})
-                scene1_movement = cam.get("movement", "") if isinstance(cam, dict) else ""
-            if sn == last_scene_num:
-                cam = scene.get("camera_intent", {})
-                last_scene_movement = cam.get("movement", "") if isinstance(cam, dict) else ""
+        # Exactly 1 STRUCTURAL_DETAIL
+        sd_count = sum(1 for s in scenes if isinstance(s, dict) and s.get("narrative_purpose") == "STRUCTURAL_DETAIL")
+        if sd_count == 0:
+            self._warn("scenes", "No STRUCTURAL_DETAIL scene (exactly 1 required)")
+        elif sd_count > 1:
+            self._warn("scenes", f"{sd_count} STRUCTURAL_DETAIL scenes (exactly 1 allowed)")
 
+        # Exactly 1 pattern_interrupt
+        pi_count = sum(1 for s in scenes if isinstance(s, dict) and s.get("pattern_interrupt"))
+        if pi_count == 0:
+            self._warn("scenes", "No pattern_interrupt (exactly 1 required)")
+        elif pi_count > 1:
+            self._warn("scenes", f"{pi_count} pattern_interrupts (exactly 1 allowed)")
+
+        # micro_open_loop max 2, only scenes 2-3
+        mol_scenes = []
+        for s in scenes:
+            if isinstance(s, dict) and s.get("micro_open_loop"):
+                mol_scenes.append(s.get("scene_number", 0))
+        if len(mol_scenes) > 2:
+            self._warn("scenes.micro_open_loop", f"{len(mol_scenes)} micro_open_loops (max 2)")
+        for msn in mol_scenes:
+            if msn not in (2, 3):
+                self._warn(f"scenes[{msn}].micro_open_loop", f"micro_open_loop in Scene {msn} (only 2-3 allowed)")
+
+        # sfx_per_scene must cover ALL scenes
+        audio = self._data.get("audio", {})
+        sfx = audio.get("sfx_per_scene", []) if isinstance(audio, dict) else []
+        if isinstance(sfx, list):
+            covered = set()
+            for item in sfx:
+                if isinstance(item, dict):
+                    covered.add(item.get("scene"))
+            missing = set(range(1, total + 1)) - covered
+            if missing:
+                self._warn("audio.sfx_per_scene", f"Missing scenes: {sorted(missing)}")
+
+        # Temperature contrast same-temp ban
+        tc = self._data.get("temperature_contrast")
+        if isinstance(tc, dict):
+            st = tc.get("subject_temp", "").upper()
+            bt = tc.get("background_temp", "").upper()
+            if st and bt and st == bt:
+                self._warn("temperature_contrast", f"Same temp subject={st}, bg={bt} — need contrast")
+
+    def _validate_sensory_channels(self) -> None:
+        """4-channel sensory audit: THERMAL, TACTILE, OLFACTORY, TEMPORAL FRESHNESS."""
+        scenes = self._data.get("scenes", [])
+        if not isinstance(scenes, list):
+            return
+        all_vo = ""
+        for s in scenes:
+            if isinstance(s, dict):
+                vo = s.get("voiceover_segment", "")
+                if isinstance(vo, str) and vo.strip() != "[silence]":
+                    all_vo += " " + vo.lower()
+        if not all_vo.strip():
+            return
+        clean = re.sub(r'\[[\w\s]+\]', '', all_vo)
+        has_thermal = any(re.search(r'\b' + re.escape(w) + r'\b', clean) for w in _THERMAL_WORDS)
+        has_tactile = any(re.search(r'\b' + re.escape(w) + r'\b', clean) for w in _TACTILE_WORDS)
+        has_olfactory = any(re.search(r'\b' + re.escape(w) + r'\b', clean) for w in _OLFACTORY_WORDS)
+        has_temporal = bool(_TEMPORAL_PATTERN.search(clean))
+        missing = []
+        if not has_thermal:
+            missing.append("THERMAL")
+        if not has_tactile:
+            missing.append("TACTILE")
+        if not has_olfactory:
+            missing.append("OLFACTORY")
+        if not has_temporal:
+            missing.append("TEMPORAL FRESHNESS")
+        if missing:
+            self._warn("voiceover.sensory_channels", f"Missing channels: {', '.join(missing)}", suggestion="Each channel must appear in ≥1 voiceover_segment")
+
+    def _validate_sp_curve_rules(self) -> None:
+        """Advanced SP curve rules: peak position, adjacency, post-peak drop."""
+        scenes = self._data.get("scenes", [])
+        if not isinstance(scenes, list):
+            return
+        sp_vals = []
+        for s in scenes:
+            if isinstance(s, dict):
+                sp = s.get("sensory_pressure")
+                if sp is not None:
+                    try:
+                        sp_vals.append(int(sp))
+                    except (ValueError, TypeError):
+                        sp_vals.append(0)
+                else:
+                    sp_vals.append(0)
+        if not sp_vals or max(sp_vals) == 0:
+            return
+        total = len(sp_vals)
+
+        # SP peak must be in last third
+        peak_idx = sp_vals.index(max(sp_vals))
+        last_third_start = total * 2 // 3
+        if peak_idx < last_third_start and max(sp_vals) >= 9:
+            self._warn("scenes.sensory_pressure", f"Peak SP at Scene {peak_idx+1} — should be in last third (Scene {last_third_start+1}+)")
+
+        # SP 9-10 not adjacent
+        for i in range(len(sp_vals) - 1):
+            if sp_vals[i] >= 9 and sp_vals[i+1] >= 9:
+                self._warn(f"scenes.sensory_pressure", f"SP 9+ adjacent: Scene {i+1} ({sp_vals[i]}) and Scene {i+2} ({sp_vals[i+1]})")
+
+        # After peak SP → next ≤ 4
+        if peak_idx < len(sp_vals) - 1:
+            next_sp = sp_vals[peak_idx + 1]
+            if max(sp_vals) >= 9 and next_sp > 4:
+                self._warn(f"scenes[{peak_idx+1}].sensory_pressure", f"Post-peak SP={next_sp} (should be ≤4 for contrast)")
+
+        # At least 1 SP 8-9 before money shot (ramp)
+        ms_idx = None
+        for i, s in enumerate(scenes):
+            if isinstance(s, dict) and isinstance(s.get("money_shot"), dict) and s["money_shot"].get("is_money_shot"):
+                ms_idx = i
+                break
+        if ms_idx is not None and ms_idx > 0:
+            has_ramp = any(8 <= sp <= 9 for sp in sp_vals[:ms_idx])
+            if not has_ramp:
+                self._warn("scenes.sensory_pressure", f"No SP 8-9 ramp before money_shot (Scene {ms_idx+1})")
+
+    # ========================================================================
+    # HELPERS
+    # ========================================================================
+
+    def _get_field(self, name: str) -> Optional[Any]:
+        val = self._data.get(name)
+        if val is None:
+            self._error(name, "Required field missing", code=f"MISSING_{name.upper()}")
+        return val
+
+    def _nested(self, obj: dict, key: str, default: Any = None) -> Any:
+        return obj.get(key, default) if isinstance(obj, dict) else default
+
+    def _require(self, obj: dict, key: str, path: str) -> bool:
+        if not self._nested(obj, key):
+            self._error(path, "Required and cannot be empty", code="EMPTY_FIELD")
+            return False
+        return True
+
+    def _check_enum(self, value: Any, valid: list, path: str) -> bool:
+        if value is None:
+            self._error(path, "Required field missing", code="MISSING_ENUM")
+            return False
+        if value not in valid:
+            if path in self._SOFT_ENUMS:
+                self._warn(path, f"Non-standard: '{value}'", suggestion=f"Standard: {', '.join(valid[:5])}...")
+                return True
+            self._error(path, f"Invalid: '{value}'", code="INVALID_ENUM", suggestion=f"Must be: {', '.join(valid)}")
+            return False
+        return True
+
+    def _error(self, field: str, message: str, code: str = "", suggestion: str = "") -> None:
+        self._errors.append(ValidationError(field=field, message=message, severity="error", code=code, suggestion=suggestion))
+
+    def _warn(self, field: str, message: str, suggestion: str = "") -> None:
+        self._warnings.append(ValidationError(field=field, message=message, severity="warning", suggestion=suggestion))
+
+    def _build_summary(self) -> Dict[str, Any]:
+        """Build minimal validation summary for backward compat."""
+        meta = self._data.get("metadata", {})
+        concept = meta.get("concept", {}) if isinstance(meta, dict) else {}
+        light = self._data.get("lighting_master", {})
+        scenes = self._data.get("scenes", [])
         return {
             "atmosphere_mode": self._data.get("atmosphere_mode", "CINEMATIC"),
-            "lighting_preset": lighting.get("preset", ""),
-            "category": concept.get("category", ""),
-            "food_material": concept.get("food_material", ""),
-            "scene_count": last_scene_num,
-            "loop_strategy": f"COMPLEMENTARY (Scene 1: {scene1_movement}, Scene {last_scene_num}: {last_scene_movement})"
+            "lighting_preset": light.get("preset", "") if isinstance(light, dict) else "",
+            "category": concept.get("category", "") if isinstance(concept, dict) else "",
+            "food_material": concept.get("food_material", "") if isinstance(concept, dict) else "",
+            "scene_count": len(scenes) if isinstance(scenes, list) else 0,
         }
 
 
 # ============================================================================
-# CONVENIENCE FUNCTION — Швидкий доступ
+# CONVENIENCE FUNCTION
 # ============================================================================
 
-def validate_gen1(data: Dict[str, Any], strict_mode: bool = True) -> ValidationResult:
-    """
-    Зручна функція для валідації GEN1 виходу.
+def validate_gen1(data: Dict[str, Any], strict_mode: bool = False) -> ValidationResult:
+    """Validate GEN1 JSON output.
 
     Args:
-        data: GEN1 JSON вихід як словник
-        strict_mode: Якщо True, warnings також враховуються
+        data: GEN1 JSON as dict.
+        strict_mode: If True, warnings also block. Default False.
 
     Returns:
-        ValidationResult
-
-    Example:
-        import json
-
-        with open("gen1_output.json") as f:
-            gen1_data = json.load(f)
-
-        result = validate_gen1(gen1_data)
-
-        if result.passed:
-            print("✅ Ready for GEN2")
-            print(f"Handoff: {result.gen2_handoff}")
-        else:
-            print("❌ Validation failed:")
-            for error in result.errors:
-                print(f"  - {error}")
+        ValidationResult with errors, warnings, corrected_data.
     """
-    validator = Gen1Validator(strict_mode=strict_mode)
-    return validator.validate(data)
+    return Gen1Validator(strict_mode=strict_mode).validate(data)
 
 
 # ============================================================================
@@ -3464,34 +1218,18 @@ def validate_gen1(data: Dict[str, Any], strict_mode: bool = True) -> ValidationR
 # ============================================================================
 
 __all__ = [
-    # Main
     "Gen1Validator",
     "ValidationResult",
     "ValidationError",
     "validate_gen1",
-
-    # Enums (for external validation/testing)
-    "Category",
-    "HookType",
-    "PsychologicalTrigger",
-    "LightingPreset",
-    "AtmosphereMode",
-    "SonicHookType",
-    "VolumeLevel",
-    "EasterEggVisibility",
-    "NarrativePurpose",
-    "ReferenceHint",
-    "EnergyLevel",
-
-    # Constants
-    "BANNED_FIRST_WORDS",
-    "BANNED_CAMERA_MOVEMENTS",
-    "ALL_ELEVENLABS_TAGS",
-
-    # Banlist functions
+    # Banlist
     "get_banlist",
     "reload_banlist",
     "get_banned_first_words",
     "get_ai_markers",
     "get_fillers",
+    # Constants
+    "BANNED_CAMERA_MOVEMENTS",
+    "ALL_ELEVENLABS_TAGS",
+    "VALID_CAMERA_MOVEMENTS",
 ]

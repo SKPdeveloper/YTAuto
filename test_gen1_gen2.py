@@ -335,7 +335,7 @@ async def run_gen1(client, model: str, gen1_system_prompt: str, topic: str | Non
             contents=user_prompt,
             config=types.GenerateContentConfig(
                 system_instruction=gen1_system_prompt,
-                temperature=0.7,
+                temperature=1.0,
                 max_output_tokens=16384,
                 response_mime_type="application/json",
             ),
