@@ -9,7 +9,7 @@ Automatically schedules video publications based on:
 Edge cases handled:
 - Empty queue: starts from next available weekday
 - Today after posting time: starts from tomorrow
-- Weekends: skips to Monday
+- Sunday: skips to Monday (Saturday has a slot)
 - Past entries in queue: ignored when finding next slot
 """
 
@@ -29,14 +29,17 @@ from pydantic import BaseModel, Field
 # ============================================================================
 
 # Default posting schedule (24h format, Eastern Time)
+# Rationale: 15:00-15:30 ET hits dinner-planning window for food content,
+# covers both coasts (3 PM ET = 12 PM PT), and aligns with Buffer/Sprout Social
+# peak data. Saturday 12:00 captures weekend lunch scrolling (+12% engagement).
 DEFAULT_SCHEDULE = {
-    "monday": "16:00",     # 4 PM
+    "monday": "15:30",     # 3:30 PM — pre-load before 4 PM peak
     "tuesday": "15:00",    # 3 PM
-    "wednesday": "16:00",  # 4 PM
+    "wednesday": "15:30",  # 3:30 PM — pre-load before 4 PM peak
     "thursday": "15:00",   # 3 PM
     "friday": "15:00",     # 3 PM
-    "saturday": None,      # No posting
-    "sunday": None,        # No posting
+    "saturday": "12:00",   # 12 PM — weekend lunch scrolling
+    "sunday": None,        # No posting (worst day per Sprout Social)
 }
 
 WEEKDAY_NAMES = [

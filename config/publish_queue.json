@@ -5,12 +5,12 @@
       "channel_id": "glaze_city",
       "timezone": "America/New_York",
       "schedule": {
-        "monday": "16:00",
+        "monday": "15:30",
         "tuesday": "15:00",
-        "wednesday": "16:00",
+        "wednesday": "15:30",
         "thursday": "15:00",
         "friday": "15:00",
-        "saturday": null,
+        "saturday": "12:00",
         "sunday": null
       },
       "entries": [
