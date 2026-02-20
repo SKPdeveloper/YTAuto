@@ -115,6 +115,8 @@ _THERMAL_HOOK_WORDS: set = TEMPERATURE_WORDS | {
     "degrees", "celsius", "fahrenheit", "boiling", "sizzling", "melting",
     "burning", "scalding", "icy", "chilled", "molten", "bubbling",
     "fresh", "crisp",
+    # Expanded thermal variants (from _TEXTURE_TO_TEMPS) — prevent double-prepend
+    "just", "cracking", "damp", "body", "room", "forty",
 }
 
 # Reversal-safe motion elements for Scene N
@@ -185,6 +187,19 @@ _TEXTURE_TO_TEMP: dict = {
     "gooey": "Warm.",
     "silky": "Cool.",
     "crunchy-wet": "Cool.",
+}
+
+# Expanded thermal variants for concept_hash rotation (anti-"Still warm." lock)
+_TEXTURE_TO_TEMPS: dict = {
+    "crispy": ["Still warm.", "Just set.", "The heat.", "Fresh out."],
+    "crunchy": ["Still warm.", "Cracking.", "Just cooled.", "The heat."],
+    "brittle": ["Cool.", "Room temperature.", "Forty degrees.", "Chilled."],
+    "creamy": ["Cold.", "Chilled.", "Still soft.", "Just poured."],
+    "chewy": ["Warm.", "Still pulling.", "Just stretched.", "Body heat."],
+    "smooth": ["Cool.", "Room temperature.", "Just mixed.", "Forty degrees."],
+    "gooey": ["Warm.", "Still dripping.", "The heat.", "Just melted."],
+    "silky": ["Cool.", "Just set.", "Chilled.", "Still smooth."],
+    "crunchy-wet": ["Cool.", "Damp.", "Still dripping.", "Just soaked."],
 }
 
 
@@ -376,6 +391,8 @@ def autocorrect_gen1(data: Dict[str, Any]) -> Tuple[Dict[str, Any], List[AutoFix
     _fix_narrator_vo_sync(scenes, w)
     _fix_scene_durations(scenes, w)
     _fix_narrator_word_count(scenes, w)     # Truncate overflow AFTER durations fixed
+    _fix_dangling_narrator_endings(d, scenes, w)  # P0-2: standalone dangling strip (after truncation)
+    _flag_semantic_truncation(d, scenes, w)        # P1: flag transitive verb truncation
     _fix_scene_n_constraints(d, scenes, w)
     _fix_scene_n_minus_1_vo(d, scenes, w)
     _fix_vo_trigger_injection(d, scenes, w)
@@ -386,6 +403,9 @@ def autocorrect_gen1(data: Dict[str, Any]) -> Tuple[Dict[str, Any], List[AutoFix
     _fix_share_trigger_rotation(d, w)       # Anti-template-lock: "[qualifier] [identity]"
     _fix_series_hook(d, w)                  # P0-2: series_hook missing fallback
     _fix_grey_dominant_color(d, scenes, w)  # OPT: grey→warm color in food scenes
+    _fix_lighting_rotation(d, w)                  # Anti-template-lock: NIGHT_NEON/MORNING_GOLDEN
+    _fix_warm_food_warm_light_collision(d, w)     # P1: warm food + warm light = visual monotony (AFTER rotation)
+    _fix_required_top_level_fields(d, scenes, w)  # P0: loop, first_frame, temp_contrast fallbacks
     _fix_energy_floor(d, scenes, w)        # P0: consecutive LOW ban + max 1 LOW + ramp
     _fix_hook_first_words_sync(d, scenes, w)  # P0: hook.first_words ↔ narrator_script sync
     _fix_full_script_rebuild(d, scenes, w)  # ALWAYS last — rebuilds from segments
@@ -1078,9 +1098,11 @@ def _fix_thermal_first_word(d: dict, scenes: list, w: list) -> None:
     if re.match(r"^this\s+\w+\s+(isn['\u2019]t|is|was|has|looks|smells|tastes)\b", narrator.strip(), re.IGNORECASE):
         return
 
-    # Determine temperature word from texture group
+    # Determine temperature word from texture group + concept_hash for variety
     texture = _get_texture_group(d)
-    temp_sentence = _TEXTURE_TO_TEMP.get(texture, "Still warm.")
+    h = _concept_hash(d)
+    temps = _TEXTURE_TO_TEMPS.get(texture, ["Still warm.", "The heat.", "Fresh out.", "Just set."])
+    temp_sentence = temps[h % len(temps)]
 
     # Prepend temperature sentence
     new_narrator = f"{temp_sentence} {narrator.strip()}"
@@ -1465,6 +1487,103 @@ def _fix_narrator_word_count(scenes: list, w: list) -> None:
         ))
 
 
+# Dangling words for standalone strip (broader than truncation-only set)
+_DANGLING_ENDINGS = {
+    # Articles & determiners (NOT "that" — often a pronoun object: "Did you hear that?")
+    "a", "an", "the", "this", "these", "those",
+    # Prepositions
+    "of", "in", "on", "at", "to", "for", "by", "with", "from",
+    "about", "into", "through", "between", "under", "over", "like",
+    # Conjunctions
+    "and", "or", "but", "nor", "yet", "so",
+    # Linking/auxiliary verbs
+    "is", "are", "was", "were", "be", "been",
+    "has", "have", "had", "do", "does",
+    # Modal verbs
+    "would", "could", "should", "can", "may", "might", "will",
+    # Possessives
+    "my", "your", "his", "her", "its", "our", "their",
+}
+
+# Transitive verbs that expect an object — semantic truncation flag
+_TRANSITIVE_VERBS = {
+    "asked", "smells", "made", "built", "found", "gave", "took", "saw",
+    "feels", "looks", "sounds", "needs", "wants", "gets", "keeps",
+    "leaves", "brings", "holds", "sends", "tells", "shows", "makes",
+    "takes", "gives", "knows", "sees", "hears", "means", "turns",
+    # Sensory verbs (common VO truncation targets)
+    "tastes", "watches", "reaches", "touches", "covers", "fills",
+    "catches", "remembers", "measures", "carries", "produces",
+}
+
+
+def _fix_dangling_narrator_endings(d: dict, scenes: list, w: list) -> None:
+    """Strip dangling prepositions/articles from ALL narrator_scripts, regardless of word count."""
+    for i, scene in enumerate(scenes):
+        if not isinstance(scene, dict):
+            continue
+        narrator = scene.get("narrator_script", "")
+        if not isinstance(narrator, str) or not narrator.strip():
+            continue
+
+        words = narrator.strip().split()
+        if len(words) < 2:
+            continue
+
+        last_word = words[-1].rstrip(".,!?;:")
+        if last_word.lower() not in _DANGLING_ENDINGS:
+            continue
+
+        # Strip the dangling word
+        original = narrator
+        kept = words[:-1]
+        while len(kept) > 1 and kept[-1].rstrip(".,!?;:").lower() in _DANGLING_ENDINGS:
+            kept.pop()
+        fixed = " ".join(kept)
+        if fixed and fixed[-1] not in ".!?":
+            fixed = fixed.rstrip(",;:—–-") + "."
+        scene["narrator_script"] = fixed
+
+        # Also fix voiceover_segment
+        vo_seg = scene.get("voiceover_segment", "")
+        if isinstance(vo_seg, str) and vo_seg.strip() and vo_seg.strip() != "[silence]":
+            tag_match = re.match(r'\[[\w\s]+\]', vo_seg.strip())
+            leading_tag = tag_match.group(0) if tag_match else "[whispers]"
+            scene["voiceover_segment"] = f"{leading_tag} {fixed}"
+
+        sn = scene.get("scene_number", i + 1)
+        w.append(AutoFixWarning(
+            f"scenes[{sn}].narrator_script",
+            f"Dangling '{last_word}' stripped: '{original}' → '{fixed}'",
+        ))
+
+
+def _flag_semantic_truncation(d: dict, scenes: list, w: list) -> None:
+    """Flag VO segments that end with a transitive verb (semantic truncation).
+
+    Heuristic: if narrator_script has ≤5 words and ends with a transitive verb,
+    it's likely been truncated to lose its object. Flag as warning for review.
+    """
+    for i, scene in enumerate(scenes):
+        if not isinstance(scene, dict):
+            continue
+        narrator = scene.get("narrator_script", "")
+        if not isinstance(narrator, str) or not narrator.strip():
+            continue
+
+        words = narrator.strip().split()
+        if len(words) > 5 or len(words) < 2:
+            continue
+
+        last_word = words[-1].rstrip(".,!?;:").lower()
+        if last_word in _TRANSITIVE_VERBS:
+            sn = scene.get("scene_number", i + 1)
+            w.append(AutoFixWarning(
+                f"scenes[{sn}].narrator_script",
+                f"Possible semantic truncation: '{narrator}' ends with transitive verb '{last_word}' — missing object?",
+            ))
+
+
 def _fix_warning_line_format_rotation(d: dict, scenes: list, w: list) -> None:
     """Rotate warning_line away from Format A if Gemini defaults to it.
 
@@ -1596,22 +1715,52 @@ _ST_ALTERNATIVES = [
 
 def _fix_completion_bait_rotation(d: dict, w: list) -> None:
     """Rotate completion_bait.vo_trigger away from 'One more [noun]' lock.
+    Also creates missing completion_bait object with sensible defaults.
 
     Gemini defaults to 'One more slice/layer/piece' — deterministic rotation
     via concept-hash selects from 5 alternatives.
     """
     cb = d.get("completion_bait")
-    if not isinstance(cb, dict):
-        return
-    vo_trigger = cb.get("vo_trigger", "")
-    if not isinstance(vo_trigger, str) or not vo_trigger.strip():
-        return
-    if not _ONE_MORE_PATTERN.match(vo_trigger.strip()):
-        return  # Not locked — already diverse
-
     h = _concept_hash(d)
     food = _get_food_name(d) or "this"
     element = _get_subject(d) or "inside"
+
+    if not isinstance(cb, dict):
+        # Missing entirely — create from scratch
+        scenes = d.get("scenes", [])
+        ms_scene = None
+        for s in scenes:
+            if isinstance(s, dict) and isinstance(s.get("money_shot"), dict) and s["money_shot"].get("is_money_shot"):
+                ms_scene = s.get("scene_number")
+                break
+        bait_scene = max(1, (ms_scene or 5) - 2)
+        template = _CB_ALTERNATIVES[h % len(_CB_ALTERNATIVES)]
+        vo_trigger = template.format(food=food, element=element)
+        d["completion_bait"] = {
+            "scene_number": bait_scene,
+            "technique": "VO_PROMISE",
+            "vo_trigger": vo_trigger,
+            "resolution_scene": ms_scene or bait_scene + 2,
+        }
+        w.append(AutoFixWarning(
+            "completion_bait",
+            f"Auto-created missing completion_bait at Scene {bait_scene}: '{vo_trigger}'",
+        ))
+        return
+
+    vo_trigger = cb.get("vo_trigger", "")
+    if not isinstance(vo_trigger, str) or not vo_trigger.strip():
+        # Present but empty vo_trigger — fill it
+        template = _CB_ALTERNATIVES[h % len(_CB_ALTERNATIVES)]
+        cb["vo_trigger"] = template.format(food=food, element=element)
+        w.append(AutoFixWarning(
+            "completion_bait.vo_trigger",
+            f"Auto-filled empty vo_trigger: '{cb['vo_trigger']}'",
+        ))
+        return
+
+    if not _ONE_MORE_PATTERN.match(vo_trigger.strip()):
+        return  # Not locked — already diverse
 
     template = _CB_ALTERNATIVES[h % len(_CB_ALTERNATIVES)]
     new_trigger = template.format(food=food, element=element)
@@ -1662,22 +1811,58 @@ def _fix_share_trigger_rotation(d: dict, w: list) -> None:
     ))
 
 
+_SERIES_HOOK_TECHNIQUES = [
+    "UNANSWERED_QUESTION",
+    "COLLECTION_TRIGGER",
+    "ARCHITECT_TEASE",
+    "WORLD_REFERENCE",
+]
+
+_SERIES_HOOK_ELEMENTS = {
+    "UNANSWERED_QUESTION": "What else did The Architect build?",
+    "COLLECTION_TRIGGER": "Glaze City collection — more to explore",
+    "ARCHITECT_TEASE": "Architect holding blueprints of a different food structure",
+    "WORLD_REFERENCE": "Brief VO mention of another Glaze City structure nearby",
+}
+
+
 def _fix_series_hook(d: dict, w: list) -> None:
-    """Ensure series_identity.series_hook exists (Gemini intermittently drops it)."""
+    """Ensure series_identity.series_hook exists AND rotate technique via concept hash.
+
+    Gemini template-locks to UNANSWERED_QUESTION — deterministic rotation
+    via concept-hash selects from 4 techniques.
+    """
     si = d.get("series_identity")
     if not isinstance(si, dict):
         return
+
+    h = _concept_hash(d)
+    target_tech = _SERIES_HOOK_TECHNIQUES[h % len(_SERIES_HOOK_TECHNIQUES)]
+
     sh = si.get("series_hook")
-    if isinstance(sh, dict) and sh.get("technique"):
-        return  # already present and populated
-    si["series_hook"] = {
-        "technique": "UNANSWERED_QUESTION",
-        "element": "Brief VO hint at another Glaze City structure",
-        "placement": "Last 2 seconds",
-    }
+    if not isinstance(sh, dict) or not sh.get("technique"):
+        # Missing entirely — create with rotated technique
+        si["series_hook"] = {
+            "technique": target_tech,
+            "element": _SERIES_HOOK_ELEMENTS[target_tech],
+            "placement": "Last 2 seconds",
+        }
+        w.append(AutoFixWarning(
+            "series_identity.series_hook",
+            f"Auto-filled missing series_hook → {target_tech}",
+        ))
+        return
+
+    current = sh.get("technique", "")
+    if current == target_tech:
+        return  # already the right technique for this concept
+
+    old_tech = current
+    sh["technique"] = target_tech
+    sh["element"] = _SERIES_HOOK_ELEMENTS.get(target_tech, sh.get("element", ""))
     w.append(AutoFixWarning(
         "series_identity.series_hook",
-        "Auto-filled missing series_hook → UNANSWERED_QUESTION",
+        f"Series hook rotation: {old_tech} → {target_tech}",
     ))
 
 
@@ -1716,6 +1901,170 @@ def _fix_grey_dominant_color(d: dict, scenes: list, w: list) -> None:
             w.append(AutoFixWarning(
                 f"scenes[S{sn}].gen2_visual_params.dominant_color",
                 f"Grey '{old_val}' → '{replacement_color}' (appetite-suppressing color in food scene)"))
+
+
+_WARM_COLOR_WORDS = {
+    "golden", "amber", "brown", "honey", "butter", "caramel",
+    "copper", "bronze", "toffee", "cinnamon", "maple", "ochre",
+    "burnt", "russet", "sienna", "tan", "wheat", "biscuit",
+}
+
+_WARM_LIGHTING_PRESETS = {
+    "MORNING_GOLDEN", "SUNSET_DRAMATIC", "CANDLELIT_WARM",
+    "AFTERNOON_WARM",
+}
+
+_COLD_LIGHTING_ALTERNATIVES = [
+    "MOONLIT_SILVER",
+    "BLUE_HOUR",
+    "OVERCAST_SOFT",
+    "TWILIGHT_PURPLE",
+    # NIGHT_NEON excluded — it's a Gemini default we rotate AWAY from
+]
+
+
+# All valid lighting presets for rotation
+_ALL_LIGHTING_PRESETS = [
+    "MORNING_GOLDEN", "SUNSET_DRAMATIC", "BLUE_HOUR", "NIGHT_NEON",
+    "TWILIGHT_PURPLE", "OVERCAST_SOFT", "CANDLELIT_WARM", "MOONLIT_SILVER",
+]
+
+# Presets Gemini over-uses (template-lock targets)
+_DEFAULT_LIGHTING_PRESETS = {
+    "NIGHT_NEON", "MORNING_GOLDEN",
+}
+
+
+def _fix_lighting_rotation(d: dict, w: list) -> None:
+    """Rotate lighting_master.preset away from Gemini defaults via concept_hash.
+
+    Gemini template-locks to NIGHT_NEON (industrial/cold) or MORNING_GOLDEN (warm).
+    Different concepts should get different lighting for batch variety.
+    Runs BEFORE _fix_warm_food_warm_light_collision (which handles warm food specifically).
+    """
+    light = d.get("lighting_master")
+    if not isinstance(light, dict):
+        return
+    preset = light.get("preset", "")
+    if not isinstance(preset, str):
+        return
+    if preset.upper() not in _DEFAULT_LIGHTING_PRESETS:
+        return  # Already non-default — skip
+
+    h = _concept_hash(d)
+    target = _ALL_LIGHTING_PRESETS[h % len(_ALL_LIGHTING_PRESETS)]
+    if target == preset.upper():
+        # Hash landed on same preset — pick next one
+        target = _ALL_LIGHTING_PRESETS[(h + 1) % len(_ALL_LIGHTING_PRESETS)]
+
+    old = preset
+    light["preset"] = target
+    w.append(AutoFixWarning(
+        "lighting_master.preset",
+        f"Lighting rotation: '{old}' → '{target}' (anti-default lock)",
+    ))
+
+
+def _fix_warm_food_warm_light_collision(d: dict, w: list) -> None:
+    """Force cold/neutral lighting when food color palette is warm.
+
+    Warm food + warm light = visual monotony (golden-on-golden).
+    If food has 2+ warm color_keywords AND lighting is warm → rotate to cold.
+    """
+    fi = d.get("food_identity")
+    if not isinstance(fi, dict):
+        return
+    color_kws = fi.get("color_keywords", [])
+    if not isinstance(color_kws, list):
+        return
+
+    warm_count = sum(
+        1 for kw in color_kws
+        if isinstance(kw, str) and any(wc in kw.lower() for wc in _WARM_COLOR_WORDS)
+    )
+    if warm_count < 2:
+        return  # Not enough warm colors to trigger
+
+    light = d.get("lighting_master")
+    if not isinstance(light, dict):
+        return
+    preset = light.get("preset", "")
+    if not isinstance(preset, str) or preset.upper() not in _WARM_LIGHTING_PRESETS:
+        return  # Already cold/neutral
+
+    h = _concept_hash(d)
+    new_preset = _COLD_LIGHTING_ALTERNATIVES[h % len(_COLD_LIGHTING_ALTERNATIVES)]
+    old_preset = preset
+    light["preset"] = new_preset
+    w.append(AutoFixWarning(
+        "lighting_master.preset",
+        f"Warm food + warm light collision: '{old_preset}' → '{new_preset}' (visual contrast)",
+    ))
+
+
+_LOOP_TECHNIQUES = [
+    "FOG_GATE", "OBJECT_WIPE", "MOTION_MATCH",
+    "PARTICLE_DISSOLVE", "TEXTURE_MORPH", "ZOOM_TUNNEL", "COLOR_SHIFT",
+]
+
+
+def _fix_required_top_level_fields(d: dict, scenes: list, w: list) -> None:
+    """Create missing required top-level fields that would crash the pipeline.
+
+    Fields: loop, first_frame_composition, temperature_contrast.
+    (completion_bait is handled by _fix_completion_bait_rotation)
+    """
+    food = _get_food_name(d) or "food"
+    subject = _get_subject(d) or "structure"
+    h = _concept_hash(d)
+
+    # --- loop ---
+    if not isinstance(d.get("loop"), dict):
+        tech = _LOOP_TECHNIQUES[h % len(_LOOP_TECHNIQUES)]
+        d["loop"] = {
+            "technique": tech,
+            "scene_n_exit": f"{food.capitalize()} texture fills frame completely",
+            "scene_1_entry": f"Same texture pulls back to reveal {subject}",
+            "bridge_sfx": "Ambient hum swelling into silence",
+        }
+        w.append(AutoFixWarning("loop", f"Auto-created missing loop → {tech}"))
+
+    # --- first_frame_composition ---
+    if not isinstance(d.get("first_frame_composition"), dict):
+        # Also check if Scene 1 has it nested
+        s1_ffc = None
+        if scenes and isinstance(scenes[0], dict):
+            s1_ffc = scenes[0].get("first_frame_composition")
+        if isinstance(s1_ffc, dict):
+            d["first_frame_composition"] = s1_ffc
+            w.append(AutoFixWarning("first_frame_composition",
+                "Promoted Scene 1 first_frame_composition to top level"))
+        else:
+            d["first_frame_composition"] = {
+                "dominant_subject": f"Macro {food} detail against {subject} backdrop",
+                "silhouette_clarity": "HIGH",
+                "pareidolia_element": f"{food.capitalize()} texture forming architectural shapes",
+            }
+            w.append(AutoFixWarning("first_frame_composition",
+                "Auto-created missing first_frame_composition"))
+
+    # --- temperature_contrast ---
+    if not isinstance(d.get("temperature_contrast"), dict):
+        fi = d.get("food_identity", {})
+        warm_foods = {"croissant", "waffle", "pancake", "donut", "bread", "pie",
+                      "cookie", "pretzel", "baklava", "churro", "bun", "pastry",
+                      "pizza", "soup", "coffee", "chocolate", "caramel", "honey",
+                      "honeycomb", "cinnamon", "toffee", "fudge"}
+        food_lower = food.lower()
+        is_warm_food = any(wf in food_lower for wf in warm_foods)
+        subj_temp = "WARM" if is_warm_food else "COLD"
+        bg_temp = "COLD" if is_warm_food else "WARM"
+        d["temperature_contrast"] = {
+            "subject_temp": subj_temp,
+            "background_temp": bg_temp,
+        }
+        w.append(AutoFixWarning("temperature_contrast",
+            f"Auto-created missing temperature_contrast: subject={subj_temp}, bg={bg_temp}"))
 
 
 def _fix_energy_floor(d: dict, scenes: list, w: list) -> None:

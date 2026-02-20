@@ -999,9 +999,31 @@ class Gen1Validator:
         cr = self._data.get("_concept_reasoning") or self._data.get("concept_reasoning")
         if not cr or (isinstance(cr, str) and not cr.strip()):
             self._warn("_concept_reasoning", "Missing or empty — required as first field")
+
+        # --- P0 Required fields (pipeline crash if missing) ---
+        loop = self._data.get("loop")
+        if not isinstance(loop, dict):
+            self._error("loop", "Missing loop object — pipeline cannot generate loop transition", code="MISSING_LOOP")
+        else:
+            for f in ("technique", "scene_n_exit", "scene_1_entry"):
+                if not loop.get(f):
+                    self._warn(f"loop.{f}", f"Missing '{f}'")
+
+        ffc = self._data.get("first_frame_composition")
+        if not isinstance(ffc, dict):
+            self._error("first_frame_composition", "Missing — thumbnail generator needs composition data", code="MISSING_FIRST_FRAME")
+        else:
+            for f in ("dominant_subject", "silhouette_clarity", "pareidolia_element"):
+                if not ffc.get(f):
+                    self._warn(f"first_frame_composition.{f}", f"Missing '{f}'")
+
+        tc = self._data.get("temperature_contrast")
+        if not isinstance(tc, dict):
+            self._error("temperature_contrast", "Missing — GEN2 needs global temperature guidance", code="MISSING_TEMP_CONTRAST")
+
         cb = self._data.get("completion_bait")
         if not isinstance(cb, dict):
-            self._warn("completion_bait", "Missing completion_bait object")
+            self._error("completion_bait", "Missing completion_bait object — no open loop for retention", code="MISSING_COMPLETION_BAIT")
         else:
             for f in ("scene_number", "technique", "vo_trigger"):
                 if not cb.get(f):

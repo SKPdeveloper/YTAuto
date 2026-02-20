@@ -1,6 +1,9 @@
 """
-Parallel Smoke Test: 3 GEN1 tests via Gemini API + Validator v2.1
+Parallel Smoke Test: 3 GEN1 tests via Gemini API + Validator v2.2
 Staggered API calls (10s delay), parallel validation.
+
+Naming: smoke{N}_{food}.json / smoke{N}_{food}_validated.json
+Counter persists in debug/test_outputs/.smoke_counter
 
 Usage:
     python -X utf8 run_smoke_parallel.py
@@ -28,6 +31,27 @@ CONFIG_DIR = PROJECT_ROOT / "config"
 GEN1_PROMPT_PATH = CONFIG_DIR / "GEN1.txt"
 BANLIST_PATH = CONFIG_DIR / "ban_list.txt"
 OUTPUT_DIR = PROJECT_ROOT / "debug" / "test_outputs"
+COUNTER_FILE = OUTPUT_DIR / ".smoke_counter"
+
+
+def _next_counter(count: int = 1) -> int:
+    """Read persistent counter, increment by count, return starting number."""
+    if COUNTER_FILE.exists():
+        try:
+            start = int(COUNTER_FILE.read_text().strip()) + 1
+        except (ValueError, IOError):
+            start = 1
+    else:
+        start = 1
+    COUNTER_FILE.write_text(str(start + count - 1), encoding="utf-8")
+    return start
+
+
+def _slugify_food(food_name: str) -> str:
+    """'Croissant Pastry' → 'croissant', 'Gummy Candy' → 'gummy'."""
+    if not food_name or food_name == "N/A":
+        return "auto"
+    return re.sub(r'[^a-z0-9]', '', food_name.lower().split()[0]) or "auto"
 
 
 def extract_json(text: str) -> dict:
@@ -69,20 +93,21 @@ CRITICAL: Follow the OUTPUT CONTRACT FOR GEN2 EXACTLY.
 Output ONLY valid JSON. Start with {{ and end with }}"""
 
 
-async def run_single_test(client, model, system_prompt, topic, test_name, delay_seconds):
+async def run_single_test(client, model, system_prompt, topic, test_num, delay_seconds):
     """Run a single smoke test with initial delay for API staggering."""
+    tag = f"smoke{test_num}"
     if delay_seconds > 0:
-        print(f"  [{test_name}] Waiting {delay_seconds}s before API call...")
+        print(f"  [{tag}] Waiting {delay_seconds}s before API call...")
         await asyncio.sleep(delay_seconds)
 
     sep = "=" * 70
     print(f"\n{sep}")
-    print(f"  SMOKE TEST: {test_name}")
+    print(f"  SMOKE TEST: {tag}")
     print(f"  Topic: {topic or 'AUTO'}")
     print(sep)
 
     user_prompt = build_user_prompt(topic)
-    print(f"  [{test_name}] Calling Gemini... ({len(system_prompt):,} chars system)")
+    print(f"  [{tag}] Calling Gemini... ({len(system_prompt):,} chars system)")
 
     t0 = time.time()
     try:
@@ -100,7 +125,7 @@ async def run_single_test(client, model, system_prompt, topic, test_name, delay_
             timeout=300,
         )
     except Exception as e:
-        print(f"  [{test_name}] API ERROR: {e}")
+        print(f"  [{tag}] API ERROR: {e}")
         return None
     api_time = time.time() - t0
 
@@ -113,24 +138,31 @@ async def run_single_test(client, model, system_prompt, topic, test_name, delay_
     try:
         raw_text = response.text
     except ValueError as e:
-        print(f"  [{test_name}] BLOCKED: {e}")
+        print(f"  [{tag}] BLOCKED: {e}")
         return None
 
     if not raw_text:
-        print(f"  [{test_name}] EMPTY response!")
+        print(f"  [{tag}] EMPTY response!")
         return None
 
-    print(f"  [{test_name}] API: {api_time:.1f}s | tokens: {prompt_tokens} in / {output_tokens} out | {len(raw_text):,} chars")
+    print(f"  [{tag}] API: {api_time:.1f}s | tokens: {prompt_tokens} in / {output_tokens} out | {len(raw_text):,} chars")
 
     # Parse JSON
     try:
         data = extract_json(raw_text)
     except json.JSONDecodeError as e:
-        print(f"  [{test_name}] JSON PARSE FAILED: {e}")
-        fail_path = OUTPUT_DIR / f"{test_name}_raw_fail.txt"
+        print(f"  [{tag}] JSON PARSE FAILED: {e}")
+        fail_path = OUTPUT_DIR / f"{tag}_auto_raw_fail.txt"
         fail_path.write_text(raw_text, encoding="utf-8")
         print(f"  Saved raw text: {fail_path}")
         return None
+
+    # Build final test name from food
+    food_obj = data.get("food_identity", {})
+    food_slug = _slugify_food(food_obj.get("primary_food", "")) if isinstance(food_obj, dict) else "auto"
+    if topic and not food_slug:
+        food_slug = re.sub(r'[^a-z0-9]', '', topic.lower().split()[0]) or "auto"
+    test_name = f"smoke{test_num}_{food_slug}"
 
     # Save raw JSON
     json_path = OUTPUT_DIR / f"{test_name}.json"
@@ -142,11 +174,10 @@ async def run_single_test(client, model, system_prompt, topic, test_name, delay_
     concept = meta.get("concept", {})
     scenes = data.get("scenes", [])
     hook = data.get("hook", {})
-    food = data.get("food_identity", {})
     arch = data.get("architectural_identity", {})
     print(f"  [{test_name}] Subject: {concept.get('subject', 'N/A')}")
     print(f"  [{test_name}] Scenes: {len(scenes)} | Hook: {hook.get('type', 'N/A')}")
-    print(f"  [{test_name}] Food: {food.get('primary_food', 'N/A')} | Arch: {arch.get('style_code', 'N/A')}")
+    print(f"  [{test_name}] Food: {food_obj.get('primary_food', 'N/A') if isinstance(food_obj, dict) else 'N/A'} | Arch: {arch.get('style_code', 'N/A')}")
 
     # Scene listing
     for s in scenes:
@@ -189,12 +220,14 @@ async def run_single_test(client, model, system_prompt, topic, test_name, delay_
         for w in validation_warnings:
             print(f"    {w}")
 
-    # --- v9.2.0 BUG CHECKS ---
-    print(f"\n  [{test_name}] --- v9.2.0 BUG CHECKS ---")
+    # --- v9.4.0 BUG CHECKS (on corrected data) ---
+    print(f"\n  [{test_name}] --- v9.4.0 BUG CHECKS ---")
     bugs_found = []
+    cd = result.corrected_data or data  # Use corrected data if available
+    cd_scenes = cd.get("scenes", [])
 
     # BUG 1: energy arc — check if all VALLEY
-    energies = [s.get("energy_level", "") for s in scenes if isinstance(s, dict)]
+    energies = [s.get("energy_level", "") for s in cd_scenes if isinstance(s, dict)]
     mid_energies = energies[1:-1] if len(energies) > 2 else energies
     if mid_energies == ["MEDIUM", "LOW", "MEDIUM", "HIGH", "HIGH"] or mid_energies.count("LOW") == 0:
         pass  # not necessarily VALLEY
@@ -202,17 +235,17 @@ async def run_single_test(client, model, system_prompt, topic, test_name, delay_
     print(f"    BUG1 energy arc: {' → '.join(energies)} ({arc_shape})")
 
     # BUG 2: money shot position
-    ms_scenes = [s.get("scene_number") for s in scenes if isinstance(s, dict) and isinstance(s.get("money_shot"), dict) and s["money_shot"].get("is_money_shot")]
-    print(f"    BUG2 money_shot: scene(s) {ms_scenes} (N={len(scenes)})")
+    ms_scenes = [s.get("scene_number") for s in cd_scenes if isinstance(s, dict) and isinstance(s.get("money_shot"), dict) and s["money_shot"].get("is_money_shot")]
+    print(f"    BUG2 money_shot: scene(s) {ms_scenes} (N={len(cd_scenes)})")
 
     # BUG 3: completion bait formula
-    cb = data.get("completion_bait", {})
+    cb = cd.get("completion_bait", {})
     vo_trigger = cb.get("vo_trigger", "") if isinstance(cb, dict) else ""
     formula = "A" if vo_trigger.lower().startswith("one more") else "B-E"
     print(f"    BUG3 completion_bait: \"{vo_trigger[:50]}\" (formula {formula})")
 
     # BUG 4: warning_line format
-    wl = data.get("warning_line", "")
+    wl = cd.get("warning_line", "")
     if isinstance(wl, str) and wl.lower().startswith("don't"):
         wl_fmt = "A"
     elif isinstance(wl, str) and "i dare you" in wl.lower():
@@ -230,35 +263,45 @@ async def run_single_test(client, model, system_prompt, topic, test_name, delay_
     print(f"    BUG4 warning_line: \"{wl}\" (format {wl_fmt})")
 
     # BUG 6: title formula
-    title = data.get("youtube", {}).get("title", "") if isinstance(data.get("youtube"), dict) else ""
+    title = cd.get("youtube", {}).get("title", "") if isinstance(cd.get("youtube"), dict) else ""
     title_fmt = "FOOD_BUILD" if title.lower().startswith("i ") else "OTHER"
     print(f"    BUG6 title: \"{title[:50]}\" ({title_fmt})")
 
     # BUG 7: humor
-    humor = data.get("humor", [])
+    humor = cd.get("humor", [])
     humor_types = [h.get("humor_type", "") for h in humor if isinstance(h, dict)]
     print(f"    BUG7 humor: {len(humor)} beats, types={humor_types}")
 
     # BUG 9: controversy
-    cs = data.get("controversy_seed", {})
+    cs = cd.get("controversy_seed", {})
     ct = cs.get("technique", "") if isinstance(cs, dict) else ""
     print(f"    BUG9 controversy: {ct}")
 
     # BUG 10: series_hook
-    si = data.get("series_identity", {})
+    si = cd.get("series_identity", {})
     sh = si.get("series_hook", {}) if isinstance(si, dict) else {}
     sh_tech = sh.get("technique", "") if isinstance(sh, dict) else ""
     print(f"    BUG10 series_hook: {sh_tech}")
 
     # BUG 12: narrative_purpose — any invalid phase labels?
     invalid_purposes = {"ESCALATION", "CLIMAX", "TENSION", "SENSORY_BUILD", "AFTERMATH"}
-    found_invalid = [(s.get("scene_number"), s.get("narrative_purpose")) for s in scenes
+    found_invalid = [(s.get("scene_number"), s.get("narrative_purpose")) for s in cd_scenes
                      if isinstance(s, dict) and s.get("narrative_purpose") in invalid_purposes]
     print(f"    BUG12 narrative_purpose: {'CLEAN' if not found_invalid else f'INVALID: {found_invalid}'}")
 
     # BUG 14: on_screen_text Scene 1
-    ost1 = scenes[0].get("on_screen_text", "") if scenes else ""
+    ost1 = cd_scenes[0].get("on_screen_text", "") if cd_scenes else ""
     print(f"    BUG14 on_screen_text S1: \"{ost1}\"")
+
+    # BUG 15: lighting preset
+    cd_light = cd.get("lighting_master", {})
+    lighting_preset = cd_light.get("preset", "N/A") if isinstance(cd_light, dict) else "N/A"
+    print(f"    BUG15 lighting: {lighting_preset}")
+
+    # BUG 16: thermal hook (Scene 1 opening)
+    s1_narrator = cd_scenes[0].get("narrator_script", "") if cd_scenes else ""
+    thermal_hook = s1_narrator.split(".")[0].strip() + "." if s1_narrator else "N/A"
+    print(f"    BUG16 thermal_hook: \"{thermal_hook}\"")
 
     # Save validated version
     if result.corrected_data:
@@ -281,7 +324,7 @@ async def run_single_test(client, model, system_prompt, topic, test_name, delay_
         "tokens_in": prompt_tokens,
         "tokens_out": output_tokens,
         "subject": concept.get("subject", "N/A"),
-        "food": food.get("primary_food", "N/A"),
+        "food": food_obj.get("primary_food", "N/A") if isinstance(food_obj, dict) else "N/A",
         "bug_checks": {
             "energy_arc": arc_shape,
             "money_shot": ms_scenes,
@@ -293,6 +336,8 @@ async def run_single_test(client, model, system_prompt, topic, test_name, delay_
             "controversy": ct,
             "series_hook": sh_tech,
             "invalid_purposes": found_invalid,
+            "lighting": lighting_preset,
+            "thermal_hook": thermal_hook,
         }
     }
 
@@ -301,10 +346,11 @@ async def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    start_num = _next_counter(3)
     print("#" * 70)
-    print(f"  GEN1 v9.3.0 PARALLEL SMOKE TEST — {timestamp}")
+    print(f"  GEN1 v9.4.0 PARALLEL SMOKE TEST — {timestamp}")
     print(f"  Model: {settings.CONTENTBRAIN_MODEL}")
-    print(f"  Strategy: 3 tests, 10s stagger between API calls")
+    print(f"  Strategy: 3 tests (smoke{start_num}-{start_num+2}), 10s stagger")
     print("#" * 70)
 
     client = genai.Client(api_key=settings.GOOGLE_GEMINI_API_KEY)
@@ -313,19 +359,18 @@ async def main():
     gen1_prompt = load_prompt_with_banlist(GEN1_PROMPT_PATH, BANLIST_PATH)
     print(f"GEN1 prompt: {len(gen1_prompt):,} chars")
 
-    run_tag = datetime.now().strftime("%m%d_%H%M")
     tests = [
-        (f"smoke_{run_tag}_1", None, 0),
-        (f"smoke_{run_tag}_2", None, 10),
-        (f"smoke_{run_tag}_3", None, 20),
+        (start_num,     None, 0),
+        (start_num + 1, None, 10),
+        (start_num + 2, None, 20),
     ]
 
     t_start = time.time()
 
     # Launch all 3 concurrently (each with its own delay)
     tasks = [
-        run_single_test(client, model, gen1_prompt, topic, name, delay)
-        for name, topic, delay in tests
+        run_single_test(client, model, gen1_prompt, topic, num, delay)
+        for num, topic, delay in tests
     ]
     results_raw = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -353,8 +398,9 @@ async def main():
         )
         print(f"    energy={bc['energy_arc']} money={bc['money_shot']} "
               f"cb={bc['completion_formula']} wl={bc['warning_format']} "
-              f"title={bc['title_formula']} humor={bc['humor_count']}×{bc['humor_types']} "
-              f"contr={bc['controversy']} hook={bc['series_hook']} "
+              f"light={bc['lighting']} thermal=\"{bc['thermal_hook']}\"")
+        print(f"    contr={bc['controversy']} hook={bc['series_hook']} "
+              f"humor={bc['humor_count']}×{bc['humor_types']} "
               f"invalid_np={bc['invalid_purposes'] or 'CLEAN'}")
 
     passed = sum(1 for r in results if r["passed"])
@@ -379,6 +425,10 @@ async def main():
         print(f"    title_formulas: {title_fmts} — {'LOCKED' if len(set(title_fmts)) == 1 else 'VARIED ✓'}")
         print(f"    money_shots: {ms_pos} — {'LOCKED' if len(set(str(m) for m in ms_pos)) == 1 else 'VARIED ✓'}")
         print(f"    completion_bait: {cb_fmts} — {'LOCKED' if len(set(cb_fmts)) == 1 else 'VARIED ✓'}")
+        lightings = [r["bug_checks"]["lighting"] for r in results]
+        thermals = [r["bug_checks"]["thermal_hook"] for r in results]
+        print(f"    lighting: {lightings} — {'LOCKED' if len(set(lightings)) == 1 else 'VARIED ✓'}")
+        print(f"    thermal_hooks: {thermals} — {'LOCKED' if len(set(thermals)) == 1 else 'VARIED ✓'}")
         print(f"    all humor types: {all_humor} — unique: {len(set(all_humor))}/{len(all_humor)}")
 
     print("#" * 70)
