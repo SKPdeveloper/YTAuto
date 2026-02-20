@@ -1117,8 +1117,8 @@ def _fix_narrator_vo_sync(scenes: list, w: list) -> None:
         if not isinstance(vo_seg, str):
             vo_seg = ""
 
-        # Skip silence/empty
-        if vo_seg.strip() in ("", "[silence]"):
+        # Skip intentional silence only (not empty — empty needs Case 2)
+        if vo_seg.strip() == "[silence]":
             continue
 
         # Case 1: narrator empty, voiceover has content → fill narrator from VO
@@ -1496,8 +1496,15 @@ def _fix_warning_line_format_rotation(d: dict, scenes: list, w: list) -> None:
         new_wl = f"The architect says: nobody {action} the {element}."
     elif target == "D":
         verb_s = _CONSEQUENCE_VERBS_LIST[h % len(_CONSEQUENCE_VERBS_LIST)]
-        # Plural elements (walls, columns, stairs) need plural verb
-        verb = verb_s.rstrip("s") if element.endswith("s") else verb_s
+        # Plural elements (walls, columns, stairs) need base verb form
+        if element.endswith("s"):
+            # De-conjugate 3rd person: "watches"→"watch" (-es), "breathes"→"breathe" (-s)
+            if verb_s.endswith(("ches", "shes", "xes", "zes", "sses")):
+                verb = verb_s[:-2]
+            else:
+                verb = verb_s[:-1] if verb_s.endswith("s") else verb_s
+        else:
+            verb = verb_s
         new_wl = f"The {element} {verb}."
     else:  # F
         new_wl = f"Nobody warns you about the {element}."
@@ -1806,28 +1813,20 @@ def _fix_hook_first_words_sync(d: dict, scenes: list, w: list) -> None:
 
     # Check if narrator_script starts with first_words (case-insensitive)
     if not narrator_clean.lower().startswith(fw_clean.lower()):
-        # Fix: set narrator_script to first_words
-        # Preserve any additional text in narrator_script after replacing the start
-        old_narrator = narrator_clean
-        scene1["narrator_script"] = first_words.strip()
+        # Narrator may have been modified by prior fixes (thermal prefix, word count).
+        # Narrator is authoritative — update hook.first_words to match narrator start.
+        narrator_words = narrator_clean.split()
+        fw_word_count = len(first_words.strip().split())
+        new_fw = " ".join(narrator_words[:fw_word_count])
+        # Ensure ends with punctuation
+        if new_fw and new_fw[-1] not in ".!?":
+            new_fw = new_fw.rstrip(",;:—–-") + "."
+        hook["first_words"] = new_fw
         w.append(AutoFixWarning(
-            "scenes[S1].narrator_script",
-            f"Hook sync: narrator_script '{old_narrator}' didn't start with"
-            f" first_words '{first_words}' — replaced with first_words",
+            "hook.first_words",
+            f"Hook sync: updated first_words '{first_words}' → '{new_fw}'"
+            f" (narrator is authoritative after thermal/truncation fixes)",
         ))
-
-        # Also fix voiceover_segment to match
-        vo_seg = scene1.get("voiceover_segment", "")
-        if isinstance(vo_seg, str) and vo_seg.strip() and vo_seg.strip() != "[silence]":
-            # Extract leading tag
-            tag_match = re.match(r'(\[[\w\s]+\])\s*', vo_seg.strip())
-            leading_tag = tag_match.group(1) if tag_match else "[whispers]"
-            new_vo = f"{leading_tag} {first_words.strip()}"
-            scene1["voiceover_segment"] = new_vo
-            w.append(AutoFixWarning(
-                "scenes[S1].voiceover_segment",
-                f"Hook sync: rebuilt voiceover_segment to match first_words",
-            ))
 
 
 def _fix_full_script_rebuild(d: dict, scenes: list, w: list) -> None:

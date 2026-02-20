@@ -1178,8 +1178,12 @@ REQUIREMENTS:
             result: Gen2ValidationResult = python_validate_gen2(gen2_dict, gen1_dict, auto_fix=True)
 
             # Apply auto-fixes back to the Pydantic model (so merge uses fixed data)
-            if result.auto_fixes:
-                logger.info(f"[VAL_GEN2_PYTHON] Applied {len(result.auto_fixes)} auto-fixes (saved a full retry ~4400 tokens)")
+            # Gate: backpatch if EITHER autocorrect or validator made changes
+            if result.auto_fixes or ac_warnings:
+                if result.auto_fixes:
+                    logger.info(f"[VAL_GEN2_PYTHON] Applied {len(result.auto_fixes)} auto-fixes (saved a full retry ~4400 tokens)")
+                if ac_warnings:
+                    logger.info(f"[VAL_GEN2_PYTHON] Backpatching {len(ac_warnings)} autocorrect fixes to Pydantic model")
                 gen2_scenes = gen2_dict.get("scenes", [])
                 for i, scene_dict in enumerate(gen2_scenes):
                     if i < len(gen2_output.scenes):
@@ -1188,8 +1192,8 @@ REQUIREMENTS:
                             if hasattr(scene_model, key) and value is not None:
                                 try:
                                     setattr(scene_model, key, value)
-                                except (ValueError, TypeError):
-                                    pass  # Skip fields that can't be set directly
+                                except (ValueError, TypeError) as e:
+                                    logger.warning(f"[GEN2_BACKPATCH] Failed to set {key}={value!r}: {e}")
 
             # Save debug output
             debug_output = json.dumps(result.to_dict(), indent=2, ensure_ascii=False)

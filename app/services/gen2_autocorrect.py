@@ -28,7 +28,7 @@ from app.services.gen1_autocorrect import AutoFixWarning
 
 # Tier assignment rules: sensory_pressure ranges → visual_tier
 TIER_SP_MAP: Dict[str, Tuple[int, int]] = {
-    "TIER_2_HIGH_APPETITE": (8, 10),
+    "TIER_2_HIGH_APPETITE": (8, 9),
     "TIER_3_BALANCED": (5, 7),
     "TIER_4_ARCHITECTURE": (1, 4),
 }
@@ -49,12 +49,13 @@ TIER_WORD_RANGES: Dict[str, Tuple[int, int]] = {
 }
 
 # Body trigger channel → visual keywords to inject in Scene 1
+# Synced with gen2_validator.py BODY_TRIGGER_KEYWORDS — MUST match
 BODY_TRIGGER_KEYWORDS: Dict[str, List[str]] = {
-    "MOUTH": ["glistening", "moisture beading", "liquid sheen"],
-    "SKIN": ["condensation droplets", "heat shimmer", "frost crystals"],
-    "EARS": ["echoing space", "reverberating surface", "acoustic depth"],
-    "NOSE": ["steam wisps", "aromatic haze", "visible fragrance"],
-    "STOMACH": ["overflowing", "impossibly abundant", "stacked layers"],
+    "MOUTH": ["glistening", "wet surface", "moisture beading", "liquid sheen", "dripping"],
+    "SKIN": ["condensation droplets", "heat shimmer", "frost crystals", "temperature visible"],
+    "EARS": ["fracture lines", "cracking surface", "splitting edge", "crevices", "shattered"],
+    "NOSE": ["steam wisps rising", "visible vapor", "aromatic haze", "heat haze from surface"],
+    "STOMACH": ["overflowing", "impossibly abundant", "stacked layers", "towering pile"],
 }
 
 # Energy level → minimum motion_intensity floor
@@ -121,11 +122,11 @@ def autocorrect_gen2(
     w: List[AutoFixWarning] = []
     scenes = d.get("scenes", [])
 
-    # --- Order matters: tier assignment first (other fixes depend on it) ---
+    # --- Order matters: tier first, then inject keywords, then trim ---
     _fix_tier_assignment(d, scenes, gen1_data, w)
-    _fix_word_counts(d, scenes, w)
+    _fix_body_trigger_keywords(d, scenes, gen1_data, w)  # inject before trim
+    _fix_word_counts(d, scenes, w)                        # trim respects injected keywords
     _fix_inheritance_structure(d, scenes, w)
-    _fix_body_trigger_keywords(d, scenes, gen1_data, w)
     _fix_motion_intensity_floor(d, scenes, gen1_data, w)
     _fix_first_frame_composition(d, scenes, gen1_data, w)
     _fix_negative_prompt_tier_additions(d, scenes, w)
@@ -193,7 +194,7 @@ def _fix_word_counts(d: dict, scenes: list, w: list) -> None:
         if tier not in TIER_WORD_RANGES:
             continue
 
-        _, max_words = TIER_WORD_RANGES[tier]
+        min_words, max_words = TIER_WORD_RANGES[tier]
         prompt = scene.get("image_prompt", "")
         if not isinstance(prompt, str):
             continue
@@ -216,6 +217,10 @@ def _fix_word_counts(d: dict, scenes: list, w: list) -> None:
         trimmed = " ".join(kept)
         if not trimmed.rstrip().endswith((".", "!", "?")):
             trimmed = trimmed.rstrip(",;:—–- ") + "."
+
+        # Don't trim below minimum (especially for TIER_1 money shot at 130 words)
+        if len(trimmed.split()) < min_words:
+            continue
 
         scene["image_prompt"] = trimmed
         w.append(AutoFixWarning(
@@ -333,15 +338,19 @@ def _fix_motion_intensity_floor(d: dict, scenes: list, gen1_data: Optional[dict]
 
 
 def _fix_first_frame_composition(d: dict, scenes: list, gen1_data: Optional[dict], w: list) -> None:
-    """Fill Scene 1 first_frame_composition from GEN1 hook data if missing."""
+    """Fill missing Scene 1 first_frame_composition fields from GEN1 hook data.
+
+    Merges into existing dict (preserves fields like entry_type, temperature_mood,
+    body_trigger_visual that Gemini may have already populated).
+    """
     if not scenes or not gen1_data:
         return
     scene1 = scenes[0]
     if not isinstance(scene1, dict):
         return
     ffc = scene1.get("first_frame_composition")
-    if isinstance(ffc, dict) and ffc.get("hook_element") and ffc.get("focal_point"):
-        return  # already populated
+    if not isinstance(ffc, dict):
+        ffc = {}
 
     hook = gen1_data.get("hook", {})
     if not isinstance(hook, dict):
@@ -365,22 +374,33 @@ def _fix_first_frame_composition(d: dict, scenes: list, gen1_data: Optional[dict
     motion_elems = vc.get("motion_elements", []) if isinstance(vc, dict) else []
     motion_vis = motion_elems[0] if motion_elems and isinstance(motion_elems[0], str) else "subtle movement"
 
-    new_ffc = {
+    # Defaults for all 11 spec fields — only fill MISSING ones
+    defaults = {
         "hook_element": hook.get("type", "THE_IMPOSSIBLE"),
+        "entry_type": "MACRO_ENTRY",
         "focal_point": hook.get("first_frame_visual", "food-architecture fusion"),
         "foreground": fg_line,
         "background": bg,
         "color_anchor": color_anchor,
-        "safe_zone": "upper 60%",
+        "temperature_mood": "warm food against cool environment",
+        "body_trigger_visual": f"{hook.get('body_trigger', 'MOUTH')} emphasis",
+        "safe_zone": "Subject in upper 60%",
         "motion_visible": motion_vis,
         "scroll_stop": hook.get("scroll_stop_element", "impossible food structure"),
     }
 
-    scene1["first_frame_composition"] = new_ffc
-    w.append(AutoFixWarning(
-        "scenes[0].first_frame_composition",
-        "Auto-built from GEN1 hook, food_identity, architectural_identity",
-    ))
+    filled = []
+    for key, value in defaults.items():
+        if not ffc.get(key):
+            ffc[key] = value
+            filled.append(key)
+
+    if filled:
+        scene1["first_frame_composition"] = ffc
+        w.append(AutoFixWarning(
+            "scenes[0].first_frame_composition",
+            f"Filled {len(filled)} missing fields: {', '.join(filled)}",
+        ))
 
 
 def _fix_negative_prompt_tier_additions(d: dict, scenes: list, w: list) -> None:
@@ -407,7 +427,11 @@ def _fix_negative_prompt_tier_additions(d: dict, scenes: list, w: list) -> None:
     if not additions:
         return
 
-    gs["negative_prompt"] = f"{neg.rstrip(', ')}, {', '.join(sorted(additions))}"
+    sorted_adds = ", ".join(sorted(additions))
+    if neg.strip():
+        gs["negative_prompt"] = f"{neg.rstrip(', ')}, {sorted_adds}"
+    else:
+        gs["negative_prompt"] = sorted_adds
     w.append(AutoFixWarning(
         "global_settings.negative_prompt",
         f"Tier-specific additions: {', '.join(sorted(additions))}",
@@ -423,8 +447,8 @@ def _fix_visual_summary_defaults(d: dict, scenes: list, w: list) -> None:
 
     changed = False
 
-    # total_scenes
-    if not vs.get("total_scenes"):
+    # total_scenes — fix if missing, zero, or mismatched
+    if vs.get("total_scenes") != len(scenes):
         vs["total_scenes"] = len(scenes)
         changed = True
 
