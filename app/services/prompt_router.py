@@ -1177,23 +1177,16 @@ REQUIREMENTS:
             # Run Python validator with auto-fix (deterministic, ~5ms)
             result: Gen2ValidationResult = python_validate_gen2(gen2_dict, gen1_dict, auto_fix=True)
 
-            # Apply auto-fixes back to the Pydantic model (so merge uses fixed data)
-            # Gate: backpatch if EITHER autocorrect or validator made changes
+            # Store corrected dict for re-parsing in generate_full_project()
+            # Mirrors GEN1 pattern: self._last_corrected_gen1_data → re-parse before merge
+            # NOTE: We store the dict (not re-parse here) because gen2_output is a local
+            # parameter — reassigning it here won't propagate to the caller.
             if result.auto_fixes or ac_warnings:
                 if result.auto_fixes:
                     logger.info(f"[VAL_GEN2_PYTHON] Applied {len(result.auto_fixes)} auto-fixes (saved a full retry ~4400 tokens)")
                 if ac_warnings:
-                    logger.info(f"[VAL_GEN2_PYTHON] Backpatching {len(ac_warnings)} autocorrect fixes to Pydantic model")
-                gen2_scenes = gen2_dict.get("scenes", [])
-                for i, scene_dict in enumerate(gen2_scenes):
-                    if i < len(gen2_output.scenes):
-                        scene_model = gen2_output.scenes[i]
-                        for key, value in scene_dict.items():
-                            if hasattr(scene_model, key) and value is not None:
-                                try:
-                                    setattr(scene_model, key, value)
-                                except (ValueError, TypeError) as e:
-                                    logger.warning(f"[GEN2_BACKPATCH] Failed to set {key}={value!r}: {e}")
+                    logger.info(f"[VAL_GEN2_PYTHON] {len(ac_warnings)} autocorrect fixes stored for re-parse before merge")
+                self._last_corrected_gen2_data = gen2_dict
 
             # Save debug output
             debug_output = json.dumps(result.to_dict(), indent=2, ensure_ascii=False)
@@ -1538,11 +1531,14 @@ REQUIREMENTS:
                     ffc = gen2_scene.first_frame_composition
                     scene_first_frame = FirstFrameCompositionGEN2(
                         hook_element=ffc.hook_element or "",
+                        entry_type=getattr(ffc, 'entry_type', 'MACRO_ENTRY') or "MACRO_ENTRY",
                         focal_point=ffc.focal_point or "",
                         foreground=ffc.foreground or "",
                         background=ffc.background or "",
                         scale_proof=ffc.scale_proof or "",
                         color_anchor=ffc.color_anchor or "",
+                        temperature_mood=getattr(ffc, 'temperature_mood', '') or "",
+                        body_trigger_visual=getattr(ffc, 'body_trigger_visual', '') or "",
                         safe_zone=ffc.safe_zone or "",
                         motion_visible=ffc.motion_visible or "",
                         scroll_stop=ffc.scroll_stop or "",
@@ -1955,12 +1951,16 @@ REQUIREMENTS:
                         score=8, reason=gen1.viral_assessment.niche_alignment_verdict
                     ) if gen1.viral_assessment.niche_alignment_verdict else None,
                 ),
-                total_score=int(gen1.viral_assessment.overall_score * 60) + (
-                    24 if gen1.viral_assessment.mute_test_verdict else 0  # 3×8 for qualitative verdicts
-                ),
-                max_score=60 + (
-                    30 if gen1.viral_assessment.mute_test_verdict else 0  # 3×10
-                ),
+                total_score=int(gen1.viral_assessment.overall_score * 60) + 8 * sum([
+                    bool(gen1.viral_assessment.mute_test_verdict),
+                    bool(gen1.viral_assessment.categorization_verdict),
+                    bool(gen1.viral_assessment.niche_alignment_verdict),
+                ]),
+                max_score=60 + 10 * sum([
+                    bool(gen1.viral_assessment.mute_test_verdict),
+                    bool(gen1.viral_assessment.categorization_verdict),
+                    bool(gen1.viral_assessment.niche_alignment_verdict),
+                ]),
                 viral_probability=self._get_viral_probability(gen1.viral_assessment.overall_score),
                 viral_reasoning="; ".join(gen1.viral_assessment.strength_points[:2]) if gen1.viral_assessment.strength_points else "Strong hook combined with engaging visuals",
                 weak_points=gen1.viral_assessment.weak_points or [],
@@ -2149,6 +2149,49 @@ REQUIREMENTS:
 
         # ===== EASTER EGG VALIDATION (optional in v8.0.0) =====
         # easter_egg may be empty when GEN1 v8.0.0 uses replay_hooks instead
+
+        # ===== AUTOCORRECT-GUARANTEED FIELDS (warnings only) =====
+        warnings = []
+
+        # Top-level fields that autocorrects should guarantee
+        if not project.warning_line:
+            warnings.append("warning_line (GEN1 autocorrect should provide)")
+        if not project.loop or not project.loop.connection:
+            warnings.append("loop.connection (missing loop technique)")
+        if project.audio:
+            if not project.audio.sonic_hook:
+                warnings.append("audio.sonic_hook")
+            if not project.audio.foley_palette:
+                warnings.append("audio.foley_palette")
+            if not project.audio.sfx_per_scene:
+                warnings.append("audio.sfx_per_scene (empty list)")
+        if not project.visual_summary:
+            warnings.append("visual_summary (GEN2 should provide)")
+        if project.replay_hooks is not None and not isinstance(project.replay_hooks, list):
+            warnings.append("replay_hooks (expected list)")
+
+        # Scene-level checks for autocorrect-guaranteed fields
+        for scene in project.scenes:
+            sn = scene.scene_number
+            narrative = getattr(scene, 'narrative_purpose', '')
+            is_special = narrative in ('AERIAL', 'LOOP_CLOSE')
+
+            if not is_special:
+                if not scene.voiceover and not scene.voiceover_segment:
+                    warnings.append(f"scene_{sn}.voiceover (empty for non-special scene)")
+            if not scene.on_screen_text:
+                warnings.append(f"scene_{sn}.on_screen_text (mute-friendly requirement)")
+            if not scene.motion_elements:
+                warnings.append(f"scene_{sn}.motion_elements (GEN2 autocorrect should pad)")
+            if not scene.visual_tier:
+                warnings.append(f"scene_{sn}.visual_tier (GEN2 autocorrect should assign)")
+            if not scene.energy_level:
+                warnings.append(f"scene_{sn}.energy_level (missing)")
+
+        if warnings:
+            logger.warning(f"[VALIDATE_BRIEF] {len(warnings)} autocorrect warnings:")
+            for w in warnings:
+                logger.warning(f"  ⚠ {w}")
 
         is_valid = len(missing_fields) == 0
 
@@ -2342,6 +2385,15 @@ REQUIREMENTS:
 
             if val_result and val_result.passed:
                 logger.success(f"[VAL_GEN2] Validation PASSED on attempt {attempt}")
+                # Re-parse gen2_output from auto-corrected data (mirrors GEN1 pattern)
+                corrected_gen2 = getattr(self, '_last_corrected_gen2_data', None)
+                if corrected_gen2:
+                    try:
+                        gen2_output = Gen2BatchOutput.model_validate(corrected_gen2)
+                        logger.info("[VAL_GEN2] Applied auto-corrections to gen2_output")
+                    except Exception as e:
+                        logger.warning(f"[VAL_GEN2] Failed to re-parse corrected GEN2 data: {e} — using original")
+                    self._last_corrected_gen2_data = None  # reset for next run
                 gen2_validated = True
                 break
             else:
@@ -2377,8 +2429,13 @@ REQUIREMENTS:
         logger.info("\n[MERGE] Combining results...")
         project = self.merge_outputs(gen1_output, gen2_output, project_id)
 
+        # Post-merge validation (warnings + errors for missing fields)
+        is_valid, missing = self.validate_merged_brief(project)
+        if not is_valid:
+            logger.warning(f"[MERGE] Post-merge validation found {len(missing)} missing fields — continuing (non-blocking)")
+
         logger.info("=" * 70)
-        logger.success("TWO-STAGE PIPELINE v2.2 COMPLETED SUCCESSFULLY")
+        logger.success("TWO-STAGE PIPELINE v3.0 COMPLETED SUCCESSFULLY")
         logger.info("=" * 70)
 
         return project

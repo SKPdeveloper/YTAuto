@@ -69,7 +69,8 @@ MIN_SCALE_KEYWORDS: int = 2
 
 # Scale keywords для Scene 1 (VAL_GEN2 рядок 457-463)
 SCALE_KEYWORDS: Set[str] = {
-    "towering", "imposing", "massive", "low angle", "looking up"
+    "towering", "imposing", "massive", "low angle", "looking up",
+    "enormous", "colossal", "vast", "monumental", "gigantic",
 }
 
 # Anti-toy keywords в negative_prompt (VAL_GEN2 рядок 246)
@@ -99,7 +100,8 @@ BANNED_VIDEO_WORDS: Set[str] = {
     "gradual", "gradually",
     "leisurely",
     "accelerating",
-    "rack focus", "speed ramp", "dolly zoom"
+    "rack focus", "speed ramp", "dolly zoom",
+    "slo-mo",
 }
 
 # Banned camera movements (VAL_GEN2 рядки 316-323)
@@ -107,7 +109,8 @@ BANNED_VIDEO_WORDS: Set[str] = {
 #       Only banned when referring to CAMERA movement
 BANNED_CAMERA_MOVEMENTS: Set[str] = {
     "drifting", "floating", "gliding",
-    "drift", "float", "glide"
+    "drift", "float", "glide",
+    "pan", "panning",
 }
 
 # Patterns where drifting/floating is OK (object motion, not camera)
@@ -178,6 +181,19 @@ BANNED_VIDEO_META: Set[str] = {
     "10 seconds",
 }
 
+# Meta-instructions заборонені в last scene (LOOP_CLOSE) video prompts
+BANNED_LAST_SCENE_META: Set[str] = {
+    "matching scene 1",
+    "matching opening shot",
+    "matching opening",
+    "same as scene 1",
+    "identical",
+    "mirroring",
+    "(reverse in post)",
+    "reverse in post",
+    "opening shot",
+}
+
 # Meta-instruction patterns заборонені в image prompts (GEN2.txt lines 392-439)
 IMAGE_META_PATTERNS: List[str] = [
     r'\bfrom\s+(back|top|side|front|above|below)\b',
@@ -187,6 +203,42 @@ IMAGE_META_PATTERNS: List[str] = [
     r'\bopening\s+shot\b',
     r'\bmatching\s+scene\b',
 ]
+
+# Banned meta-instructions in LOOP_CLOSE image_prompt (CRITICAL #1)
+BANNED_LOOP_IMAGE_META: Set[str] = {
+    "identical", "matching scene", "same as scene", "mirroring",
+    "opening shot", "scene 1", "same as opening",
+}
+
+# Banned human presence indicators in image_prompts (CRITICAL #3)
+# GEN2.txt: food architecture — NO humans
+BANNED_HUMAN_INDICATORS_RE = re.compile(
+    r'\b(?:person|people|human|silhouette|crowd|pedestrian|'
+    r'man\b(?!\s*(?:go|made|ner))|woman|child(?:ren)?|'
+    r'tourist|visitor|passerby|bystander)\b',
+    re.IGNORECASE,
+)
+
+# Scene reference pattern in post_production_notes (CRITICAL #2)
+_SCENE_REF_RE = re.compile(
+    r'\b(?:scene\s+\d|match(?:ing)?\s+scene|from\s+scene)\b',
+    re.IGNORECASE,
+)
+
+# Reversal-unsafe motion words — unified constant for last scene checks (HIGH #3)
+REVERSAL_UNSAFE_WORDS: Set[str] = {
+    "rising", "falling", "dripping", "pouring", "cascading",
+    "sinking", "dropping", "growing", "waterfall", "fire",
+    "flames", "walking", "running", "vehicles", "birds flying",
+}
+
+# Per-tier image_prompt word count ranges (HIGH #1)
+IMAGE_WORD_COUNT_RANGES: Dict[str, Tuple[int, int]] = {
+    "TIER_1_MONEY_SHOT": (130, 160),
+    "TIER_2_HIGH_APPETITE": (60, 120),
+    "TIER_3_BALANCED": (40, 100),
+    "TIER_4_ARCHITECTURE": (50, 120),
+}
 
 # GEN1 fields that GEN2 must NOT duplicate (GEN2.txt lines 1406-1417)
 FORBIDDEN_GEN1_FIELDS: Set[str] = {
@@ -225,6 +277,25 @@ SAFE_EGG_ZONES: Set[str] = {
 # Dynamically computed in validator based on narrative_purpose
 # Scene 1 + scenes with AERIAL/ESTABLISHING/LOOP_CLOSE purpose
 EXTERIOR_SCENES_BASE: Set[int] = {1}  # Scene 1 always exterior
+
+# Physical state change verbs — used to detect "animated image" risk.
+# Scenes with ONLY ambient motion (light, shadows, fog) and no physical state
+# change will be rendered by Kling as Ken Burns still images.
+# Synced with gen2_autocorrect.py _PHYSICAL_STATE_CHANGE_RE
+_PHYSICAL_STATE_CHANGE_RE = re.compile(
+    r'\b(?:'
+    r'drip(?:ping|s)?|flow(?:ing|s)?|pour(?:ing|s)?|cascad(?:ing|e|es)?|'
+    r'splash(?:ing|es)?|spill(?:ing|s)?|pool(?:ing|s)?|seep(?:ing|s)?|'
+    r'leak(?:ing|s)?|trickl(?:ing|e|es)?|drizzl(?:ing|e|es)?|'
+    r'welling|spray(?:ing|s)?|ooz(?:ing|e|es)?|'
+    r'crack(?:ing|s)?|shatter(?:ing|s)?|break(?:ing|s)?|fractur(?:ing|e|es)?|'
+    r'split(?:ting|s)?|tear(?:ing|s)?|crumbl(?:ing|e|es)?|collaps(?:ing|e|es)?|'
+    r'melt(?:ing|s)?|bubbl(?:ing|e|es)?|sizzl(?:ing|e|es)?|erupt(?:ing|s)?|'
+    r'boil(?:ing|s)?|'
+    r'stretch(?:ing|es)?|swell(?:ing|s)?|burst(?:ing|s)?|'
+    r'rippl(?:ing|e|es)?'
+    r')\b', re.IGNORECASE,
+)
 
 
 # ============================================================================
@@ -421,6 +492,7 @@ class Gen2Validator:
         "rack focus": "",
         "speed ramp": "",
         "dolly zoom": "",
+        "slo-mo": "suspended mid-air",
     }
 
     def __init__(self):
@@ -578,19 +650,24 @@ class Gen2Validator:
                 _cam_replacements = {
                     "drifting": "pushing", "floating": "rising", "gliding": "tracking",
                     "drift": "push", "float": "rise", "glide": "track",
+                    "panning": "orbiting", "pan": "orbit",
                 }
                 fixed_vp = video_prompt
                 for banned_cam, replacement in _cam_replacements.items():
                     pattern = r'\b' + re.escape(banned_cam) + r'\b'
-                    for match in re.finditer(pattern, fixed_vp, re.IGNORECASE):
-                        # Check allowed context (object motion, not camera)
+                    # Loop until no more replacements (re-scan after each to avoid index shift)
+                    while True:
+                        match = re.search(pattern, fixed_vp, re.IGNORECASE)
+                        if not match:
+                            break
                         start = max(0, match.start() - 100)
                         end = min(len(fixed_vp), match.end() + 50)
                         context = fixed_vp[start:end].lower()
                         is_allowed = any(ctx in context for ctx in ALLOWED_DRIFTING_CONTEXTS)
                         if not is_allowed:
                             fixed_vp = fixed_vp[:match.start()] + replacement + fixed_vp[match.end():]
-                            break  # One replacement at a time to avoid index shift
+                        else:
+                            break  # This occurrence is allowed, stop checking this word
                 if fixed_vp != video_prompt:
                     scene["video_prompt"] = fixed_vp
                     fix_desc = f"scenes[{i}].video_prompt: auto-replaced banned camera movement"
@@ -669,6 +746,15 @@ class Gen2Validator:
 
         # 14. first_frame_composition.entry_type vs GEN1
         self._validate_entry_type()
+
+        # 15. post_production_notes scene references (CRITICAL #2)
+        self._validate_post_production_notes()
+
+        # 16. No human figures in image_prompts (CRITICAL #3)
+        self._validate_no_human_figures()
+
+        # 17. Only one PRIMARY reference_type (CRITICAL #4)
+        self._validate_primary_count()
 
     # ========================================================================
     # GLOBAL SETTINGS VALIDATION
@@ -910,7 +996,7 @@ class Gen2Validator:
             )
             return
 
-        self._total_scenes = len(scenes)
+        # _total_scenes already set in validate() before this method runs
 
         # Compute exterior scenes dynamically
         self._exterior_scenes = set(EXTERIOR_SCENES_BASE)
@@ -1040,7 +1126,7 @@ class Gen2Validator:
             )
             check.image_prompt = "FAIL"
         else:
-            if not self._validate_image_prompt(image_prompt, scene_num, prefix):
+            if not self._validate_image_prompt(image_prompt, scene_num, prefix, visual_tier=scene.get("visual_tier", "")):
                 check.image_prompt = "FAIL"
 
         # video_prompt
@@ -1085,6 +1171,23 @@ class Gen2Validator:
                 code="INSUFFICIENT_MOTION_FOR_ENERGY"
             )
             check.motion_elements = "FAIL"
+
+        # Subject motion: at least one physical state change in video_prompt + motion_elements
+        # Scenes with only ambient motion (light shifting, shadows, fog) render as Ken Burns stills
+        if ref_type != ReferenceType.LOOP_CLOSE.value:
+            combined_motion_text = (video_prompt or "").lower()
+            if isinstance(motion, list):
+                for me in motion:
+                    if isinstance(me, str):
+                        combined_motion_text += " " + me.lower()
+            if combined_motion_text.strip() and not _PHYSICAL_STATE_CHANGE_RE.search(combined_motion_text):
+                self._add_warning(
+                    f"{prefix}.video_prompt",
+                    "No physical state change found (drip, crack, flow, melt, etc.) — "
+                    "ambient-only motion risks Ken Burns animated image",
+                    suggestion="Add at least one food-interaction motion: seeping, cracking, trickling, pooling",
+                    code="AMBIENT_ONLY_MOTION"
+                )
 
         # scale_techniques (required for exterior scenes)
         exterior_scenes = getattr(self, '_exterior_scenes', EXTERIOR_SCENES_BASE)
@@ -1259,21 +1362,29 @@ class Gen2Validator:
                 check.loop_complementary = "FAIL"
                 break
 
+        # CRITICAL #1: Check image_prompt for meta-instructions in LOOP_CLOSE
+        image_prompt = scene.get("image_prompt", "").lower()
+        for meta in BANNED_LOOP_IMAGE_META:
+            if meta in image_prompt:
+                self._add_error(
+                    f"{prefix}.image_prompt",
+                    f"LOOP_CLOSE image_prompt contains meta-instruction: '{meta}'",
+                    code="LOOP_IMAGE_META_INSTRUCTION",
+                    suggestion="Describe visual content only — image generators have no pipeline context"
+                )
+                check.loop_complementary = "FAIL"
+                break
+
         # motion_elements must be reversal-safe (Scene N is reversed in post-production)
         # GEN2.txt line 1192: waterfall, falling, cascading, smoke rising, steam rising,
         # dripping, pouring, fire, flames, walking, running, vehicles, birds flying
-        REVERSAL_UNSAFE = {
-            "rising", "falling", "dripping", "pouring", "cascading",
-            "sinking", "dropping", "growing",
-            "waterfall", "fire", "flames", "walking", "running",
-            "vehicles", "birds flying",
-        }
         motion_elements = scene.get("motion_elements", [])
         if isinstance(motion_elements, list):
             for me in motion_elements:
                 if isinstance(me, str):
-                    for unsafe in REVERSAL_UNSAFE:
-                        if unsafe in me.lower():
+                    me_lower = me.lower()
+                    for unsafe in REVERSAL_UNSAFE_WORDS:
+                        if re.search(r'\b' + re.escape(unsafe) + r'\b', me_lower):
                             self._add_error(
                                 f"{prefix}.motion_elements",
                                 f"Contains reversal-unsafe word '{unsafe}' in '{me}' — will look unnatural when reversed",
@@ -1290,7 +1401,8 @@ class Gen2Validator:
         self,
         prompt: str,
         scene_num: int,
-        prefix: str
+        prefix: str,
+        visual_tier: str = ""
     ) -> bool:
         """
         Валідація image_prompt.
@@ -1301,7 +1413,7 @@ class Gen2Validator:
         valid = True
         prompt_lower = prompt.lower()
 
-        # Check for safe zone instruction
+        # Check for safe zone instruction (WARNING only — doesn't fail validation)
         safe_zone_phrases = [
             "upper portion",
             "upper 60%",
@@ -1315,7 +1427,6 @@ class Gen2Validator:
                 "Should contain safe zone instruction",
                 suggestion="Add: 'subject positioned in upper portion of frame'"
             )
-            valid = False
 
         # Check for --ar 9:16 (should NOT be present)
         if "--ar 9:16" in prompt_lower or "--ar 9\\:16" in prompt_lower:
@@ -1349,6 +1460,51 @@ class Gen2Validator:
                 suggestion="Replace with 'suspended mid-air' or 'time-stretched'"
             )
             valid = False
+
+        # Check money shot has cold/dark background (GEN2.txt: Negative J)
+        if visual_tier == "TIER_1_MONEY_SHOT":
+            cold_indicators = {
+                "cool blue", "blue-black", "charcoal", "midnight", "deep blue",
+                "dark background", "cold blue", "cool grey background", "cool dark",
+            }
+            has_cold_bg = any(ind in prompt_lower for ind in cold_indicators)
+            if not has_cold_bg:
+                self._add_warning(
+                    f"{prefix}.image_prompt",
+                    "Money shot missing cold/dark background indicator",
+                    code="MONEY_SHOT_WARM_BACKGROUND",
+                    suggestion="Use cold palette for contrast_color: deep blue, charcoal, midnight, blue-black"
+                )
+
+        # Per-tier image_prompt word count check (HIGH #1)
+        # Count only core words (exclude --no block) to match autocorrect behavior
+        if visual_tier:
+            no_idx_p = prompt.find("--no")
+            core_p = prompt[:no_idx_p].rstrip() if no_idx_p > 0 else prompt
+            img_word_count = len(core_p.split())
+            tier_range = IMAGE_WORD_COUNT_RANGES.get(visual_tier)
+            if tier_range:
+                min_wc, max_wc = tier_range
+                if img_word_count < min_wc:
+                    self._add_warning(
+                        f"{prefix}.image_prompt",
+                        f"Has {img_word_count} words, {visual_tier} minimum is {min_wc}",
+                        suggestion=f"Expand image_prompt to {min_wc}-{max_wc} words",
+                        code="IMAGE_PROMPT_TOO_SHORT"
+                    )
+
+        # TIER 1 (MONEY_SHOT) should NOT use architecture scale words
+        # TIER 2 can be architecture-adjacent, so allow there
+        if visual_tier == "TIER_1_MONEY_SHOT":
+            arch_words = {"towering", "imposing", "colossal", "gigantic", "monumental"}
+            found_arch = [w for w in arch_words if w in prompt_lower]
+            if found_arch:
+                self._add_warning(
+                    f"{prefix}.image_prompt",
+                    f"TIER_1_MONEY_SHOT uses architecture scale words: {', '.join(found_arch)}",
+                    code="TIER1_ARCHITECTURE_WORDS",
+                    suggestion="Money shot should use macro/appetite language, not architecture scale"
+                )
 
         return valid
 
@@ -1498,7 +1654,9 @@ class Gen2Validator:
             "float": "rise, ascend, crane up",
             "floating": "rising, ascending",
             "glide": "track, push",
-            "gliding": "tracking, pushing"
+            "gliding": "tracking, pushing",
+            "pan": "orbit, push",
+            "panning": "orbiting, pushing"
         }
         return replacements.get(movement.lower(), "pushing, tracking, orbiting")
 
@@ -1712,7 +1870,10 @@ class Gen2Validator:
                 continue
             scene_num = scene.get("scene_number", i + 1)
             image_prompt = scene.get("image_prompt", "")
-            wc = len(image_prompt.split()) if image_prompt else 0
+            # Count only core words (exclude --no block) to match autocorrect behavior
+            no_idx = image_prompt.find("--no") if image_prompt else -1
+            core_prompt = image_prompt[:no_idx].rstrip() if no_idx > 0 else (image_prompt or "")
+            wc = len(core_prompt.split()) if core_prompt else 0
             word_counts.append((i, scene_num, wc))
 
             # Check if money shot from visual_tier
@@ -1920,9 +2081,10 @@ class Gen2Validator:
             negative = gs.get("negative_prompt", "").lower() if isinstance(gs, dict) else ""
             missing = [kw for kw in required_negatives if kw not in negative]
             if missing:
-                self._add_warning(
+                self._add_error(
                     "global_settings.negative_prompt",
                     f"atmosphere_mode={atmosphere_upper} requires negative additions: {', '.join(missing)}",
+                    code="MISSING_ATMOSPHERE_NEGATIVES",
                     suggestion=f"Add to negative_prompt: {', '.join(missing)}"
                 )
 
@@ -1947,11 +2109,12 @@ class Gen2Validator:
             energy = self._get_scene_energy(scene_num)
             vp = scene.get("visual_punctuation")
 
-            if energy == "EXPLOSIVE" and not vp:
-                self._add_warning(
+            if energy == "EXPLOSIVE" and (not vp or vp == "None"):
+                self._add_error(
                     f"scenes[{i}].visual_punctuation",
                     "EXPLOSIVE scene requires visual_punctuation (lens flare, light burst, etc.)",
-                    suggestion="Add visual_punctuation for peak moment emphasis"
+                    code="MISSING_EXPLOSIVE_PUNCTUATION",
+                    suggestion="Add visual_punctuation: Light Burst, Lens Flare, Cloud Pass, Drip Cascade"
                 )
 
     # ========================================================================
@@ -1992,15 +2155,12 @@ class Gen2Validator:
                 last_scene = scenes[-1]
                 if isinstance(last_scene, dict):
                     motion_elements = last_scene.get("motion_elements", [])
-                    REVERSAL_UNSAFE_WORDS = {
-                        "rising", "falling", "dripping", "pouring", "cascading",
-                        "sinking", "dropping", "waterfall", "fire", "flames",
-                    }
                     if isinstance(motion_elements, list):
                         for me in motion_elements:
                             if isinstance(me, str):
+                                me_lower = me.lower()
                                 for unsafe in REVERSAL_UNSAFE_WORDS:
-                                    if unsafe in me.lower():
+                                    if re.search(r'\b' + re.escape(unsafe) + r'\b', me_lower):
                                         self._add_error(
                                             "visual_summary.loop_verification.motion_elements_reversal_safe",
                                             f"Claims reversal-safe but last scene contains '{unsafe}' in '{me}'",
@@ -2093,6 +2253,103 @@ class Gen2Validator:
                     )
 
     # ========================================================================
+    # POST PRODUCTION NOTES VALIDATION (CRITICAL #2)
+    # ========================================================================
+
+    def _validate_post_production_notes(self) -> None:
+        """
+        Validate post_production_notes don't contain scene references.
+
+        Post-production software has no scene context — references like
+        "Scene 1", "Match Scene 3" are meaningless and indicate meta-leakage.
+        """
+        scenes = self._data.get("scenes", [])
+        if not isinstance(scenes, list):
+            return
+
+        for i, scene in enumerate(scenes):
+            if not isinstance(scene, dict):
+                continue
+            ppn = scene.get("post_production_notes")
+            if not isinstance(ppn, dict):
+                continue
+            for field_name in ("color_grade", "loop_match", "speed_ramp"):
+                val = ppn.get(field_name, "")
+                if isinstance(val, str) and _SCENE_REF_RE.search(val):
+                    self._add_error(
+                        f"scenes[{i}].post_production_notes.{field_name}",
+                        f"Contains scene reference: '{val}' — post-production has no scene context",
+                        code="POST_PROD_SCENE_REF",
+                        suggestion="Describe the effect without referencing other scenes"
+                    )
+
+    # ========================================================================
+    # NO HUMAN FIGURES VALIDATION (CRITICAL #3)
+    # ========================================================================
+
+    def _validate_no_human_figures(self) -> None:
+        """
+        Validate no human presence indicators in image_prompts.
+
+        GEN2.txt: food architecture videos must NOT contain human figures.
+        """
+        scenes = self._data.get("scenes", [])
+        if not isinstance(scenes, list):
+            return
+
+        for i, scene in enumerate(scenes):
+            if not isinstance(scene, dict):
+                continue
+            image_prompt = scene.get("image_prompt", "")
+            if not image_prompt:
+                continue
+            # Strip --no block before checking (human words in negative block are OK)
+            no_idx = image_prompt.find("--no")
+            prompt_to_check = image_prompt[:no_idx] if no_idx >= 0 else image_prompt
+            match = BANNED_HUMAN_INDICATORS_RE.search(prompt_to_check)
+            if match:
+                self._add_error(
+                    f"scenes[{i}].image_prompt",
+                    f"Contains human presence indicator: '{match.group()}'",
+                    code="HUMAN_FIGURE_IN_PROMPT",
+                    suggestion="Remove human references — use non-human proxies (shadows, traces, footprints)"
+                )
+
+    # ========================================================================
+    # PRIMARY COUNT VALIDATION (CRITICAL #4)
+    # ========================================================================
+
+    def _validate_primary_count(self) -> None:
+        """
+        Validate exactly one PRIMARY reference_type across all scenes.
+
+        Only Scene 1 should be PRIMARY.
+        """
+        scenes = self._data.get("scenes", [])
+        if not isinstance(scenes, list):
+            return
+
+        primary_scenes = []
+        for i, scene in enumerate(scenes):
+            if isinstance(scene, dict) and scene.get("reference_type") == "PRIMARY":
+                primary_scenes.append(scene.get("scene_number", i + 1))
+
+        if len(primary_scenes) > 1:
+            self._add_error(
+                "scenes",
+                f"Found {len(primary_scenes)} PRIMARY scenes ({primary_scenes}) — only Scene 1 should be PRIMARY",
+                code="MULTIPLE_PRIMARY",
+                suggestion="Only Scene 1 gets reference_type=PRIMARY; others should be INDEPENDENT, REQUIRES_REF, or LOOP_CLOSE"
+            )
+        elif len(primary_scenes) == 0:
+            self._add_error(
+                "scenes",
+                "No PRIMARY scene found — Scene 1 must be PRIMARY",
+                code="NO_PRIMARY",
+                suggestion="Set Scene 1 reference_type to PRIMARY"
+            )
+
+    # ========================================================================
     # HELPER METHODS
     # ========================================================================
 
@@ -2125,6 +2382,7 @@ class Gen2Validator:
         self,
         field: str,
         message: str,
+        code: str = "",
         suggestion: str = ""
     ) -> None:
         """Додати попередження."""
@@ -2132,6 +2390,7 @@ class Gen2Validator:
             field=field,
             message=message,
             severity="warning",
+            code=code,
             suggestion=suggestion
         ))
 

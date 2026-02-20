@@ -405,11 +405,14 @@ class PostProductionNotes(BaseModel):
 class FirstFrameCompositionGEN2(BaseModel):
     """Композиція першого кадру з GEN2 (більш детальна)."""
     hook_element: str = Field(default="", description="Hook елемент")
+    entry_type: str = Field(default="MACRO_ENTRY", description="MACRO_ENTRY or SCALE_SHOCK")
     focal_point: str = Field(default="", description="Фокусна точка")
     foreground: str = Field(default="", description="Передній план")
     background: str = Field(default="", description="Задній план")
     scale_proof: str = Field(default="", description="Доказ масштабу")
     color_anchor: str = Field(default="", description="Кольоровий якір")
+    temperature_mood: str = Field(default="", description="Warm/cold contrast description")
+    body_trigger_visual: str = Field(default="", description="Body trigger emphasis for GEN3a")
     safe_zone: str = Field(default="", description="Safe zone")
     motion_visible: str = Field(default="", description="Видимий рух")
     scroll_stop: str = Field(default="", description="Scroll stop елемент")

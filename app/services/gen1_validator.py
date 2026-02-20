@@ -184,7 +184,8 @@ MIN_TEXTURE_KEYWORDS = 2
 MIN_COLOR_KEYWORDS = 2
 MIN_PROMPT_SNIPPET_LENGTH = 10
 
-COLOR_WORDS: Set[str] = {"golden", "white", "black", "red", "blue", "green", "pink", "orange", "silver", "purple", "brown", "yellow"}
+# Excluded "golden", "brown", "orange" — these are valid food sensory descriptors
+COLOR_WORDS: Set[str] = {"white", "black", "red", "blue", "green", "pink", "silver", "purple", "yellow"}
 
 # Appetite-suppressing dominant colors (grey/blue kill hunger response)
 _APPETITE_KILLER_COLORS: Set[str] = {"grey", "gray", "blue", "purple", "silver", "slate", "charcoal", "ash"}
@@ -200,10 +201,48 @@ _SALIVA_TRIGGERS: Set[str] = {
 }
 
 # Sensory channel keywords for 4-channel audit
-_THERMAL_WORDS = {"warm", "hot", "cold", "cool", "steaming", "frozen", "heat", "burning", "icy", "chilled", "sizzling", "boiling", "lukewarm", "scalding", "frosty", "molten"}
-_TACTILE_WORDS = {"stick", "sticky", "squishy", "rough", "smooth", "soft", "hard", "wet", "dry", "gooey", "crispy", "crunchy", "slippery", "gritty", "velvety", "silky", "pull", "sink", "press", "squeeze", "crumble", "flaky", "elastic", "rubbery", "brittle"}
-_OLFACTORY_WORDS = {"smell", "scent", "aroma", "fragrant", "yeast", "sweet", "nutty", "buttery", "vanilla", "caramel", "smoky", "earthy", "tangy", "pungent", "musky", "nose", "inhale", "breath"}
-_TEMPORAL_PATTERN = re.compile(r'\bstill\s+\w+ing\b', re.IGNORECASE)
+_THERMAL_WORDS = {
+    "warm", "warmer", "warming", "warmth", "hot", "hotter",
+    "cold", "colder", "cool", "cooler", "cooling", "cooled",
+    "steaming", "frozen", "freezing", "heat", "heated", "heating",
+    "burning", "icy", "chilled", "chilling", "sizzling",
+    "boiling", "lukewarm", "scalding", "frosty", "molten",
+    "temperature", "degrees", "melted", "scorched",
+}
+_TACTILE_WORDS = {
+    "stick", "sticky", "sticking", "sticks",
+    "squishy", "rough", "smooth", "soft", "hard", "wet", "dry",
+    "gooey", "crispy", "crunchy", "slippery", "gritty",
+    "velvety", "silky", "pull", "pulling", "pulls",
+    "sink", "sinking", "sinks", "press", "pressing", "presses",
+    "squeeze", "squeezing", "crumble", "crumbling", "crumbles",
+    "flaky", "elastic", "rubbery", "brittle",
+    "stretching", "stretches", "bounce", "bouncing",
+}
+_OLFACTORY_WORDS = {
+    "smell", "smells", "smelling", "smelled",
+    "scent", "scented", "scents",
+    "aroma", "aromas", "aromatic",
+    "fragrant", "fragrance",
+    "yeast", "sweet", "nutty", "buttery", "vanilla", "caramel",
+    "smoky", "earthy", "tangy", "pungent", "musky",
+    "nose", "inhale", "inhaling", "inhales", "breath", "breathe",
+}
+# Temporal freshness: "just made" urgency, active process happening NOW
+_TEMPORAL_PATTERNS = [
+    re.compile(r'\bstill\s+\w+ing\b', re.IGNORECASE),       # "still bubbling", "still dripping"
+    re.compile(r'\bjust\s+\w+ed\b', re.IGNORECASE),          # "just baked", "just poured", "just cooled"
+    re.compile(r'\bjust\s+(?:set|made|cut|lit|split|out)\b', re.IGNORECASE),  # irregular past participles
+    re.compile(r'\bfresh(?:ly)?\b', re.IGNORECASE),           # "fresh out", "freshly baked", "fresh"
+]
+# Active-process -ing words that strongly indicate temporal freshness (food is alive NOW)
+_TEMPORAL_ACTIVE_WORDS = {
+    "bubbling", "dripping", "melting", "sizzling", "steaming",
+    "oozing", "caramelizing", "crisping", "browning", "toasting",
+    "roasting", "baking", "brewing", "boiling", "glazing",
+    "crystallizing", "hardening", "setting", "cooling", "rising",
+    "frying", "grilling", "smoking", "pouring", "spreading",
+}
 
 # STRUCTURAL_DETAIL key_elements food words
 _STRUCTURAL_FOOD_WORDS = {"glistening", "dripping", "crystallized", "melting", "sticky", "crispy", "steaming", "sizzling", "bubbling", "glossy", "crunchy", "oozing", "frosted", "caramelized", "glazed"}
@@ -558,6 +597,14 @@ class Gen1Validator:
                 self._warn("voiceover.full_script", f"Overused adjectives: {', '.join(found_o[:3])}")
             fillers = get_fillers()
             found_f = [fl for fl in fillers if re.search(r'\b' + re.escape(fl) + r'\b', sl)]
+            # Exclude "just" when ALL occurrences are in temporal patterns
+            # ("just set", "just cooled", "just poured", etc.) — intentional thermal/temporal hooks
+            if "just" in found_f:
+                _JUST_TEMPORAL = re.compile(r'\bjust\s+(?:\w+ed|set|made|cut|lit|split|out|mixed)\b', re.IGNORECASE)
+                all_just = list(re.finditer(r'\bjust\b', sl))
+                temporal_just = list(_JUST_TEMPORAL.finditer(sl))
+                if len(all_just) > 0 and len(temporal_just) >= len(all_just):
+                    found_f = [f for f in found_f if f != "just"]
             if found_f:
                 self._warn("voiceover.full_script", f"Filler phrases: {', '.join(found_f[:3])}")
             generic = get_generic_luxury()
@@ -826,7 +873,7 @@ class Gen1Validator:
                 if found:
                     self._error(f"{prefix}.voiceover_segment", f"AI markers: {', '.join(found[:3])}", code="AI_MARKERS_IN_SCENE")
 
-            # Narrator word count vs duration
+            # Narrator word count vs duration (pause-aware)
             narrator = self._nested(scene, "narrator_script", "")
             dur = scene.get("duration_seconds")
             is_middle = 1 < sn < total - 1
@@ -836,13 +883,23 @@ class Gen1Validator:
                 except (ValueError, TypeError):
                     dv = None
                 if dv and dv > 0:
+                    # Account for pause tags consuming scene time
+                    vo_seg_check = self._nested(scene, "voiceover_segment", "")
+                    pause_penalty = 0.0
+                    if isinstance(vo_seg_check, str):
+                        import re as _re
+                        for _m in _re.finditer(r'\[(long\s+pause|short\s+pause|pause)\]', vo_seg_check, _re.IGNORECASE):
+                            _tag = _re.sub(r'\s+', ' ', _m.group(1).lower().strip())
+                            pause_penalty += {"long pause": 0.7, "pause": 0.3, "short pause": 0.2}.get(_tag, 0.3)
+                    effective_dv = max(dv - pause_penalty, 1.0)
                     wds = len(narrator.strip().split())
                     _LIMITS = {2.0: 4, 2.5: 5, 3.0: 7, 3.5: 8, 4.0: 10}
-                    mx = _LIMITS.get(dv, int(dv * 2.5) if dv else 10)
+                    mx = _LIMITS.get(effective_dv, int(effective_dv * 2.5) if effective_dv else 10)
                     if mx < 4:
                         mx = 4
                     if wds > mx:
-                        self._warn(f"{prefix}.narrator_script", f"Too many words ({wds}) for {dv}s (max {mx})")
+                        extra = f" (pause tags consume {pause_penalty:.1f}s)" if pause_penalty > 0 else ""
+                        self._warn(f"{prefix}.narrator_script", f"Too many words ({wds}) for {dv}s{extra} (max {mx})")
 
             # Numbers in narrator_script ban
             if narrator and isinstance(narrator, str) and narrator.strip():
@@ -937,43 +994,44 @@ class Gen1Validator:
         # Money shot timing — must be in optimal range [ceil(N*0.6), ceil(N*0.8)]
         lower = math.ceil(total * 0.6)
         upper = math.ceil(total * 0.8)
-        for s in scenes:
+        for i, s in enumerate(scenes):
             if isinstance(s, dict) and isinstance(s.get("money_shot"), dict) and s["money_shot"].get("is_money_shot"):
-                msn = s.get("scene_number", 0)
+                msn = s.get("scene_number", i + 1)
                 if msn < lower or msn > upper:
-                    self._warn(f"scenes[{msn}].money_shot",
+                    self._warn(f"scenes[{i}].money_shot",
                                f"money_shot Scene {msn} outside optimal range ({lower}-{upper})")
 
     def _validate_sensory_pressure(self) -> None:
         scenes = self._data.get("scenes", [])
         if not isinstance(scenes, list):
             return
-        sp_vals = []
-        for s in scenes:
+        sp_pairs = []  # (scene_index, sp_value)
+        for i, s in enumerate(scenes):
             if not isinstance(s, dict):
                 continue
             sp = s.get("sensory_pressure")
             if sp is not None:
                 try:
-                    sp_vals.append(int(sp) if not isinstance(sp, int) else sp)
+                    sp_pairs.append((i, int(sp) if not isinstance(sp, int) else sp))
                 except (ValueError, TypeError):
                     pass
-        if not sp_vals:
+        if not sp_pairs:
             self._warn("scenes.sensory_pressure", "No SP values found")
             return
-        for i, sp in enumerate(sp_vals):
+        sp_vals = [sp for _, sp in sp_pairs]
+        for scene_idx, sp in sp_pairs:
             if sp < 1 or sp > 10:
-                self._warn(f"scenes[{i}].sensory_pressure", f"SP {sp} out of range (1-10)")
+                self._warn(f"scenes[{scene_idx}].sensory_pressure", f"SP {sp} out of range (1-10)")
         avg = sum(sp_vals) / len(sp_vals)
         if avg < 5:
             self._warn("scenes.sensory_pressure", f"Average {avg:.1f} too low (min 5.0)")
         peak = max(sp_vals)
         if peak < 9:
             self._warn("scenes.sensory_pressure", f"Peak {peak} too low (need ≥9)")
-        if len(sp_vals) >= 1 and (sp_vals[0] < 5 or sp_vals[0] > 8):
-            self._warn("scenes[0].sensory_pressure", f"Scene 1 SP should be 5-8, got {sp_vals[0]}")
-        if len(sp_vals) >= 2 and (sp_vals[-1] < 5 or sp_vals[-1] > 8):
-            self._warn(f"scenes[{len(sp_vals)-1}].sensory_pressure", f"Last SP should be 5-8, got {sp_vals[-1]}")
+        if sp_pairs and (sp_pairs[0][1] < 5 or sp_pairs[0][1] > 8):
+            self._warn(f"scenes[{sp_pairs[0][0]}].sensory_pressure", f"Scene 1 SP should be 5-8, got {sp_pairs[0][1]}")
+        if len(sp_pairs) >= 2 and (sp_pairs[-1][1] < 5 or sp_pairs[-1][1] > 8):
+            self._warn(f"scenes[{sp_pairs[-1][0]}].sensory_pressure", f"Last SP should be 5-8, got {sp_pairs[-1][1]}")
 
     def _validate_total_duration(self) -> None:
         scenes = self._data.get("scenes", [])
@@ -1058,20 +1116,34 @@ class Gen1Validator:
                 self._warn("voiceover.full_script", "Doesn't match concatenation of voiceover_segments")
 
         # completion_bait.vo_trigger in scene VO
+        # Check declared scene first, then scan all scenes (autocorrect may relocate)
+        # Also check partial match (first 2 words) since truncation may shorten it
         cb = self._data.get("completion_bait")
         if isinstance(cb, dict):
             vt = cb.get("vo_trigger", "")
             csn = cb.get("scene_number")
             if vt and csn is not None:
+                vt_clean = vt.rstrip(".…").strip()
+                vt_words = vt_clean.split()
+                # Build match candidates: full trigger + first 2 words (for truncated matches)
+                candidates = [vt_clean]
+                if len(vt_words) >= 2:
+                    candidates.append(" ".join(vt_words[:2]))
                 found = False
+                # Scan all scenes (trigger may have been relocated or truncated)
                 for s in scenes:
-                    if isinstance(s, dict) and s.get("scene_number") == csn:
+                    if isinstance(s, dict):
                         seg = s.get("voiceover_segment", "")
-                        if vt.rstrip(".…").strip() in seg:
-                            found = True
-                        break
+                        if isinstance(seg, str):
+                            seg_clean = re.sub(r'\[[\w\s]+\]', '', seg).strip()
+                            for c in candidates:
+                                if c.lower() in seg_clean.lower():
+                                    found = True
+                                    break
+                        if found:
+                            break
                 if not found:
-                    self._warn("completion_bait.vo_trigger", f"Not found in Scene {csn} VO")
+                    self._warn("completion_bait.vo_trigger", f"Not found in any scene VO")
             res = cb.get("resolution_scene")
             if csn is not None and res is not None:
                 try:
@@ -1167,7 +1239,10 @@ class Gen1Validator:
         has_thermal = any(re.search(r'\b' + re.escape(w) + r'\b', clean) for w in _THERMAL_WORDS)
         has_tactile = any(re.search(r'\b' + re.escape(w) + r'\b', clean) for w in _TACTILE_WORDS)
         has_olfactory = any(re.search(r'\b' + re.escape(w) + r'\b', clean) for w in _OLFACTORY_WORDS)
-        has_temporal = bool(_TEMPORAL_PATTERN.search(clean))
+        has_temporal = (
+            any(p.search(clean) for p in _TEMPORAL_PATTERNS)
+            or any(re.search(r'\b' + re.escape(w) + r'\b', clean) for w in _TEMPORAL_ACTIVE_WORDS)
+        )
         missing = []
         if not has_thermal:
             missing.append("THERMAL")
@@ -1335,7 +1410,7 @@ class Gen1Validator:
             if not isinstance(desc, str):
                 continue
             desc_lower = desc.lower()
-            has_trigger = any(trigger in desc_lower for trigger in _SALIVA_TRIGGERS)
+            has_trigger = any(re.search(r'\b' + re.escape(trigger) + r'\b', desc_lower) for trigger in _SALIVA_TRIGGERS)
             if not has_trigger:
                 self._warn(
                     f"scenes[{i}].money_shot.still_image_description",

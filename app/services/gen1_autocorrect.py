@@ -116,7 +116,7 @@ _THERMAL_HOOK_WORDS: set = TEMPERATURE_WORDS | {
     "burning", "scalding", "icy", "chilled", "molten", "bubbling",
     "fresh", "crisp",
     # Expanded thermal variants (from _TEXTURE_TO_TEMPS) — prevent double-prepend
-    "just", "cracking", "damp", "body", "room", "forty",
+    "barely", "scorched", "body", "room", "forty", "ice", "frozen",
 }
 
 # Reversal-safe motion elements for Scene N
@@ -133,6 +133,15 @@ _BANNED_LOOP_MOTIONS: set = {
     "fire", "flame", "walk", "walking", "move", "moving",
     "flow", "flowing", "rise", "rising", "debris", "leaf", "leaves",
     "snow", "rain", "waterfall",
+}
+
+# Olfactory word stems for 4-channel sensory audit (matches inflected forms via prefix)
+_OLFACTORY_STEMS: set = {
+    "smell", "smells", "smelling", "scent", "scented", "scents",
+    "aroma", "aromas", "aromatic", "fragrant", "fragrance",
+    "yeast", "sweet", "nutty", "buttery", "vanilla", "caramel",
+    "smoky", "earthy", "tangy", "pungent", "musky",
+    "nose", "inhale", "inhaling", "breath", "breathe",
 }
 
 # Maps for hook.type: Gemini sometimes uses sonic_hook types here
@@ -190,16 +199,29 @@ _TEXTURE_TO_TEMP: dict = {
 }
 
 # Expanded thermal variants for concept_hash rotation (anti-"Still warm." lock)
+# IMPORTANT: index 0 must be DIFFERENT across texture groups so hash%4==0
+# doesn't produce the same opener for every food. See memory/MEMORY.md.
 _TEXTURE_TO_TEMPS: dict = {
-    "crispy": ["Still warm.", "Just set.", "The heat.", "Fresh out."],
-    "crunchy": ["Still warm.", "Cracking.", "Just cooled.", "The heat."],
-    "brittle": ["Cool.", "Room temperature.", "Forty degrees.", "Chilled."],
-    "creamy": ["Cold.", "Chilled.", "Still soft.", "Just poured."],
-    "chewy": ["Warm.", "Still pulling.", "Just stretched.", "Body heat."],
-    "smooth": ["Cool.", "Room temperature.", "Just mixed.", "Forty degrees."],
-    "gooey": ["Warm.", "Still dripping.", "The heat.", "Just melted."],
-    "silky": ["Cool.", "Just set.", "Chilled.", "Still smooth."],
-    "crunchy-wet": ["Cool.", "Damp.", "Still dripping.", "Just soaked."],
+    # EVERY variant MUST contain a word from _THERMAL_WORDS (validator check)
+    # Index 0 MUST be unique across groups (anti-"Still warm." lock)
+    "crispy": ["Barely cooled.", "The heat.", "Scorched.", "Still warm."],
+    "crunchy": ["Still hot.", "Still warm.", "The heat.", "Just cooled."],
+    "brittle": ["Room temperature.", "Cool.", "Forty degrees.", "Chilled."],
+    "creamy": ["Chilled.", "Cold.", "Frozen.", "Still cold."],
+    "chewy": ["Steaming.", "Body heat.", "Warm.", "Still warm."],
+    "smooth": ["Forty degrees.", "Room temperature.", "Cool.", "Just cooled."],
+    "gooey": ["The heat.", "Just melted.", "Still hot.", "Warm."],
+    "silky": ["Just cooled.", "Chilled.", "Still cool.", "Cool."],
+    "crunchy-wet": ["Ice cold.", "Still cold.", "Just cooled.", "Cool."],
+}
+
+# Pause tag approximate durations (seconds) for word-count budget
+# ElevenLabs SSML: [pause] → <break time="0.3s"/>, etc.
+_PAUSE_TAG_RE = re.compile(r'\[(long\s+pause|short\s+pause|pause)\]', re.IGNORECASE)
+_PAUSE_TAG_TIME: dict = {
+    "long pause": 0.7,
+    "pause": 0.3,
+    "short pause": 0.2,
 }
 
 
@@ -290,6 +312,21 @@ def _strip_tags(text: str) -> str:
     return re.sub(r'\[[\w\s]+\]\s*', '', text).strip()
 
 
+def _estimate_pause_time(vo_segment: str) -> float:
+    """Estimate time consumed by pause/delivery tags in voiceover_segment.
+
+    [pause] ≈ 0.3s, [short pause] ≈ 0.2s, [long pause] ≈ 0.7s.
+    These eat into scene duration → fewer words fit.
+    """
+    if not vo_segment:
+        return 0.0
+    total = 0.0
+    for match in _PAUSE_TAG_RE.finditer(vo_segment):
+        tag_name = re.sub(r'\s+', ' ', match.group(1).lower().strip())
+        total += _PAUSE_TAG_TIME.get(tag_name, 0.3)
+    return total
+
+
 def _closest_match(word: str, valid_set: set, default: str, cutoff: float = 0.7) -> str:
     """Find closest match using difflib. Higher cutoff = more conservative.
 
@@ -373,6 +410,7 @@ def autocorrect_gen1(data: Dict[str, Any]) -> Tuple[Dict[str, Any], List[AutoFix
     _fix_metadata_types(d, w)
     _fix_hook_type(d, w)
     _fix_narrative_purposes(d, w)
+    _fix_structural_detail_count(scenes, w)  # Exactly 1 STRUCTURAL_DETAIL (Gemini ignores count)
     _fix_easter_egg_and_pinned(d, w)
     _fix_food_visual_ratio(d, scenes, w)
     _fix_sp_commitment_floor(d, scenes, w)
@@ -389,17 +427,18 @@ def autocorrect_gen1(data: Dict[str, Any]) -> Tuple[Dict[str, Any], List[AutoFix
     _fix_warning_line_element_sync(d, scenes, w)
     _fix_thermal_first_word(d, scenes, w)
     _fix_narrator_vo_sync(scenes, w)
+    _fix_duplicate_vo_across_scenes(scenes, w)  # Silence duplicate VO BEFORE duration/truncation
     _fix_scene_durations(scenes, w)
     _fix_narrator_word_count(scenes, w)     # Truncate overflow AFTER durations fixed
     _fix_dangling_narrator_endings(d, scenes, w)  # P0-2: standalone dangling strip (after truncation)
     _flag_semantic_truncation(d, scenes, w)        # P1: flag transitive verb truncation
     _fix_scene_n_constraints(d, scenes, w)
     _fix_scene_n_minus_1_vo(d, scenes, w)
-    _fix_vo_trigger_injection(d, scenes, w)
     _fix_description_line1(d, w)
     _fix_title_default_rotation(d, w)       # BUG 6: FOOD_BUILD → other
     _fix_controversy_rotation(d, w)         # BUG 9: THE_PHYSICS → other
-    _fix_completion_bait_rotation(d, w)     # Anti-template-lock: "One more [noun]"
+    _fix_completion_bait_rotation(d, w)     # Anti-template-lock: "One more [noun]" (BEFORE injection)
+    _fix_vo_trigger_injection(d, scenes, w) # Inject AFTER rotation so text matches
     _fix_share_trigger_rotation(d, w)       # Anti-template-lock: "[qualifier] [identity]"
     _fix_series_hook(d, w)                  # P0-2: series_hook missing fallback
     _fix_grey_dominant_color(d, scenes, w)  # OPT: grey→warm color in food scenes
@@ -408,6 +447,11 @@ def autocorrect_gen1(data: Dict[str, Any]) -> Tuple[Dict[str, Any], List[AutoFix
     _fix_required_top_level_fields(d, scenes, w)  # P0: loop, first_frame, temp_contrast fallbacks
     _fix_energy_floor(d, scenes, w)        # P0: consecutive LOW ban + max 1 LOW + ramp
     _fix_hook_first_words_sync(d, scenes, w)  # P0: hook.first_words ↔ narrator_script sync
+    _fix_money_shot_saliva_trigger(d, scenes, w)     # Craving anchor: inject saliva trigger word
+    _fix_olfactory_channel_injection(d, scenes, w)  # 4-channel: inject smell word if missing
+    _fix_temporal_channel_injection(d, scenes, w)   # 4-channel: inject "still X-ing" if missing
+    _fix_tactile_channel_injection(d, scenes, w)    # 4-channel: inject texture word if missing
+    _fix_narrator_word_count(scenes, w)     # Re-truncate after all injections (2nd pass)
     _fix_full_script_rebuild(d, scenes, w)  # ALWAYS last — rebuilds from segments
 
     return d, w
@@ -498,6 +542,40 @@ def _fix_narrative_purposes(d: dict, w: list) -> None:
         w.append(AutoFixWarning(
             f"scenes[{i}].narrative_purpose",
             f"Auto-corrected '{purpose}' → '{fixed}' (was phase label)",
+        ))
+
+
+def _fix_structural_detail_count(scenes: list, w: list) -> None:
+    """Ensure exactly 1 STRUCTURAL_DETAIL scene. Extra → DETAIL.
+
+    Gemini 3 Pro guide: "reorder tables doesn't work" — Gemini ignores
+    inline count constraints. Deterministic fix: keep the money_shot one
+    (or the first one), rename extras to DETAIL.
+    """
+    sd_indices = [
+        i for i, s in enumerate(scenes)
+        if isinstance(s, dict) and s.get("narrative_purpose") == "STRUCTURAL_DETAIL"
+    ]
+    if len(sd_indices) <= 1:
+        return
+
+    # Prefer keeping the one with money_shot, else the first
+    keep_idx = sd_indices[0]
+    for idx in sd_indices:
+        ms = scenes[idx].get("money_shot")
+        if isinstance(ms, dict) and ms.get("is_money_shot"):
+            keep_idx = idx
+            break
+
+    for idx in sd_indices:
+        if idx == keep_idx:
+            continue
+        sn = scenes[idx].get("scene_number", idx + 1)
+        scenes[idx]["narrative_purpose"] = "DETAIL"
+        w.append(AutoFixWarning(
+            f"scenes[{idx}].narrative_purpose",
+            f"Scene {sn}: STRUCTURAL_DETAIL → DETAIL (only 1 allowed, kept Scene "
+            f"{scenes[keep_idx].get('scene_number', keep_idx + 1)})",
         ))
 
 
@@ -967,7 +1045,7 @@ def _fix_warning_line_element_sync(d: dict, scenes: list, w: list) -> None:
             fixed_action = _closest_match(wl_action, VALID_FOOD_ACTIONS, wl_action)
             if fixed_action != wl_action:
                 old = d.get("warning_line", "")
-                d["warning_line"] = old.replace(wl_action, fixed_action, 1)
+                d["warning_line"] = re.sub(re.escape(wl_action), fixed_action, old, count=1, flags=re.IGNORECASE)
                 w.append(AutoFixWarning("warning_line", f"Auto-fixed action '{wl_action}' → '{fixed_action}'"))
                 wl_action = fixed_action
             else:
@@ -1101,7 +1179,7 @@ def _fix_thermal_first_word(d: dict, scenes: list, w: list) -> None:
     # Determine temperature word from texture group + concept_hash for variety
     texture = _get_texture_group(d)
     h = _concept_hash(d)
-    temps = _TEXTURE_TO_TEMPS.get(texture, ["Still warm.", "The heat.", "Fresh out.", "Just set."])
+    temps = _TEXTURE_TO_TEMPS.get(texture, ["Still warm.", "The heat.", "Barely cooled.", "Scorched."])
     temp_sentence = temps[h % len(temps)]
 
     # Prepend temperature sentence
@@ -1174,6 +1252,56 @@ def _fix_narrator_vo_sync(scenes: list, w: list) -> None:
             pass
 
 
+def _fix_duplicate_vo_across_scenes(scenes: list, w: list) -> None:
+    """Detect and silence duplicate narrator_script lines across scenes.
+
+    Duplicate VO → ElevenLabs generates same audio twice → broken pacing.
+    Second occurrence → [silence], narrator cleared.
+    Skips: [silence], empty, 1-word lines (too generic: "Warm.", "Cold.").
+    """
+    if len(scenes) < 3:
+        return
+
+    seen: dict = {}  # normalized text → first scene index
+
+    for i, scene in enumerate(scenes):
+        if not isinstance(scene, dict):
+            continue
+
+        narrator = scene.get("narrator_script", "")
+        if not isinstance(narrator, str) or not narrator.strip():
+            continue
+
+        vo_seg = scene.get("voiceover_segment", "")
+        if isinstance(vo_seg, str) and vo_seg.strip() == "[silence]":
+            continue
+
+        # Normalize: lowercase, strip punctuation, collapse whitespace
+        normalized = re.sub(r'[.,!?;:\-\u2014\u2013]+', '', narrator.lower()).strip()
+        normalized = re.sub(r'\s+', ' ', normalized)
+
+        # Skip 1-word lines (generic: "Warm.", "Cold.", "Crunch.")
+        if len(normalized.split()) < 2:
+            continue
+
+        if normalized in seen:
+            first_idx = seen[normalized]
+            first_sn = (
+                scenes[first_idx].get("scene_number", first_idx + 1)
+                if isinstance(scenes[first_idx], dict) else first_idx + 1
+            )
+            sn = scene.get("scene_number", i + 1)
+            scene["voiceover_segment"] = "[silence]"
+            scene["narrator_script"] = ""
+            w.append(AutoFixWarning(
+                f"scenes[{i}].narrator_script",
+                f"Duplicate VO in Scene {sn} (same as Scene {first_sn}): "
+                f"'{narrator[:50]}' → [silence]",
+            ))
+        else:
+            seen[normalized] = i
+
+
 def _fix_scene_durations(scenes: list, w: list) -> None:
     """Force Scene 1 duration=2.0, Scene N duration=1.0."""
     if not scenes:
@@ -1241,7 +1369,7 @@ def _fix_scene_n_constraints(d: dict, scenes: list, w: list) -> None:
                 if not isinstance(elem, str):
                     continue
                 elem_lower = elem.lower()
-                is_banned = any(banned in elem_lower for banned in _BANNED_LOOP_MOTIONS)
+                is_banned = any(re.search(r'\b' + re.escape(banned) + r'\b', elem_lower) for banned in _BANNED_LOOP_MOTIONS)
                 if not is_banned:
                     safe.append(elem)
             if len(safe) < len(motion):
@@ -1297,16 +1425,19 @@ def _fix_scene_n_minus_1_vo(d: dict, scenes: list, w: list) -> None:
             f"Auto-stripped extras, kept warning_line only: '{current_vo[:50]}' → '{expected_vo}'"))
         return
 
-    # Warning line completely absent — inject it
-    if current_vo.strip() and current_vo.strip() != "[silence]":
-        pen["voiceover_segment"] = expected_vo
-        pen["narrator_script"] = wl_clean
-        w.append(AutoFixWarning(f"scenes[{pen_idx}].voiceover_segment",
-            f"Auto-replaced with warning_line: '{current_vo[:50]}' → '{expected_vo}'"))
+    # Warning line completely absent — inject it (including empty/silence scenes)
+    pen["voiceover_segment"] = expected_vo
+    pen["narrator_script"] = wl_clean
+    w.append(AutoFixWarning(f"scenes[{pen_idx}].voiceover_segment",
+        f"Auto-replaced with warning_line: '{current_vo[:50]}' → '{expected_vo}'"))
 
 
 def _fix_vo_trigger_injection(d: dict, scenes: list, w: list) -> None:
-    """If completion_bait.vo_trigger not in its scene's voiceover_segment → append it."""
+    """If completion_bait.vo_trigger not in its scene's voiceover_segment → append it.
+
+    When the target scene is a money_shot ([silence]/MODE_B), relocate
+    completion_bait to an adjacent scene (prefer scene_number - 1).
+    """
     cb = d.get("completion_bait")
     if not isinstance(cb, dict):
         return
@@ -1316,38 +1447,124 @@ def _fix_vo_trigger_injection(d: dict, scenes: list, w: list) -> None:
         return
 
     trigger_clean = vo_trigger.rstrip(".").rstrip("…").strip()
+
+    # Find target scene — may relocate if money_shot blocks injection
+    target_scene = None
     for scene in scenes:
         if not isinstance(scene, dict):
             continue
         if scene.get("scene_number") != cb_scene_num:
             continue
 
-        # Never inject vo_trigger into money shot scenes — would break [silence] / MODE_B_PATTERN
         ms = scene.get("money_shot")
         if isinstance(ms, dict) and ms.get("is_money_shot"):
-            return
-
-        segment = scene.get("voiceover_segment", "")
-        if trigger_clean in segment:
-            return  # already present
-
-        # Append trigger to VO
-        if segment and segment.strip() != "[silence]":
-            scene["voiceover_segment"] = f"{segment.rstrip()} {vo_trigger}"
+            # Money_shot blocks injection — relocate to adjacent scene
+            # Prefer scene before money_shot, fallback to scene after
+            candidates = []
+            for s in scenes:
+                if not isinstance(s, dict):
+                    continue
+                sn = s.get("scene_number", 0)
+                s_ms = s.get("money_shot")
+                is_ms = isinstance(s_ms, dict) and s_ms.get("is_money_shot")
+                vo = s.get("voiceover_segment", "")
+                is_silence = isinstance(vo, str) and vo.strip() in ("", "[silence]")
+                # Skip: money_shot, silence-only, first scene, last 2 scenes
+                if is_ms or is_silence or sn <= 1 or sn >= len(scenes) - 1:
+                    continue
+                candidates.append(s)
+            if not candidates:
+                return
+            # Pick the closest scene before money_shot, else closest after
+            best = None
+            for c in candidates:
+                csn = c.get("scene_number", 0)
+                if csn < cb_scene_num:
+                    if best is None or csn > best.get("scene_number", 0):
+                        best = c
+            if best is None:
+                best = candidates[0]  # fallback: first available
+            target_scene = best
+            # Update completion_bait.scene_number to match relocation
+            new_sn = target_scene.get("scene_number", cb_scene_num - 1)
+            cb["scene_number"] = new_sn
+            w.append(AutoFixWarning(
+                "completion_bait.scene_number",
+                f"Relocated from money_shot Scene {cb_scene_num} → Scene {new_sn}",
+            ))
+            break
         else:
-            scene["voiceover_segment"] = f"[whispers] {vo_trigger}"
+            target_scene = scene
+            break
 
-        # Also update narrator_script
-        narrator = scene.get("narrator_script", "")
-        trigger_plain = _strip_tags(vo_trigger)
-        if trigger_plain and trigger_plain not in narrator:
-            scene["narrator_script"] = f"{narrator.rstrip()} {trigger_plain}".strip() if narrator else trigger_plain
+    if target_scene is None:
+        return
 
-        w.append(AutoFixWarning(
-            f"scenes[{scene.get('scene_number', '?')}].voiceover_segment",
-            f"Auto-injected vo_trigger: '{vo_trigger[:40]}'",
-        ))
-        break
+    segment = target_scene.get("voiceover_segment", "")
+    if trigger_clean in segment:
+        return  # already present
+
+    # Word-budget check: ensure trigger fits within scene duration limit
+    trigger_plain = _strip_tags(vo_trigger)
+    trigger_words = len(trigger_plain.split()) if trigger_plain else 0
+    narrator = target_scene.get("narrator_script", "")
+    current_words = len(narrator.strip().split()) if isinstance(narrator, str) and narrator.strip() else 0
+    dur = target_scene.get("duration_seconds", 2.0)
+    try:
+        dur_f = float(dur)
+    except (ValueError, TypeError):
+        dur_f = 2.0
+    max_w = _max_words_for_duration(dur_f)
+
+    if current_words + trigger_words > max_w:
+        # Try other non-money, non-silence scenes for room
+        fallback = None
+        for s in scenes:
+            if not isinstance(s, dict) or s is target_scene:
+                continue
+            sn = s.get("scene_number", 0)
+            if sn <= 1 or sn >= len(scenes) - 1:
+                continue
+            s_ms = s.get("money_shot")
+            if isinstance(s_ms, dict) and s_ms.get("is_money_shot"):
+                continue
+            s_vo = s.get("voiceover_segment", "")
+            if isinstance(s_vo, str) and s_vo.strip() in ("", "[silence]"):
+                continue
+            s_nar = s.get("narrator_script", "")
+            s_words = len(s_nar.strip().split()) if isinstance(s_nar, str) and s_nar.strip() else 0
+            s_dur = s.get("duration_seconds", 2.0)
+            try:
+                s_dur_f = float(s_dur)
+            except (ValueError, TypeError):
+                s_dur_f = 2.0
+            if s_words + trigger_words <= _max_words_for_duration(s_dur_f):
+                fallback = s
+                break
+        if fallback is not None:
+            target_scene = fallback
+            cb["scene_number"] = target_scene.get("scene_number", cb.get("scene_number"))
+            segment = target_scene.get("voiceover_segment", "")
+            narrator = target_scene.get("narrator_script", "")
+        else:
+            return  # No scene has room — skip injection, validator will flag
+
+    # Append trigger to VO
+    if segment and segment.strip() != "[silence]":
+        target_scene["voiceover_segment"] = f"{segment.rstrip()} {vo_trigger}"
+    else:
+        target_scene["voiceover_segment"] = f"[whispers] {vo_trigger}"
+
+    # Also update narrator_script
+    if trigger_plain and (not isinstance(narrator, str) or trigger_plain not in narrator):
+        nar_str = narrator if isinstance(narrator, str) else ""
+        target_scene["narrator_script"] = f"{nar_str.rstrip()} {trigger_plain}".strip() if nar_str else trigger_plain
+
+    w.append(AutoFixWarning(
+        f"scenes[{target_scene.get('scene_number', '?')}].voiceover_segment",
+        f"Auto-injected vo_trigger: '{vo_trigger[:40]}'",
+    ))
+    return
 
 
 def _fix_description_line1(d: dict, w: list) -> None:
@@ -1433,7 +1650,12 @@ def _fix_narrator_word_count(scenes: list, w: list) -> None:
         except (ValueError, TypeError):
             duration = 2.0
 
-        max_words = _max_words_for_duration(duration)
+        # Account for pause tags consuming scene time budget
+        vo_seg = scene.get("voiceover_segment", "")
+        pause_time = _estimate_pause_time(vo_seg) if isinstance(vo_seg, str) else 0.0
+        effective_duration = max(duration - pause_time, 1.0)  # floor 1.0s
+
+        max_words = _max_words_for_duration(effective_duration)
         words = narrator.strip().split()
 
         if len(words) <= max_words:
@@ -1563,6 +1785,7 @@ def _flag_semantic_truncation(d: dict, scenes: list, w: list) -> None:
 
     Heuristic: if narrator_script has ≤5 words and ends with a transitive verb,
     it's likely been truncated to lose its object. Flag as warning for review.
+    Also catches 1-word transitive verbs ("Smells.", "Tastes.") — always truncated.
     """
     for i, scene in enumerate(scenes):
         if not isinstance(scene, dict):
@@ -1572,7 +1795,18 @@ def _flag_semantic_truncation(d: dict, scenes: list, w: list) -> None:
             continue
 
         words = narrator.strip().split()
-        if len(words) > 5 or len(words) < 2:
+        if len(words) > 5:
+            continue
+
+        # 1-word transitive verb = always truncated (missing object)
+        if len(words) == 1:
+            only_word = words[0].rstrip(".,!?;:").lower()
+            if only_word in _TRANSITIVE_VERBS:
+                sn = scene.get("scene_number", i + 1)
+                w.append(AutoFixWarning(
+                    f"scenes[{sn}].narrator_script",
+                    f"Lone transitive verb: '{narrator}' — missing object (truncated VO)",
+                ))
             continue
 
         last_word = words[-1].rstrip(".,!?;:").lower()
@@ -1616,7 +1850,10 @@ def _fix_warning_line_format_rotation(d: dict, scenes: list, w: list) -> None:
     elif target == "D":
         verb_s = _CONSEQUENCE_VERBS_LIST[h % len(_CONSEQUENCE_VERBS_LIST)]
         # Plural elements (walls, columns, stairs) need base verb form
-        if element.endswith("s"):
+        # Exclude singular nouns ending in "s" (buttress, apse, etc.)
+        _SINGULAR_S = {"buttress", "apse", "glass", "gas", "recess", "truss", "compass"}
+        is_plural = element.endswith("s") and element.lower() not in _SINGULAR_S
+        if is_plural:
             # De-conjugate 3rd person: "watches"→"watch" (-es), "breathes"→"breathe" (-s)
             if verb_s.endswith(("ches", "shes", "xes", "zes", "sses")):
                 verb = verb_s[:-2]
@@ -1692,11 +1929,11 @@ def _fix_controversy_rotation(d: dict, w: list) -> None:
 _ONE_MORE_PATTERN = re.compile(r"^One\s+more\s+\w+", re.IGNORECASE)
 
 _CB_ALTERNATIVES = [
-    "Wait for the {food}.",
-    "Watch what happens next.",
-    "You haven't seen the {element}.",
-    "Almost there.",
-    "The best part is coming.",
+    "Wait for it.",       # 3 words — fits 1.5s scenes
+    "Watch the {food}.",  # 3 words
+    "Almost there.",      # 2 words
+    "Not yet.",           # 2 words
+    "Keep watching.",     # 2 words
 ]
 
 _IDENTITY_PATTERN = re.compile(
@@ -1749,8 +1986,15 @@ def _fix_completion_bait_rotation(d: dict, w: list) -> None:
         return
 
     vo_trigger = cb.get("vo_trigger", "")
-    if not isinstance(vo_trigger, str) or not vo_trigger.strip():
-        # Present but empty vo_trigger — fill it
+    # Treat tag-only triggers as empty ("[silence]", "[pause]", etc.)
+    _TAG_ONLY = re.compile(r'^\s*(\[[\w\s]+\]\s*)+$')
+    is_empty = (
+        not isinstance(vo_trigger, str)
+        or not vo_trigger.strip()
+        or _TAG_ONLY.match(vo_trigger)
+    )
+    if is_empty:
+        # Present but empty/garbage vo_trigger — fill it
         template = _CB_ALTERNATIVES[h % len(_CB_ALTERNATIVES)]
         cb["vo_trigger"] = template.format(food=food, element=element)
         w.append(AutoFixWarning(
@@ -2154,7 +2398,7 @@ def _fix_hook_first_words_sync(d: dict, scenes: list, w: list) -> None:
     if not isinstance(scene1, dict):
         return
     narrator = scene1.get("narrator_script", "")
-    if not isinstance(narrator, str):
+    if not isinstance(narrator, str) or not narrator.strip():
         return
 
     fw_clean = first_words.strip().rstrip(".")
@@ -2176,6 +2420,352 @@ def _fix_hook_first_words_sync(d: dict, scenes: list, w: list) -> None:
             f"Hook sync: updated first_words '{first_words}' → '{new_fw}'"
             f" (narrator is authoritative after thermal/truncation fixes)",
         ))
+
+
+def _fix_money_shot_saliva_trigger(d: dict, scenes: list, w: list) -> None:
+    """Inject a saliva trigger word into money_shot.still_image_description.
+
+    Craving anchor: the money_shot description MUST contain a physical action word
+    (stretching, dripping, cracking, melting, etc.) to trigger salivation response.
+    If missing, append a texture-appropriate trigger phrase.
+    """
+    _SALIVA_TRIGGER_WORDS: set = {
+        "stretching", "stretch", "dripping", "drip", "drips",
+        "cracking", "crack", "cracks", "breaking", "break", "breaks", "snapping", "snap",
+        "melting", "melt", "melts", "pouring", "pour", "pours",
+        "oozing", "ooze", "oozes", "soaking", "soak", "absorbing", "absorbed",
+        "bubbling", "bubble", "sizzling", "sizzle", "pulling", "pull",
+        "tearing", "tear", "splitting", "split", "fracturing", "fracture",
+    }
+
+    # Texture → best saliva trigger phrase to append
+    _TEXTURE_TRIGGERS: dict = {
+        "crispy": "with cracks splitting across the surface",
+        "crunchy": "with fractures cracking through layers",
+        "brittle": "with pieces snapping apart",
+        "creamy": "with filling oozing from the center",
+        "chewy": "with strands stretching between halves",
+        "smooth": "with glaze melting down the surface",
+        "gooey": "with filling dripping in thick strands",
+        "silky": "with liquid pouring over the edge",
+        "crunchy-wet": "with juice dripping through the crust",
+    }
+
+    for scene in scenes:
+        if not isinstance(scene, dict):
+            continue
+        ms = scene.get("money_shot")
+        if not isinstance(ms, dict) or not ms.get("is_money_shot"):
+            continue
+
+        desc = ms.get("still_image_description", "")
+        if not isinstance(desc, str) or not desc.strip():
+            continue
+
+        desc_lower = desc.lower()
+        if any(re.search(r'\b' + re.escape(t) + r'\b', desc_lower) for t in _SALIVA_TRIGGER_WORDS):
+            return  # Already has trigger (word-boundary match, synced with validator)
+
+        texture = _get_texture_group(d)
+        trigger_phrase = _TEXTURE_TRIGGERS.get(texture, "with filling oozing from the center")
+        new_desc = f"{desc.rstrip('., ')} {trigger_phrase}"
+        ms["still_image_description"] = new_desc
+        w.append(AutoFixWarning(
+            f"scenes[{scene.get('scene_number', '?')}].money_shot.still_image_description",
+            f"Injected saliva trigger: '{trigger_phrase}'",
+        ))
+        return  # Only one money_shot
+
+
+def _fix_olfactory_channel_injection(d: dict, scenes: list, w: list) -> None:
+    """Inject olfactory word when 4-channel audit finds ZERO olfactory content.
+
+    Gemini 3 Pro guide: STOP-LEVEL verification instructions are unreliable.
+    Deterministic fallback: inject "Smells like [food]." into a suitable scene.
+    Only fires when NO olfactory stem found after all prior VO fixes.
+    """
+    # Scan all VO for olfactory stems
+    all_vo = ""
+    for s in scenes:
+        if isinstance(s, dict):
+            vo = s.get("voiceover_segment", "")
+            if isinstance(vo, str) and vo.strip() != "[silence]":
+                all_vo += " " + vo.lower()
+    clean = re.sub(r'\[[\w\s]+\]', '', all_vo)
+
+    if any(re.search(r'\b' + re.escape(stem), clean) for stem in _OLFACTORY_STEMS):
+        return  # Already has olfactory content
+
+    # Build tiered olfactory phrases (3-word, 2-word, 1-word)
+    food_name = _get_food_name(d) or "sugar"
+    food_words = food_name.lower().split()
+    _COLORS = {"red", "blue", "green", "yellow", "white", "black", "brown", "pink", "orange", "purple", "golden"}
+    food_word = next((fw for fw in food_words if fw not in _COLORS), food_words[-1])
+
+    # Tiered by word count: try longest first, fall back to shorter
+    _PHRASES = [
+        (3, f"Smells like {food_word}."),   # 3 words: "Smells like croissant."
+        (2, "Sweet air."),                   # 2 words: "Sweet air."
+        (1, "Yeast."),                       # 1 word:  "Yeast."
+    ]
+
+    # Find target scene: not scene 1, not last 2, not money_shot, not [silence]
+    target_idx = None
+    chosen_phrase = None
+    for need_words, phrase_candidate in _PHRASES:
+        for i in range(1, max(len(scenes) - 2, 2)):
+            scene = scenes[i] if i < len(scenes) else None
+            if not isinstance(scene, dict):
+                continue
+            ms = scene.get("money_shot")
+            if isinstance(ms, dict) and ms.get("is_money_shot"):
+                continue
+            vo = scene.get("voiceover_segment", "")
+            if isinstance(vo, str) and vo.strip() == "[silence]":
+                continue
+            narrator = scene.get("narrator_script", "")
+            if not isinstance(narrator, str):
+                continue
+            dur = scene.get("duration_seconds", 2.0)
+            try:
+                dur_f = float(dur)
+            except (ValueError, TypeError):
+                dur_f = 2.0
+            current_words = len(narrator.strip().split()) if narrator.strip() else 0
+            max_w = _max_words_for_duration(dur_f)
+            if current_words + need_words <= max_w:
+                target_idx = i
+                chosen_phrase = phrase_candidate
+                break
+        if target_idx is not None:
+            break
+
+    phrase = chosen_phrase
+    if target_idx is None:
+        w.append(AutoFixWarning(
+            "voiceover.sensory_channels",
+            "Missing OLFACTORY — no scene has room to inject (flag only)",
+        ))
+        return
+
+    scene = scenes[target_idx]
+    old_narrator = scene.get("narrator_script", "")
+    old_vo = scene.get("voiceover_segment", "")
+
+    new_narrator = f"{old_narrator} {phrase}".strip() if old_narrator.strip() else phrase
+    scene["narrator_script"] = new_narrator
+
+    # Append phrase to existing VO, preserving all intermediate tags ([pause], etc.)
+    if old_vo and old_vo.strip():
+        scene["voiceover_segment"] = f"{old_vo.rstrip()} {phrase}"
+    else:
+        scene["voiceover_segment"] = f"[warm] {new_narrator}"
+
+    sn = scene.get("scene_number", target_idx + 1)
+    w.append(AutoFixWarning(
+        f"scenes[{target_idx}].narrator_script",
+        f"Injected OLFACTORY in Scene {sn}: '{phrase}'",
+    ))
+
+
+def _fix_temporal_channel_injection(d: dict, scenes: list, w: list) -> None:
+    """Inject temporal freshness word when 4-channel audit finds ZERO temporal content.
+
+    Temporal freshness = "just made" urgency, active process happening NOW.
+    Detected by: "still X-ing", "just X-ed", "fresh", or active-process -ing words.
+    """
+    _TEMPORAL_PATTERNS_AC = [
+        re.compile(r'\bstill\s+\w+ing\b', re.IGNORECASE),
+        re.compile(r'\bjust\s+\w+ed\b', re.IGNORECASE),
+        re.compile(r'\bjust\s+(?:set|made|cut|lit|split|out)\b', re.IGNORECASE),
+        re.compile(r'\bfresh(?:ly)?\b', re.IGNORECASE),
+    ]
+    _TEMPORAL_ACTIVE = {
+        "bubbling", "dripping", "melting", "sizzling", "steaming",
+        "oozing", "caramelizing", "crisping", "browning", "toasting",
+        "roasting", "baking", "brewing", "boiling", "glazing",
+        "crystallizing", "hardening", "setting", "cooling", "rising",
+        "frying", "grilling", "smoking", "pouring", "spreading",
+    }
+
+    all_vo = ""
+    for s in scenes:
+        if isinstance(s, dict):
+            vo = s.get("voiceover_segment", "")
+            if isinstance(vo, str) and vo.strip() != "[silence]":
+                all_vo += " " + vo.lower()
+    clean = re.sub(r'\[[\w\s]+\]', '', all_vo)
+
+    has_temporal = (
+        any(p.search(clean) for p in _TEMPORAL_PATTERNS_AC)
+        or any(re.search(r'\b' + re.escape(w) + r'\b', clean) for w in _TEMPORAL_ACTIVE)
+    )
+    if has_temporal:
+        return
+
+    # Tiered phrases (2-word, 1-word)
+    _PHRASES = [
+        (2, "Still dripping."),
+        (1, "Fresh."),
+    ]
+
+    target_idx = None
+    chosen_phrase = None
+    for need_words, phrase_candidate in _PHRASES:
+        for i in range(1, max(len(scenes) - 2, 2)):
+            scene = scenes[i] if i < len(scenes) else None
+            if not isinstance(scene, dict):
+                continue
+            ms = scene.get("money_shot")
+            if isinstance(ms, dict) and ms.get("is_money_shot"):
+                continue
+            vo = scene.get("voiceover_segment", "")
+            if isinstance(vo, str) and vo.strip() == "[silence]":
+                continue
+            narrator = scene.get("narrator_script", "")
+            if not isinstance(narrator, str):
+                continue
+            dur = scene.get("duration_seconds", 2.0)
+            try:
+                dur_f = float(dur)
+            except (ValueError, TypeError):
+                dur_f = 2.0
+            current_words = len(narrator.strip().split()) if narrator.strip() else 0
+            max_w = _max_words_for_duration(dur_f)
+            if current_words + need_words <= max_w:
+                target_idx = i
+                chosen_phrase = phrase_candidate
+                break
+        if target_idx is not None:
+            break
+
+    if target_idx is None:
+        w.append(AutoFixWarning(
+            "voiceover.sensory_channels",
+            "Missing TEMPORAL FRESHNESS — no scene has room to inject (flag only)",
+        ))
+        return
+
+    phrase = chosen_phrase
+    scene = scenes[target_idx]
+    old_narrator = scene.get("narrator_script", "")
+    old_vo = scene.get("voiceover_segment", "")
+
+    new_narrator = f"{old_narrator} {phrase}".strip() if old_narrator.strip() else phrase
+    scene["narrator_script"] = new_narrator
+
+    # Append phrase to existing VO, preserving all intermediate tags ([pause], etc.)
+    if old_vo and old_vo.strip():
+        scene["voiceover_segment"] = f"{old_vo.rstrip()} {phrase}"
+    else:
+        scene["voiceover_segment"] = f"[whispers] {new_narrator}"
+
+    sn = scene.get("scene_number", target_idx + 1)
+    w.append(AutoFixWarning(
+        f"scenes[{target_idx}].narrator_script",
+        f"Injected TEMPORAL in Scene {sn}: '{phrase}'",
+    ))
+
+
+def _fix_tactile_channel_injection(d: dict, scenes: list, w: list) -> None:
+    """Inject tactile word when 4-channel audit finds ZERO tactile content.
+
+    Tactile = physical texture sensation the viewer can imagine feeling.
+    Detected by: _TACTILE_STEMS word list (sticky, crunchy, gooey, etc.).
+    """
+    _TACTILE_STEMS: set = {
+        "stick", "sticky", "sticking", "sticks",
+        "squishy", "rough", "smooth", "soft", "hard", "wet", "dry",
+        "gooey", "crispy", "crunchy", "slippery", "gritty",
+        "velvety", "silky", "pull", "pulling", "pulls",
+        "sink", "sinking", "sinks", "press", "pressing", "presses",
+        "squeeze", "squeezing", "crumble", "crumbling", "crumbles",
+        "flaky", "elastic", "rubbery", "brittle",
+        "stretching", "stretches", "bounce", "bouncing",
+    }
+
+    all_vo = ""
+    for s in scenes:
+        if isinstance(s, dict):
+            vo = s.get("voiceover_segment", "")
+            if isinstance(vo, str) and vo.strip() != "[silence]":
+                all_vo += " " + vo.lower()
+    clean = re.sub(r'\[[\w\s]+\]', '', all_vo)
+
+    if any(re.search(r'\b' + re.escape(stem) + r'\b', clean) for stem in _TACTILE_STEMS):
+        return  # Already has tactile content
+
+    # Build tiered tactile phrases keyed to food texture
+    texture = _get_texture_group(d)
+    _TEXTURE_PHRASES: dict = {
+        "crispy": [(1, "Crunchy."), (1, "Crispy.")],
+        "crunchy": [(1, "Crunchy."), (1, "Crispy.")],
+        "brittle": [(1, "Brittle."), (1, "Flaky.")],
+        "creamy": [(1, "Smooth."), (1, "Silky.")],
+        "chewy": [(1, "Sticky."), (2, "Still pulling.")],
+        "smooth": [(1, "Smooth."), (1, "Silky.")],
+        "gooey": [(1, "Sticky."), (1, "Gooey.")],
+        "silky": [(1, "Silky."), (1, "Smooth.")],
+        "crunchy-wet": [(1, "Crunchy."), (1, "Wet.")],
+    }
+    phrases = _TEXTURE_PHRASES.get(texture, [(1, "Sticky."), (1, "Crunchy.")])
+
+    target_idx = None
+    chosen_phrase = None
+    for need_words, phrase_candidate in phrases:
+        for i in range(1, max(len(scenes) - 2, 2)):
+            scene = scenes[i] if i < len(scenes) else None
+            if not isinstance(scene, dict):
+                continue
+            ms = scene.get("money_shot")
+            if isinstance(ms, dict) and ms.get("is_money_shot"):
+                continue
+            vo = scene.get("voiceover_segment", "")
+            if isinstance(vo, str) and vo.strip() == "[silence]":
+                continue
+            narrator = scene.get("narrator_script", "")
+            if not isinstance(narrator, str):
+                continue
+            dur = scene.get("duration_seconds", 2.0)
+            try:
+                dur_f = float(dur)
+            except (ValueError, TypeError):
+                dur_f = 2.0
+            current_words = len(narrator.strip().split()) if narrator.strip() else 0
+            max_w = _max_words_for_duration(dur_f)
+            if current_words + need_words <= max_w:
+                target_idx = i
+                chosen_phrase = phrase_candidate
+                break
+        if target_idx is not None:
+            break
+
+    if target_idx is None:
+        w.append(AutoFixWarning(
+            "voiceover.sensory_channels",
+            "Missing TACTILE — no scene has room to inject (flag only)",
+        ))
+        return
+
+    phrase = chosen_phrase
+    scene = scenes[target_idx]
+    old_narrator = scene.get("narrator_script", "")
+    old_vo = scene.get("voiceover_segment", "")
+
+    new_narrator = f"{old_narrator} {phrase}".strip() if old_narrator.strip() else phrase
+    scene["narrator_script"] = new_narrator
+
+    # Append phrase to existing VO, preserving all intermediate tags ([pause], etc.)
+    if old_vo and old_vo.strip():
+        scene["voiceover_segment"] = f"{old_vo.rstrip()} {phrase}"
+    else:
+        scene["voiceover_segment"] = f"[warm] {new_narrator}"
+
+    sn = scene.get("scene_number", target_idx + 1)
+    w.append(AutoFixWarning(
+        f"scenes[{target_idx}].narrator_script",
+        f"Injected TACTILE in Scene {sn}: '{phrase}'",
+    ))
 
 
 def _fix_full_script_rebuild(d: dict, scenes: list, w: list) -> None:
