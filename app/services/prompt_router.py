@@ -148,6 +148,7 @@ from app.services.gen1_validator import (
     validate_gen1 as python_validate_gen1,
     ValidationResult as Gen1ValidationResult,
 )
+from app.services.gen1_autocorrect import autocorrect_gen1
 from app.services.gen2_autocorrect import autocorrect_gen2
 from app.services.gen2_validator import (
     Gen2Validator,
@@ -432,6 +433,13 @@ class PromptRouter:
                 logger.info(f"[GEN1] viral_assessment: PRESENT")
             else:
                 logger.warning(f"[GEN1] viral_assessment: MISSING (will use defaults)")
+
+            # Run autocorrect BEFORE Pydantic validation (mirrors GEN2 pattern)
+            json_data, ac_warnings = autocorrect_gen1(json_data)
+            if ac_warnings:
+                logger.info(f"[GEN1_AUTOCORRECT] Applied {len(ac_warnings)} auto-fixes before parsing")
+                for aw in ac_warnings:
+                    logger.debug(f"  {aw}")
 
             # Parse into Gen1Output model
             try:
@@ -1260,6 +1268,20 @@ REQUIREMENTS:
     # MERGE: Combine GEN1 + GEN2 into final project
     # =========================================================================
 
+    @staticmethod
+    def _get_gen1_extra(gen1, key: str):
+        """Get field from gen1 extras (fields not declared on Gen1Output model)."""
+        if gen1.__pydantic_extra__ and key in gen1.__pydantic_extra__:
+            return gen1.__pydantic_extra__[key]
+        return getattr(gen1, key, None)
+
+    @staticmethod
+    def _get_engagement_extra(gen1, key: str):
+        """Get field from gen1.engagement extras."""
+        if gen1.engagement.__pydantic_extra__ and key in gen1.engagement.__pydantic_extra__:
+            return gen1.engagement.__pydantic_extra__[key]
+        return getattr(gen1.engagement, key, None)
+
     def _parse_price_numeric(self, price_str: str) -> int:
         """Extract numeric value from price string like '$65 per day' or '$2.5M'."""
         if not price_str:
@@ -1980,6 +2002,16 @@ REQUIREMENTS:
             ),
             # Warning line for AERIAL (N-1) scene
             warning_line=gen1.warning_line or "",
+            # --- GEN1 extra fields (zero-loss merge) ---
+            humor=self._get_gen1_extra(gen1, 'humor'),
+            asmr_scenes=self._get_gen1_extra(gen1, 'asmr_scenes'),
+            controversy_seed=self._get_gen1_extra(gen1, 'controversy_seed'),
+            duration_config=self._get_gen1_extra(gen1, 'duration_config'),
+            completion_bait=self._get_gen1_extra(gen1, 'completion_bait'),
+            first_frame_composition_gen1=self._get_gen1_extra(gen1, 'first_frame_composition'),
+            temperature_contrast_global=self._get_gen1_extra(gen1, 'temperature_contrast'),
+            series_identity=self._get_gen1_extra(gen1, 'series_identity'),
+            save_trigger=self._get_engagement_extra(gen1, 'save_trigger'),
             # Replay hooks (v8.0.0+)
             replay_hooks=[rh.model_dump() for rh in gen1.engagement.replay_hooks] if gen1.engagement.replay_hooks else [],
             # Metadata variants A/B/C/D (v8.2.0+)
@@ -2010,6 +2042,20 @@ REQUIREMENTS:
             # GEN2 Global Settings - negative_prompt CRITICAL for image generation
             negative_prompt=gen2.global_settings.negative_prompt if gen2.global_settings else Gen2GlobalSettings().negative_prompt,
         )
+
+        # Catch-all: forward any remaining GEN1 extras not explicitly mapped
+        _already_mapped = {
+            'temperature_contrast', 'loop', 'first_frame_composition',
+            'completion_bait', 'asmr_scenes', 'humor', 'controversy_seed',
+            'duration_config', 'series_identity', 'structure',
+        }
+        if gen1.__pydantic_extra__:
+            for key, val in gen1.__pydantic_extra__.items():
+                if key not in _already_mapped and not hasattr(project, key):
+                    try:
+                        setattr(project, key, val)  # Works because extra='allow'
+                    except Exception:
+                        pass  # Skip if field name conflicts
 
         # Log merge summary
         logger.info("=" * 70)

@@ -871,6 +871,17 @@ class GlazeCityProject(BaseModel):
     # Warning Line — catchy warning for AERIAL (N-1) scene
     warning_line: str = Field(default="", description="Memorable warning for AERIAL scene, 3-8 words")
 
+    # --- GEN1 extra fields (zero-loss merge) ---
+    humor: Optional[List[Dict[str, Any]]] = Field(default=None, description="Standalone humor captions per scene")
+    asmr_scenes: Optional[List[int]] = Field(default=None, description="Scene numbers with ASMR treatment")
+    controversy_seed: Optional[Dict[str, Any]] = Field(default=None, description="Controversy engagement strategy")
+    duration_config: Optional[Dict[str, Any]] = Field(default=None, description="Duration breakdown: hook/exploration/escalation/climax zones")
+    completion_bait: Optional[Dict[str, Any]] = Field(default=None, description="Verbal open loop for retention")
+    first_frame_composition_gen1: Optional[Dict[str, Any]] = Field(default=None, description="GEN1 top-level first frame (pareidolia, text_overlay, etc.)")
+    temperature_contrast_global: Optional[Dict[str, Any]] = Field(default=None, description="GEN1 top-level warm/cold contrast strategy")
+    series_identity: Optional[Dict[str, Any]] = Field(default=None, description="Full series config: recurring_character, watermark, sfx, series_hook")
+    save_trigger: Optional[str] = Field(default=None, description="CTA for viewers to save the video")
+
     # Easter Egg & Loop - REQUIRED
     easter_egg: EasterEgg = Field(..., description="Easter Egg - REQUIRED")
     loop: LoopConfig = Field(..., description="Конфігурація циклу - REQUIRED")

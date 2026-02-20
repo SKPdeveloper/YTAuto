@@ -183,12 +183,19 @@ class Publisher:
                 if scheduled_datetime:
                     logger.info(f"  Scheduled: {scheduled_local_str or scheduled_datetime}")
                 logger.info(f"  Title: {brief.youtube.title}")
-                logger.info(f"  Description: {brief.youtube.description[:100]}...")
+                logger.info(f"  Description: {description[:100]}...")
                 logger.info(f"  Tags: {brief.youtube.tags}")
+                if brief.save_trigger:
+                    logger.info(f"  Save trigger: {brief.save_trigger}")
 
                 status.status = PublishStatus.PENDING
                 status.error = "Dry run - not uploaded"
                 return True, status
+
+            # Append save_trigger CTA to description if available
+            description = brief.youtube.description
+            if brief.save_trigger:
+                description = f"{description}\n\n💾 {brief.save_trigger}"
 
             # Create YouTube API client
             youtube = YouTubeAPI(
@@ -211,7 +218,7 @@ class Publisher:
             success, video_id, error = youtube.upload_video(
                 video_path=video_path,
                 title=brief.youtube.title,
-                description=brief.youtube.description,
+                description=description,
                 tags=brief.youtube.tags,
                 category_id=channel_config.settings.default_category_id,
                 privacy_status=privacy_status,

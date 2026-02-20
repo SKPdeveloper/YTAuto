@@ -179,6 +179,7 @@ class ProjectBrief(BaseModel):
     project_id: str
     youtube: YouTubeMetadata
     publish_config: Optional[ProjectPublishConfig] = None
+    save_trigger: Optional[str] = None
     _meta: Optional[ProjectMeta] = None
 
 

@@ -378,8 +378,11 @@ class AudioStage(BasePipelineStage):
 
             # Generate SFX for each scene
             scenes = project_brief.get("scenes", [])
+            asmr_scenes = set(project_brief.get("asmr_scenes") or [])
+
             for scene in scenes:
                 scene_num = scene.get("scene_number", 0)
+                is_asmr = scene_num in asmr_scenes
 
                 # Get SFX description from scene
                 sfx_desc = (
@@ -398,14 +401,23 @@ class AudioStage(BasePipelineStage):
                     sfx_paths[f"scene_{scene_num}"] = sfx_path
                     continue
 
-                logger.info(f"[{self.project_id}] Generating SFX for scene {scene_num}: {sfx_desc[:40]}...")
+                # ASMR scenes: softer, more textural, longer SFX
+                if is_asmr:
+                    sfx_desc = f"soft ASMR textural {sfx_desc}"
+                    sfx_duration = 5.0
+                    sfx_influence = 0.6
+                    logger.info(f"[{self.project_id}] Generating ASMR SFX for scene {scene_num}: {sfx_desc[:50]}...")
+                else:
+                    sfx_duration = 3.0
+                    sfx_influence = 0.4
+                    logger.info(f"[{self.project_id}] Generating SFX for scene {scene_num}: {sfx_desc[:40]}...")
 
                 try:
                     await self.audio_engine.generate_and_save_sfx(
                         text=sfx_desc,
                         output_path=sfx_path,
-                        duration_seconds=3.0,  # Short scene SFX
-                        prompt_influence=0.4,
+                        duration_seconds=sfx_duration,
+                        prompt_influence=sfx_influence,
                     )
                     sfx_paths[f"scene_{scene_num}"] = sfx_path
 

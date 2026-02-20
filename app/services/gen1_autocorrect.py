@@ -580,19 +580,42 @@ def _fix_structural_detail_count(scenes: list, w: list) -> None:
 
 
 def _fix_easter_egg_and_pinned(d: dict, w: list) -> None:
-    """Fix easter egg comment_bait and pinned comment consistency."""
+    """Fix easter egg fields, comment_bait, and pinned comment consistency."""
     engagement = d.get("engagement")
     has_real_egg = False
+    scenes = d.get("scenes", [])
 
     if isinstance(engagement, dict):
         egg = engagement.get("easter_egg")
         if isinstance(egg, dict):
+            is_audio = egg.get("format") == "AUDIO_ONLY"
+
+            # --- Fill missing object/scene_number/placement (Gemini often omits 1-2) ---
+            if not is_audio:
+                if not egg.get("object") or egg.get("object") == "none":
+                    food = d.get("food_identity", {}).get("primary_food", "candy")
+                    egg["object"] = f"tiny {food} figurine"
+                    w.append(AutoFixWarning("engagement.easter_egg.object", f"Auto-filled missing object: '{egg['object']}'"))
+
+                try:
+                    scene_num = int(egg.get("scene_number", 0))
+                except (ValueError, TypeError):
+                    scene_num = 0
+                if scene_num < 2 or (scenes and scene_num > len(scenes) - 1):
+                    # Pick a middle scene (scene 3, or clamped to valid range)
+                    max_scene = max(len(scenes) - 1, 2)
+                    egg["scene_number"] = min(3, max_scene)
+                    w.append(AutoFixWarning("engagement.easter_egg.scene_number", f"Auto-filled invalid scene_number: {scene_num} → {egg['scene_number']}"))
+
+                if not egg.get("placement"):
+                    egg["placement"] = "background left, 5% of frame, behind main subject"
+                    w.append(AutoFixWarning("engagement.easter_egg.placement", "Auto-filled missing placement"))
+
             obj = egg.get("object", "")
             try:
                 scene_num = int(egg.get("scene_number", 0))
             except (ValueError, TypeError):
                 scene_num = 0
-            is_audio = egg.get("format") == "AUDIO_ONLY"
             has_real_egg = is_audio or (obj and obj != "none" and scene_num > 0)
 
             if not egg.get("comment_bait"):
@@ -2419,6 +2442,16 @@ def _fix_hook_first_words_sync(d: dict, scenes: list, w: list) -> None:
             "hook.first_words",
             f"Hook sync: updated first_words '{first_words}' → '{new_fw}'"
             f" (narrator is authoritative after thermal/truncation fixes)",
+        ))
+
+    # Sync complete_hook_vo with scene[0].voiceover_segment
+    scene1_vo = scene1.get("voiceover_segment", "")
+    old_complete = hook.get("complete_hook_vo", "")
+    if scene1_vo and old_complete != scene1_vo:
+        hook["complete_hook_vo"] = scene1_vo
+        w.append(AutoFixWarning(
+            "hook.complete_hook_vo",
+            f"Synced with scene[0].voiceover_segment: '{scene1_vo[:60]}'",
         ))
 
 

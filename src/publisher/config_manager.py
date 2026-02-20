@@ -237,6 +237,7 @@ class ConfigManager:
             project_id=data.get("project_id", project_id),
             youtube=data.get("youtube", {}),
             publish_config=data.get("publish_config"),
+            save_trigger=data.get("save_trigger") or data.get("engagement", {}).get("save_trigger"),
             _meta=data.get("_meta"),
         )
 

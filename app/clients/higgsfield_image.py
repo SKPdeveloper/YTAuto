@@ -1041,7 +1041,8 @@ class HiggsFieldImageGenerator:
 
     def _sync_upload_reference_direct_input(self, image_path: str) -> None:
         """
-        Прямой метод - делаем input видимым и используем send_keys.
+        Direct method — make original hidden input visible, send_keys to it,
+        then trigger React-compatible events.
         """
         driver = self.browser.driver
 
@@ -1051,80 +1052,119 @@ class HiggsFieldImageGenerator:
         file_path = Path(image_path)
         absolute_path = str(file_path.absolute())
 
-        # Step 1: Полностью пересоздаём input элемент без hidden атрибутов
-        logger.info("[REFERENCE DIRECT] Recreating input element...")
+        # Strategy A: send_keys directly to original input (made visible)
+        logger.info("[REFERENCE DIRECT] Strategy A: send_keys to original input...")
 
-        driver.execute_script("""
-            var oldInp = document.getElementById('image-form-reference');
-            if (oldInp) {
-                // Создаём новый input
-                var newInp = document.createElement('input');
-                newInp.type = 'file';
-                newInp.id = 'image-form-reference-visible';
-                newInp.accept = 'image/jpeg,image/jpg,image/png,image/webp';
-                newInp.style.cssText = 'position: fixed; top: 100px; left: 100px; z-index: 999999; width: 400px; height: 50px; opacity: 1; display: block;';
-
-                // Добавляем на страницу
-                document.body.appendChild(newInp);
-
-                // Добавляем обработчик change
-                newInp.addEventListener('change', function(e) {
-                    console.log('New input change event fired');
-                    if (this.files && this.files.length > 0) {
-                        // Копируем файл в оригинальный input через DataTransfer
-                        var dt = new DataTransfer();
-                        dt.items.add(this.files[0]);
-                        oldInp.files = dt.files;
-
-                        // Trigger change на оригинальном input
-                        var event = new Event('change', {bubbles: true});
-                        oldInp.dispatchEvent(event);
-                        console.log('File transferred to original input');
+        input_found = driver.execute_script("""
+            var inp = document.getElementById('image-form-reference');
+            if (!inp) {
+                // Try finding any file input with 'reference' in name/id/class
+                var allInputs = document.querySelectorAll('input[type="file"]');
+                for (var i = 0; i < allInputs.length; i++) {
+                    var el = allInputs[i];
+                    var attrs = (el.id + ' ' + el.name + ' ' + el.className).toLowerCase();
+                    if (attrs.includes('reference') || attrs.includes('ref')) {
+                        inp = el;
+                        break;
                     }
-                });
-
-                console.log('New visible input created');
+                }
             }
+            if (!inp) return false;
+
+            // Make it interactable for Selenium send_keys
+            inp.style.cssText = 'position: fixed !important; top: 100px !important; left: 100px !important; ' +
+                'z-index: 999999 !important; width: 400px !important; height: 50px !important; ' +
+                'opacity: 1 !important; display: block !important; visibility: visible !important; ' +
+                'pointer-events: auto !important;';
+            inp.removeAttribute('hidden');
+            inp.removeAttribute('aria-hidden');
+            inp.disabled = false;
+            return true;
         """)
+
+        if not input_found:
+            logger.warning("[REFERENCE DIRECT] No reference file input found on page")
+            raise HiggsFieldWebGenerationError("Reference upload direct method failed - no file input found")
 
         time.sleep(0.5)
 
-        # Step 2: Отправляем файл в новый видимый input
-        logger.info("[REFERENCE DIRECT] Sending file to visible input...")
-
+        # Send file path to the now-visible original input
         try:
-            new_input = driver.find_element(By.ID, 'image-form-reference-visible')
-            new_input.send_keys(absolute_path)
-            logger.info(f"[REFERENCE DIRECT] File sent: {file_path.name}")
+            ref_input = driver.execute_script("""
+                var inp = document.getElementById('image-form-reference');
+                if (!inp) {
+                    var allInputs = document.querySelectorAll('input[type="file"]');
+                    for (var i = 0; i < allInputs.length; i++) {
+                        var el = allInputs[i];
+                        var attrs = (el.id + ' ' + el.name + ' ' + el.className).toLowerCase();
+                        if (attrs.includes('reference') || attrs.includes('ref')) return el;
+                    }
+                }
+                return inp;
+            """)
+            ref_input.send_keys(absolute_path)
+            logger.info(f"[REFERENCE DIRECT] File sent to original input: {file_path.name}")
         except Exception as e:
-            logger.error(f"[REFERENCE DIRECT] Failed to find/use visible input: {e}")
-            raise
+            logger.warning(f"[REFERENCE DIRECT] Strategy A send_keys failed: {e}")
+            # Strategy B: create proxy input, transfer via DataTransfer + React setter
+            logger.info("[REFERENCE DIRECT] Strategy B: proxy input + React setter...")
+            self._sync_upload_reference_proxy_input(image_path)
+            return
 
-        # Ждём обработки
-        time.sleep(3)
-
-        # Удаляем временный input
+        # Trigger React-compatible events on the original input
         driver.execute_script("""
-            var tempInp = document.getElementById('image-form-reference-visible');
-            if (tempInp) {
-                tempInp.remove();
+            var inp = document.getElementById('image-form-reference');
+            if (!inp) {
+                var allInputs = document.querySelectorAll('input[type="file"]');
+                for (var i = 0; i < allInputs.length; i++) {
+                    var el = allInputs[i];
+                    var attrs = (el.id + ' ' + el.name + ' ' + el.className).toLowerCase();
+                    if (attrs.includes('reference') || attrs.includes('ref')) { inp = el; break; }
+                }
             }
+            if (!inp) return;
+
+            // React uses its own event system — dispatch both native events
+            ['input', 'change'].forEach(function(evtName) {
+                var evt = new Event(evtName, {bubbles: true, cancelable: true});
+                inp.dispatchEvent(evt);
+            });
+
+            // Also try React fiber internal dispatch (React 16+)
+            var nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+                window.HTMLInputElement.prototype, 'value'
+            );
+            // For file inputs, React tracks via 'change' event at document level
+            // The bubbling native change should be caught by React's delegated handler
+
+            // Restore hidden style after a delay
+            setTimeout(function() {
+                inp.style.cssText = '';
+            }, 2000);
         """)
 
-        # Проверяем результат
+        time.sleep(3)
+
+        # Verify
         for attempt in range(5):
             if self._verify_reference_uploaded():
-                logger.success(f"[REFERENCE DIRECT] Upload VERIFIED!")
+                logger.success("[REFERENCE DIRECT] Upload VERIFIED!")
                 return
-
             logger.debug(f"[REFERENCE DIRECT] Verification attempt {attempt + 1}/5...")
             time.sleep(2)
 
-        # Проверяем файл в оригинальном input
+        # Check if file is at least in the input
         has_files = driver.execute_script("""
             var inp = document.getElementById('image-form-reference');
             if (inp && inp.files && inp.files.length > 0) {
                 return {hasFiles: true, name: inp.files[0].name};
+            }
+            // Check all file inputs
+            var allInputs = document.querySelectorAll('input[type="file"]');
+            for (var i = 0; i < allInputs.length; i++) {
+                if (allInputs[i].files && allInputs[i].files.length > 0) {
+                    return {hasFiles: true, name: allInputs[i].files[0].name, inputId: allInputs[i].id};
+                }
             }
             return {hasFiles: false};
         """)
@@ -1134,6 +1174,95 @@ class HiggsFieldImageGenerator:
             return
 
         raise HiggsFieldWebGenerationError("Reference upload direct method failed - file not in input")
+
+    def _sync_upload_reference_proxy_input(self, image_path: str) -> None:
+        """
+        Strategy B: create a temporary visible input, send_keys to it,
+        then transfer file to original input via DataTransfer + React events.
+        """
+        driver = self.browser.driver
+
+        from pathlib import Path
+        file_path = Path(image_path)
+        absolute_path = str(file_path.absolute())
+
+        driver.execute_script("""
+            var existing = document.getElementById('image-form-reference-visible');
+            if (existing) existing.remove();
+
+            var newInp = document.createElement('input');
+            newInp.type = 'file';
+            newInp.id = 'image-form-reference-visible';
+            newInp.accept = 'image/jpeg,image/jpg,image/png,image/webp';
+            newInp.style.cssText = 'position: fixed; top: 100px; left: 100px; z-index: 999999; width: 400px; height: 50px; opacity: 1; display: block;';
+            document.body.appendChild(newInp);
+        """)
+
+        time.sleep(0.5)
+
+        try:
+            new_input = driver.find_element(By.ID, 'image-form-reference-visible')
+            new_input.send_keys(absolute_path)
+            logger.info(f"[REFERENCE PROXY] File sent to proxy input: {file_path.name}")
+        except Exception as e:
+            logger.error(f"[REFERENCE PROXY] Failed to send file to proxy input: {e}")
+            driver.execute_script("var el = document.getElementById('image-form-reference-visible'); if (el) el.remove();")
+            raise
+
+        # Transfer file from proxy to original input + trigger React events
+        time.sleep(1)
+        driver.execute_script("""
+            var proxyInp = document.getElementById('image-form-reference-visible');
+            var origInp = document.getElementById('image-form-reference');
+            if (!origInp) {
+                var allInputs = document.querySelectorAll('input[type="file"]');
+                for (var i = 0; i < allInputs.length; i++) {
+                    var el = allInputs[i];
+                    if (el.id === 'image-form-reference-visible') continue;
+                    var attrs = (el.id + ' ' + el.name + ' ' + el.className).toLowerCase();
+                    if (attrs.includes('reference') || attrs.includes('ref')) { origInp = el; break; }
+                }
+            }
+
+            if (proxyInp && proxyInp.files && proxyInp.files.length > 0 && origInp) {
+                var dt = new DataTransfer();
+                dt.items.add(proxyInp.files[0]);
+                origInp.files = dt.files;
+
+                // Dispatch React-compatible events
+                ['input', 'change'].forEach(function(evtName) {
+                    var evt = new Event(evtName, {bubbles: true, cancelable: true});
+                    origInp.dispatchEvent(evt);
+                });
+                console.log('File transferred to original input via proxy + React events');
+            }
+
+            // Cleanup
+            if (proxyInp) proxyInp.remove();
+        """)
+
+        time.sleep(3)
+
+        for attempt in range(5):
+            if self._verify_reference_uploaded():
+                logger.success("[REFERENCE PROXY] Upload VERIFIED!")
+                return
+            logger.debug(f"[REFERENCE PROXY] Verification attempt {attempt + 1}/5...")
+            time.sleep(2)
+
+        has_files = driver.execute_script("""
+            var inp = document.getElementById('image-form-reference');
+            if (inp && inp.files && inp.files.length > 0) {
+                return {hasFiles: true, name: inp.files[0].name};
+            }
+            return {hasFiles: false};
+        """)
+
+        if has_files and has_files.get('hasFiles'):
+            logger.warning(f"[REFERENCE PROXY] File is in input ({has_files.get('name')}) but UI not updated. Continuing.")
+            return
+
+        raise HiggsFieldWebGenerationError("Reference upload proxy method failed - file not in input")
 
     def _verify_reference_uploaded(self) -> bool:
         """

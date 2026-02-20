@@ -67,6 +67,12 @@ def extract_youtube_metadata(gen1_data: Dict[str, Any]) -> Dict[str, str]:
                     "pinned_comment": vdata.get("pinned_comment"),
                 }
 
+    # Save trigger (CTA for viewers to save the video)
+    save_trigger = (
+        gen1_data.get("save_trigger")
+        or gen1_data.get("engagement", {}).get("save_trigger", "")
+    )
+
     return {
         "title": title,
         "description": description,
@@ -75,6 +81,7 @@ def extract_youtube_metadata(gen1_data: Dict[str, Any]) -> Dict[str, str]:
         "pinned_comment": pinned_comment,
         "title_variants": title_variants,
         "metadata_variants": metadata_variants,
+        "save_trigger": save_trigger,
     }
 
 
@@ -118,6 +125,13 @@ def format_yt_metadata(metadata: Dict[str, str]) -> str:
     if title_variants:
         lines.append("TITLE VARIANTS")
         lines.append(title_variants)
+        lines.append("")
+
+    # Save trigger CTA
+    save_trigger = metadata.get("save_trigger", "")
+    if save_trigger:
+        lines.append("SAVE TRIGGER")
+        lines.append(save_trigger)
         lines.append("")
 
     # A/B metadata variants (GEN1 v8.2.0)
