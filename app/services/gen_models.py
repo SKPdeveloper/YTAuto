@@ -1110,6 +1110,7 @@ class Gen2SceneInput(BaseModel):
     energy_level: str = Field(default="HIGH", description="Energy level")
     voiceover_segment: str = Field(default="", description="VO segment")
     on_screen_text: str = Field(default="", description="Mute-friendly headline text (3-6 words)")
+    duration_seconds: Optional[float] = Field(default=None, description="Scene duration from GEN1 — for word count calibration")
 
     # GEN1 → GEN2 handoff fields (required by GEN2 prompt)
     reference_hint: str = Field(default="INDEPENDENT", description="PRIMARY | REQUIRES_REF | INDEPENDENT | LOOP_CLOSE")
@@ -1574,6 +1575,7 @@ class DeliveryPayload(BaseModel):
                 energy_level=scene.energy_level,
                 voiceover_segment=scene.voiceover_segment,
                 on_screen_text=scene.on_screen_text,
+                duration_seconds=scene.duration_seconds,
                 reference_hint=scene.reference_hint,
                 gen2_visual_params=scene.gen2_visual_params,
                 scene_tricks=scene.scene_tricks,

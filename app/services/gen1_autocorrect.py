@@ -360,6 +360,7 @@ def autocorrect_gen1(data: Dict[str, Any]) -> Tuple[Dict[str, Any], List[AutoFix
     _fix_narrative_purposes(d, w)
     _fix_easter_egg_and_pinned(d, w)
     _fix_food_visual_ratio(d, scenes, w)
+    _fix_sp_commitment_floor(d, scenes, w)
     _fix_money_shot_vo(d, scenes, w)
     _fix_asmr_whisper_anchor(d, scenes, w)
     _fix_narrative_bridges(scenes, w)
@@ -381,7 +382,12 @@ def autocorrect_gen1(data: Dict[str, Any]) -> Tuple[Dict[str, Any], List[AutoFix
     _fix_description_line1(d, w)
     _fix_title_default_rotation(d, w)       # BUG 6: FOOD_BUILD → other
     _fix_controversy_rotation(d, w)         # BUG 9: THE_PHYSICS → other
+    _fix_completion_bait_rotation(d, w)     # Anti-template-lock: "One more [noun]"
+    _fix_share_trigger_rotation(d, w)       # Anti-template-lock: "[qualifier] [identity]"
+    _fix_series_hook(d, w)                  # P0-2: series_hook missing fallback
     _fix_grey_dominant_color(d, scenes, w)  # OPT: grey→warm color in food scenes
+    _fix_energy_floor(d, scenes, w)        # P0: consecutive LOW ban + max 1 LOW + ramp
+    _fix_hook_first_words_sync(d, scenes, w)  # P0: hook.first_words ↔ narrator_script sync
     _fix_full_script_rebuild(d, scenes, w)  # ALWAYS last — rebuilds from segments
 
     return d, w
@@ -542,6 +548,33 @@ def _fix_food_visual_ratio(d: dict, scenes: list, w: list) -> None:
             w.append(AutoFixWarning(
                 f"scenes[{i}].food_visual_ratio",
                 f"Auto-filled missing → '{scene['food_visual_ratio']}'",
+            ))
+
+
+def _fix_sp_commitment_floor(d: dict, scenes: list, w: list) -> None:
+    """Clamp scenes[1] and scenes[2] sensory_pressure to min 6 (COMMITMENT ZONE).
+
+    Scenes 2-3 are where the viewer decides to stay or swipe.
+    SP < 6 in these scenes signals low energy → higher drop-off risk.
+    """
+    for idx in (1, 2):  # 0-based: Scene 2 and Scene 3
+        if idx >= len(scenes):
+            continue
+        scene = scenes[idx]
+        if not isinstance(scene, dict):
+            continue
+        sp = scene.get("sensory_pressure")
+        if sp is None:
+            continue
+        try:
+            sp_val = int(sp)
+        except (ValueError, TypeError):
+            continue
+        if sp_val < 6:
+            scene["sensory_pressure"] = 6
+            w.append(AutoFixWarning(
+                f"scenes[{idx}].sensory_pressure",
+                f"Commitment zone floor: SP {sp_val} → 6 (Scene {idx + 1} must be >= 6)",
             ))
 
 
@@ -1384,8 +1417,31 @@ def _fix_narrator_word_count(scenes: list, w: list) -> None:
         if len(words) <= max_words:
             continue
 
-        # Truncate to max_words
-        truncated = " ".join(words[:max_words])
+        # Truncate to max_words, then strip dangling words for grammatical completeness
+        DANGLING = {
+            # Articles & determiners
+            "a", "an", "the", "this", "that", "these", "those",
+            # Prepositions
+            "of", "in", "on", "at", "to", "for", "by", "with", "from",
+            "about", "into", "through", "between", "under", "over", "like",
+            # Conjunctions
+            "and", "or", "but", "nor", "yet", "so",
+            # Linking/auxiliary verbs
+            "is", "are", "was", "were", "be", "been",
+            "has", "have", "had", "do", "does",
+            # Modal verbs
+            "would", "could", "should", "can", "may", "might", "will",
+            # Possessives
+            "my", "your", "his", "her", "its", "our", "their",
+            # Relative pronouns
+            "who", "which", "whom", "whose",
+            # Weak-ending adverbs
+            "very", "really", "just", "even", "only", "not",
+        }
+        kept = words[:max_words]
+        while len(kept) > 1 and kept[-1].lower().rstrip(".,!?;:") in DANGLING:
+            kept.pop()
+        truncated = " ".join(kept)
         if truncated[-1] not in ".!?":
             truncated = truncated.rstrip(",;:—–-") + "."
 
@@ -1507,6 +1563,117 @@ def _fix_controversy_rotation(d: dict, w: list) -> None:
         f"Controversy rotation: THE_PHYSICS → {new_tech}"))
 
 
+_ONE_MORE_PATTERN = re.compile(r"^One\s+more\s+\w+", re.IGNORECASE)
+
+_CB_ALTERNATIVES = [
+    "Wait for the {food}.",
+    "Watch what happens next.",
+    "You haven't seen the {element}.",
+    "Almost there.",
+    "The best part is coming.",
+]
+
+_IDENTITY_PATTERN = re.compile(
+    r"^(Real|True|Only|Every)\s+(architects?|chefs?|engineers?|bakers?|foodies?)\b",
+    re.IGNORECASE,
+)
+
+_ST_ALTERNATIVES = [
+    "Tag someone who needs to see this.",
+    "This changes everything about {food}.",
+    "Send this to a {food} lover.",
+    "Nobody expected {element} to look like this.",
+    "Would you eat this?",
+]
+
+
+def _fix_completion_bait_rotation(d: dict, w: list) -> None:
+    """Rotate completion_bait.vo_trigger away from 'One more [noun]' lock.
+
+    Gemini defaults to 'One more slice/layer/piece' — deterministic rotation
+    via concept-hash selects from 5 alternatives.
+    """
+    cb = d.get("completion_bait")
+    if not isinstance(cb, dict):
+        return
+    vo_trigger = cb.get("vo_trigger", "")
+    if not isinstance(vo_trigger, str) or not vo_trigger.strip():
+        return
+    if not _ONE_MORE_PATTERN.match(vo_trigger.strip()):
+        return  # Not locked — already diverse
+
+    h = _concept_hash(d)
+    food = _get_food_name(d) or "this"
+    element = _get_subject(d) or "inside"
+
+    template = _CB_ALTERNATIVES[h % len(_CB_ALTERNATIVES)]
+    new_trigger = template.format(food=food, element=element)
+    cb["vo_trigger"] = new_trigger
+    w.append(AutoFixWarning(
+        "completion_bait.vo_trigger",
+        f"Template rotation: '{vo_trigger[:40]}' → '{new_trigger}'",
+    ))
+
+
+def _fix_share_trigger_rotation(d: dict, w: list) -> None:
+    """Rotate share_trigger away from '[qualifier] + [identity group]' lock.
+
+    Gemini defaults to 'Real architects would...' / 'Only chefs understand...' —
+    deterministic rotation via concept-hash selects from 5 alternatives.
+    """
+    eng = d.get("engagement")
+    if not isinstance(eng, dict):
+        return
+    st = eng.get("share_trigger")
+    if isinstance(st, dict):
+        text = st.get("text", "")
+    elif isinstance(st, str):
+        text = st
+    else:
+        return
+
+    if not isinstance(text, str) or not text.strip():
+        return
+    if not _IDENTITY_PATTERN.match(text.strip()):
+        return  # Not locked
+
+    h = _concept_hash(d)
+    food = _get_food_name(d) or "food"
+    element = _get_subject(d) or "this"
+
+    template = _ST_ALTERNATIVES[h % len(_ST_ALTERNATIVES)]
+    new_text = template.format(food=food, element=element)
+
+    if isinstance(st, dict):
+        st["text"] = new_text
+    else:
+        eng["share_trigger"] = new_text
+
+    w.append(AutoFixWarning(
+        "engagement.share_trigger",
+        f"Template rotation: '{text[:40]}' → '{new_text}'",
+    ))
+
+
+def _fix_series_hook(d: dict, w: list) -> None:
+    """Ensure series_identity.series_hook exists (Gemini intermittently drops it)."""
+    si = d.get("series_identity")
+    if not isinstance(si, dict):
+        return
+    sh = si.get("series_hook")
+    if isinstance(sh, dict) and sh.get("technique"):
+        return  # already present and populated
+    si["series_hook"] = {
+        "technique": "UNANSWERED_QUESTION",
+        "element": "Brief VO hint at another Glaze City structure",
+        "placement": "Last 2 seconds",
+    }
+    w.append(AutoFixWarning(
+        "series_identity.series_hook",
+        "Auto-filled missing series_hook → UNANSWERED_QUESTION",
+    ))
+
+
 def _fix_grey_dominant_color(d: dict, scenes: list, w: list) -> None:
     """Replace grey/gray dominant_color in food-dominant scenes with food's primary color."""
     food_identity = d.get("food_identity")
@@ -1542,6 +1709,125 @@ def _fix_grey_dominant_color(d: dict, scenes: list, w: list) -> None:
             w.append(AutoFixWarning(
                 f"scenes[S{sn}].gen2_visual_params.dominant_color",
                 f"Grey '{old_val}' → '{replacement_color}' (appetite-suppressing color in food scene)"))
+
+
+def _fix_energy_floor(d: dict, scenes: list, w: list) -> None:
+    """Fix consecutive LOW energy scenes and enforce max 1 LOW per video.
+
+    Rules:
+    - MAX 1 LOW scene per video (money_shot/ASMR gets the slot)
+    - NO consecutive LOW scenes — if found, raise the first to MEDIUM
+    - Scene before money_shot must be MEDIUM or higher
+    """
+    if not scenes:
+        return
+
+    # Find money_shot scene number
+    money_shot_sn = None
+    for scene in scenes:
+        if not isinstance(scene, dict):
+            continue
+        ms = scene.get("money_shot")
+        if isinstance(ms, dict) and ms.get("is_money_shot"):
+            money_shot_sn = scene.get("scene_number")
+            break
+
+    # Pass 1: Fix consecutive LOW — raise the FIRST one to MEDIUM
+    for i in range(len(scenes) - 1):
+        cur = scenes[i]
+        nxt = scenes[i + 1]
+        if not isinstance(cur, dict) or not isinstance(nxt, dict):
+            continue
+        if cur.get("energy_level") == "LOW" and nxt.get("energy_level") == "LOW":
+            cur_sn = cur.get("scene_number", "?")
+            cur["energy_level"] = "MEDIUM"
+            w.append(AutoFixWarning(
+                f"scenes[S{cur_sn}].energy_level",
+                f"Consecutive LOW (S{cur_sn}→S{nxt.get('scene_number', '?')})"
+                f" — raised S{cur_sn} to MEDIUM",
+            ))
+
+    # Pass 2: Enforce max 1 LOW per video — keep only the money_shot LOW
+    low_scenes = [
+        s for s in scenes
+        if isinstance(s, dict) and s.get("energy_level") == "LOW"
+    ]
+    if len(low_scenes) > 1:
+        for scene in low_scenes:
+            sn = scene.get("scene_number")
+            if sn != money_shot_sn:
+                scene["energy_level"] = "MEDIUM"
+                w.append(AutoFixWarning(
+                    f"scenes[S{sn}].energy_level",
+                    f"Multiple LOW scenes — raised S{sn} to MEDIUM (only money_shot keeps LOW)",
+                ))
+
+    # Pass 3: Scene before money_shot must be MEDIUM or higher
+    if money_shot_sn is not None:
+        for i, scene in enumerate(scenes):
+            if not isinstance(scene, dict):
+                continue
+            if scene.get("scene_number") == money_shot_sn and i > 0:
+                prev = scenes[i - 1]
+                if isinstance(prev, dict) and prev.get("energy_level") == "LOW":
+                    prev_sn = prev.get("scene_number", "?")
+                    prev["energy_level"] = "MEDIUM"
+                    w.append(AutoFixWarning(
+                        f"scenes[S{prev_sn}].energy_level",
+                        f"Scene before money_shot (S{money_shot_sn}) was LOW"
+                        f" — raised to MEDIUM for contrast ramp",
+                    ))
+                break
+
+
+def _fix_hook_first_words_sync(d: dict, scenes: list, w: list) -> None:
+    """Sync hook.first_words with scenes[0].narrator_script.
+
+    Rules:
+    - first_words must be the opening words of scenes[0].narrator_script
+    - If they diverge, fix narrator_script to start with first_words
+    """
+    hook = d.get("hook")
+    if not isinstance(hook, dict) or not scenes:
+        return
+    first_words = hook.get("first_words", "")
+    if not isinstance(first_words, str) or not first_words.strip():
+        return
+
+    scene1 = scenes[0]
+    if not isinstance(scene1, dict):
+        return
+    narrator = scene1.get("narrator_script", "")
+    if not isinstance(narrator, str):
+        return
+
+    fw_clean = first_words.strip().rstrip(".")
+    narrator_clean = narrator.strip()
+
+    # Check if narrator_script starts with first_words (case-insensitive)
+    if not narrator_clean.lower().startswith(fw_clean.lower()):
+        # Fix: set narrator_script to first_words
+        # Preserve any additional text in narrator_script after replacing the start
+        old_narrator = narrator_clean
+        scene1["narrator_script"] = first_words.strip()
+        w.append(AutoFixWarning(
+            "scenes[S1].narrator_script",
+            f"Hook sync: narrator_script '{old_narrator}' didn't start with"
+            f" first_words '{first_words}' — replaced with first_words",
+        ))
+
+        # Also fix voiceover_segment to match
+        vo_seg = scene1.get("voiceover_segment", "")
+        if isinstance(vo_seg, str) and vo_seg.strip() and vo_seg.strip() != "[silence]":
+            # Extract leading tag
+            tag_match = re.match(r'(\[[\w\s]+\])\s*', vo_seg.strip())
+            leading_tag = tag_match.group(1) if tag_match else "[whispers]"
+            new_vo = f"{leading_tag} {first_words.strip()}"
+            scene1["voiceover_segment"] = new_vo
+            w.append(AutoFixWarning(
+                "scenes[S1].voiceover_segment",
+                f"Hook sync: rebuilt voiceover_segment to match first_words",
+            ))
 
 
 def _fix_full_script_rebuild(d: dict, scenes: list, w: list) -> None:

@@ -430,6 +430,16 @@ class Gen1Validator:
         clean_lower = clean.lower()
         banned_words = get_banned_first_words()
         banned_phrases = get_banned_first_phrases()
+
+        # Min 2 words check — 1-word hooks create zero curiosity gap
+        word_count = len(clean.split()) if clean else 0
+        if word_count < 2:
+            self._error(
+                "hook.first_words",
+                f"Only {word_count} word(s): '{clean}' — minimum 2 words required for curiosity gap",
+                code="HOOK_TOO_SHORT",
+            )
+
         if clean:
             actual = clean.split()[0].lower()
             if actual in banned_words:
@@ -438,6 +448,21 @@ class Gen1Validator:
                 if clean_lower.startswith(phrase):
                     self._warn("hook.first_words", f"Starts with generic phrase '{phrase}'")
                     break
+
+        # Sync check: first_words must match opening of scenes[0].narrator_script
+        scenes = self._data.get("scenes", [])
+        if scenes and isinstance(scenes[0], dict):
+            narrator = scenes[0].get("narrator_script", "")
+            if isinstance(narrator, str) and narrator.strip():
+                fw_norm = clean_lower.rstrip(".")
+                narrator_norm = narrator.strip().lower()
+                if fw_norm and not narrator_norm.startswith(fw_norm):
+                    self._error(
+                        "hook.first_words",
+                        f"Mismatch: first_words='{clean}' but Scene 1 narrator_script='{narrator}' — must start with same words",
+                        code="HOOK_NARRATOR_MISMATCH",
+                    )
+
         complete_vo = self._nested(hook, "complete_hook_vo", "")
         has_emotion = any(t in first_words for t in ELEVENLABS_EMOTION_TAGS) or any(t in complete_vo for t in ELEVENLABS_EMOTION_TAGS)
         if not has_emotion:
@@ -750,9 +775,11 @@ class Gen1Validator:
             if is_low:
                 low_count += 1
                 if sn <= 3 and purpose != "STRUCTURAL_DETAIL":
-                    self._warn(f"{prefix}.energy_level", f"Scene {sn} LOW — prefer HIGH/MEDIUM for retention")
+                    self._error(f"{prefix}.energy_level", f"Scene {sn} LOW before Scene 4 — retention killer", code="ENERGY_LOW_EARLY")
                 if prev_low:
-                    self._warn(f"{prefix}.energy_level", f"Consecutive LOW energy (Scene {sn-1} and {sn})")
+                    self._error(f"{prefix}.energy_level", f"Consecutive LOW energy (Scene {sn-1} and {sn}) — retention killer", code="CONSECUTIVE_LOW")
+                if low_count > 1:
+                    self._error(f"{prefix}.energy_level", f"Multiple LOW scenes ({low_count} found, max 1 allowed) — only money_shot gets LOW", code="EXCESS_LOW")
             prev_low = is_low
             if energy and sn == total - 1 and energy != "EXPLOSIVE":
                 self._warn(f"{prefix}.energy_level", f"N-1 (AERIAL) should be EXPLOSIVE, got '{energy}'")

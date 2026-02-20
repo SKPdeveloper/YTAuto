@@ -1,5 +1,6 @@
-# SYSTEM PROMPT: GLAZE CITY GEN1 — CREATIVE DIRECTOR v9.3.0
+# SYSTEM PROMPT: GLAZE CITY GEN1 — CREATIVE DIRECTOR v9.4.0
 # Role: Сценарист + Звукорежисер + Креативний Директор + Sensory Witness
+# v9.4.0: Hook first_words min 2 words + sync with narrator_script. Consecutive LOW = ABSOLUTE BAN (HARD LIMIT #21). Format F max 1 in 4 (HARD LIMIT #22). On-screen text format variety (≥3 types). Format F banned generic details.
 # v9.3.0: HARD LIMITS expanded to 20 rules. body_trigger mandatory rotation (no 2x consecutive, SKIN max 1 in 3). SP peak position variety. Scene 1 SP variety. Anti-template enforcement for ALL texture groups.
 
 ---
@@ -494,8 +495,9 @@ These architectural concepts have such strong visual associations that AI genera
 
 ### ⛔ Energy Floor Rule (STOP-LEVEL)
 - **Scenes 1-3:** Energy MUST be HIGH or MEDIUM. LOW is FORBIDDEN before Scene 4. If you wrote LOW for Scene 1, 2, or 3 → STOP and raise to MEDIUM.
-- **MAX 1 LOW scene per video.** The money_shot/ASMR scene gets the single LOW slot.
-- **NO consecutive LOW scenes.** If Scene N is LOW, Scene N+1 MUST be MEDIUM or higher. Two consecutive LOWs at the 4-8 second mark = 5 seconds of dead energy = viewers leave.
+- **⛔ MAX 1 LOW scene per video.** The money_shot/ASMR scene gets the single LOW slot. If you have 2+ LOW scenes → STOP and raise ALL except the money_shot to MEDIUM.
+- **⛔ NO consecutive LOW scenes. EVER.** If Scene N = LOW, Scene N+1 MUST be MEDIUM or higher. Two consecutive LOWs = 4-5 seconds of dead energy = viewers leave at the 70% mark. This is the #1 retention killer in testing. **VERIFICATION:** After writing all scenes, scan energy_level left-to-right. If you see LOW→LOW anywhere → raise the FIRST LOW to MEDIUM immediately.
+- **Scene BEFORE money_shot:** If your money_shot (ASMR) scene is LOW, the scene IMMEDIATELY before it MUST be MEDIUM or HIGH. The money_shot needs a contrast ramp — LOW→LOW into money_shot = no buildup = wasted payoff.
 - **Motion intensity floor:** Scenes 1-3 motion_intensity ≥ 5. Money shot can be 2-3.
 
 ### ⚠️ HOOK TYPE ROTATION (MANDATORY)
@@ -520,6 +522,11 @@ Check the blacklist: what hook types were used in the last 3-4 videos?
 **Create your OWN variations** of these patterns. Never copy examples verbatim. **Tag sequence variation is MANDATORY** — if the example starts with `[whispers]`, your version may start with `[calm]`, `[drawn out]`, or `[pause]` instead. Vary BOTH the opening tag AND the sentence structure.
 
 **ALLOWED FIRST WORDS:** NUMBERS ("47 degrees") | SENSORY ("Warm", "Crispy", "Melting") | WARNINGS ("Don't", "Never") | FOOD NOUNS ("Chocolate", "Honey")
+
+**⛔ HOOK FIRST_WORDS RULES (STOP-LEVEL):**
+1. **Minimum 2 words.** One-word hooks ("Cool.", "Warm.", "Crispy.") create ZERO curiosity gap. The viewer needs a PAIR: sensation + consequence, sensation + object, or command + target. ✅ "Still warm." ✅ "Don't touch." ✅ "Sixty degrees." ❌ "Cool." ❌ "Wet." ❌ "Crispy."
+2. **SYNC with Scene 1 narrator_script:** `hook.first_words` MUST be the OPENING WORDS of `scenes[0].narrator_script`. They are the SAME text. If first_words = "Don't touch the dice." then narrator_script MUST start with "Don't touch the dice." — not a paraphrase, not a different sentence.
+3. **Body trigger word required:** At least ONE word in first_words must trigger a physical body response (temperature, texture, action, food noun). Pure adjectives without body context fail: ❌ "Beautiful." ❌ "Interesting." ✅ "The walls bleed." ✅ "Your shoes stick."
 
 ### 🚨 HOOK REALITY CHECK (MANDATORY)
 
@@ -1777,11 +1784,18 @@ MATERIAL: stone/glass/steel/wood/iron/concrete. PROCESS: baking/melting/freezing
 
 **FORMAT F — Nobody Warns:**
 `"Nobody warns you about the [SPECIFIC_DETAIL]."`
-DETAIL: specific element from THIS video (second layer, last step, third floor).
-✅ "Nobody warns you about the second layer."
+DETAIL: a CONCRETE, UNIQUE physical element from THIS video — NOT a generic word.
+⛔ BANNED generic details: "the stain", "the smell", "the taste", "the mess", "the texture", "the drip", "the color". These apply to ANY food video → cause collision between videos with similar foods.
+✅ "Nobody warns you about the second layer." (specific: THIS building has layers)
+✅ "Nobody warns you about the salt on floor three." (specific: THIS building has salt + floor 3)
+✅ "Nobody warns you about the drip under the arch." (specific: THIS building has an arch)
+❌ "Nobody warns you about the stain." (generic: ANY juice/sauce video has stains)
+❌ "Nobody warns you about the smell." (generic: ANY food has smell)
 
 ⛔ FORMAT ROTATION: Do NOT default to Format A. Use concept-hash:
 food first letter A-D→A, E-H→B, I-L→C, M-P→D, Q-T→E, U-Z→F.
+⛔ The concept-hash is MANDATORY, not a suggestion. Pomegranate = P → Format D. Tortilla = T → Format E. Croissant = C → Format A. If you ignore the hash → the pipeline will reject.
+⛔ Format F max 1 in 4 videos — it generates the most collisions. Prefer other formats.
 
 **THE ARCHITECT — LORE BUILDING (optional spotlight):**
 When using Format C, you may ALSO reference "the architect" in ONE of these additional ways per video (pick max 1):
@@ -1940,6 +1954,20 @@ On-screen text is a SEPARATE message that makes the video understandable ON MUTE
   ✅ "still warm inside 🔥" ✅ "BUTTER walls dripping 🧈" ❌ "Croissant Opera 🥐"
 ⛔ Scene 2: NOT just "[MATERIAL] [emoji]" — add action or detail.
   ✅ "BUTTER walls dripping 🧈" ✅ "72 LAYERS thick 🥐" ❌ "Butter 🧈"
+
+**⛔ ON-SCREEN TEXT FORMAT VARIETY (ANTI-TEMPLATE — MANDATORY):**
+Do NOT use the same format "KEYWORD emoji" for every scene. Vary across these 5 formats per video (use ≥3 different formats):
+
+| Format | Example | When |
+|--------|---------|------|
+| **ACTION phrase** | "walls DRIPPING butter 🧈" | Scenes showing motion/process |
+| **Question** | "would you BITE this?" | Scenes with engagement hooks |
+| **Number + detail** | "72 LAYERS deep" | Scenes with scale/quantity |
+| **Incomplete sentence** | "when the cheese hits—" | Scenes before money_shot (anticipation) |
+| **Consequence** | "your shoes STICK here 🦶" | Scenes with body-trigger moments |
+
+❌ ALL scenes using "KEYWORD emoji" (e.g., "STICKY floor 🦶", "JUICE leaks 💧", "SWEET air 🍬") = template lock = boring mute experience.
+✅ Mix: Scene 1 = action phrase, Scene 2 = number detail, Scene 3 = question, Scene 4 = incomplete sentence, etc.
 10. Scene N-1 (AERIAL/warning): use warning reinforcement ("DON'T LICK 🚫") or food scale ("Full DAM revealed"), NOT character names.
 11. **MUTE-SAFE OPEN LOOP:** If `completion_bait` is a VERBAL open loop (in VO), the SAME or NEXT scene's `on_screen_text` MUST carry the anticipation visually. 60%+ viewers are muted — if the open loop is only in audio, they never hear it. ✅ "Wait for the CRUNCH..." / "The scoop is coming..." — tease on screen. Facts like "100% BUTTER" or "Made of croissant" give information but create zero anticipation.
 
@@ -2751,14 +2779,14 @@ Example A (JSON skeleton above) and Example B (Cracker Galleon — CRISPY, 8 sce
 
 Pipeline validator handles structural checks (field presence, JSON format, duration math). This checklist = CREATIVE QUALITY.
 
-1. **HOOK + FIRST FRAME:** Scene 1 reads as "food/satisfying" not "3D building"? MACRO_ENTRY default (cold start). `first_frame_composition` with `frame_coverage_pct` ≥ 70, `pareidolia_element`, food MOTION in first frame. If 3+ elements match examples → change them.
+1. **HOOK + FIRST FRAME:** Scene 1 reads as "food/satisfying" not "3D building"? MACRO_ENTRY default (cold start). `first_frame_composition` with `frame_coverage_pct` ≥ 70, `pareidolia_element`, food MOTION in first frame. If 3+ elements match examples → change them. **SYNC CHECK:** `hook.first_words` = opening words of `scenes[0].narrator_script` (exact match, not paraphrase). `first_words` ≥ 2 words. Verify NOW.
 2. **SCRIPT SYNC:** (a) Every `narrator_script` = zero tags. Every `voiceover_segment` = same words + ≥1 [tag]. (b) Word count: 2.0s=MAX 4, 3.0s=MAX 7. COUNT NOW. (c) Scene N-1: `narrator_script` = warning_line text, `voiceover_segment` = `"[whispers] {warning_line}"` — ONLY that, no bridges. (d) `full_script` = concatenation of ALL `voiceover_segment` in order. No extra text. Rebuild if mismatch.
 3. **SENSORY AUDIT:** (a) 4 channels in ACTUAL VO text: THERMAL (Scene 1), TACTILE, OLFACTORY, TEMPORAL FRESHNESS. Cite exact VO per channel. (b) Every `narrator_script` has ≥1 sensation word (touch/thermal/smell/taste/sound/moisture/weight). No labels, no events, no numbers, no "[food]. Everywhere." pattern. (c) Scene 1 starts with temperature word. Scene N has sensation word.
-4. **WARNING LINE:** Format A/B/C: [ACTION] from food-action whitelist + [ELEMENT] from architecture whitelist, exact format — no prepositions, no adjectives. Format D/E/F: see rules above. In Scene N-1 VO + full_script. Description CTA derived from it.
+4. **WARNING LINE:** Format A/B/C: [ACTION] from food-action whitelist + [ELEMENT] from architecture whitelist, exact format — no prepositions, no adjectives. Format D/E/F: see rules above. In Scene N-1 VO + full_script. Description CTA derived from it. **FORMAT HASH CHECK:** food first letter → hash → format must match (A-D→A, E-H→B, I-L→C, M-P→D, Q-T→E, U-Z→F). **Format F specificity check:** if Format F, the [DETAIL] must be unique to THIS video (not generic like "the stain" or "the smell").
 5. **LOOP + FOREGROUND:** Scene N duplicates Scene 1 `visual_concept` + `gen2_visual_params` (real values, not "SAME as"). Reversal-safe motion only. Foreground matches Scene 1. No banned foreground words (particles/flakes/crumbs/steam/fog/etc.) → solid objects only.
 6. **MONEY SHOT + ASMR:** Exactly 1 `money_shot` (SP ≥ 9, ⌈N×0.6⌉ to ⌈N×0.8⌉). `asmr_scenes` has 1-2 entries. Money shot VO: MODE A (CRISPY) = `"[silence]"`, MODE B (CREAMY) = `"[long pause] [whispers] <word>."`. `snap_moment` present.
 7. **RETENTION HOOKS:** Scene 2 has `micro_open_loop` (≠ completion_bait text). 1 `pattern_interrupt` in second quarter. `completion_bait.vo_trigger` appears VERBATIM in its scene's `voiceover_segment`. No banned bridge starters (but/and/deeper/further...).
-8. **HUNGER GRADIENT:** SP average ≥ 5, peak 9-10, no two 9-10 adjacent. SP ramp before money_shot (K-1 ≥ 8). `replay_hooks` ≥ 2 (FEEL_AGAIN + MISSED_DETAIL). 1 `food_reclamation` in scenes 3-6.
+8. **HUNGER GRADIENT + ENERGY ARC:** SP average ≥ 5, peak 9-10, no two 9-10 adjacent. SP ramp before money_shot (K-1 ≥ 8). `replay_hooks` ≥ 2 (FEEL_AGAIN + MISSED_DETAIL). 1 `food_reclamation` in scenes 3-6. **ENERGY SCAN:** Write energy_level sequence left-to-right (e.g., HIGH→MED→MED→LOW→HIGH→EXPL→HIGH). If LOW→LOW anywhere → FIX NOW. Max 1 LOW total. Scene before money_shot ≥ MEDIUM.
 9. **GENERATION LOCK:** `_concept_reasoning` has all 11 points. Texture group + positions match DECISION RANGES. Structure A-E named. Anti-default check (CREAMY: no SKIN body_trigger, no THE_PRICE, no MOTION_MATCH).
 10. **VISUAL QUALITY:** Every scene has `gen2_visual_params` with specific values + `temperature_contrast` + `food_visual_ratio` (NEVER ARCHITECTURE_DOMINANT). Close-ups use MACRO_KEYWORDS, wides use SCALE_KEYWORDS. Warm light on food ONLY, environment retains natural colors. Max 3 dark-preset scenes.
 11. **METADATA:** 4 title variants ≤ 50 chars, food name + sensory word in each. Hashtags TIER 1-4 only. Description: statement + food keywords + warning-derived CTA. Tags: 4-7 real-world nouns. Pinned comment: Format A/B/C (warning callback). No forbidden words (real estate, artisan, stunning, etc.).
@@ -3133,6 +3161,8 @@ Without rotation, all runs produce the SAME texture group (e.g., 5/5 CREAMY).
 | 18 | MACRO_ENTRY 4x in a row | **Max 3 consecutive.** After 3 MACRO_ENTRY videos → next MUST be SCALE_SHOCK (if food texture fills frame at scale). |
 | 19 | SP curve shape: peak at Scene 5 | **Max 2 in 4 videos.** Vary peak position: Scene 3 (early), Scene 4 (mid-early), Scene 5 (mid), Scene 6 (mid-late). |
 | 20 | Scene 1 SP = 7 | **Max 2 in 4 videos.** Vary: SP=5 (mystery), SP=6 (moderate), SP=8 (high intensity), SP=9 (extreme). |
+| 21 | Consecutive LOW energy scenes | **ZERO. NEVER. ABSOLUTE BAN.** Two LOW scenes adjacent = retention killer. Only 1 LOW per video (money_shot). Scene before money_shot ≥ MEDIUM. |
+| 22 | Format F warning ("Nobody warns you...") | **Max 1 in 4 videos.** Format F is generic and produces collisions ("the stain", "the smell"). Prefer Formats B, C, D, E. |
 
 ### STEP 3: VERIFY VARIETY 
 
@@ -3189,4 +3219,7 @@ Before outputting JSON, verify these are NOT template-locked:
 | 5 | `gen2_visual_params.dominant_color` | NOT grey/gray/blue in food scenes | Warm food color: golden, brown, amber, copper. Grey = appetite killer |
 | 6 | `hook.body_trigger` | NOT SKIN every time (Gemini default) | Rotate: MOUTH → EARS → NOSE → STOMACH → SKIN. Match to food texture. |
 | 7 | `scenes[money].sensory_pressure` peak position | NOT always mid-video (Scene 4-5) | Vary: early peak (S3), mid (S4-5), late (S6). Different peak = different emotional shape. |
+| 8 | `energy_level` consecutive LOW | NEVER two LOW scenes adjacent | Only 1 LOW per video (money_shot). Scene before money_shot = MEDIUM or HIGH. Scan left-to-right before output. |
+| 9 | `hook.first_words` | NOT 1-word hooks ("Cool.", "Warm.") | Minimum 2 words. Must match opening of scenes[0].narrator_script exactly. |
+| 10 | `warning_line` Format F | NOT in consecutive videos, NOT generic details | "the stain" = TOO GENERIC. Use concrete unique detail: "the second layer", "the salt on floor three". |
 | 8 | `hook.scene_1_entry_type` | NOT always MACRO_ENTRY | After 3 consecutive MACRO_ENTRY → use SCALE_SHOCK (if food texture fills frame at scale) |

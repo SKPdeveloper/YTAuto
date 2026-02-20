@@ -148,6 +148,7 @@ from app.services.gen1_validator import (
     validate_gen1 as python_validate_gen1,
     ValidationResult as Gen1ValidationResult,
 )
+from app.services.gen2_autocorrect import autocorrect_gen2
 from app.services.gen2_validator import (
     Gen2Validator,
     validate_gen2 as python_validate_gen2,
@@ -1163,9 +1164,15 @@ REQUIREMENTS:
 
         try:
             # Convert Pydantic models to dicts for Python validator
-            # Note: auto_fix=True modifies gen2_dict in-place
             gen2_dict = gen2_output.model_dump()
             gen1_dict = gen1_output.model_dump()
+
+            # Run GEN2 autocorrect BEFORE validation (deterministic, ~2ms)
+            gen2_dict, ac_warnings = autocorrect_gen2(gen2_dict, gen1_dict)
+            if ac_warnings:
+                logger.info(f"[GEN2_AUTOCORRECT] Applied {len(ac_warnings)} auto-fixes")
+                for aw in ac_warnings:
+                    logger.debug(f"  {aw}")
 
             # Run Python validator with auto-fix (deterministic, ~5ms)
             result: Gen2ValidationResult = python_validate_gen2(gen2_dict, gen1_dict, auto_fix=True)
