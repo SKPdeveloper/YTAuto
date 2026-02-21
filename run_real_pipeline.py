@@ -71,7 +71,6 @@ async def start_web_server_background() -> uvicorn.Server:
         host=settings.WEB_HOST,
         port=settings.WEB_PORT,
         log_level="warning",  # Менше шуму в консолі — pipeline логи важливіші
-        install_signal_handlers=False,  # Pipeline сам обробляє Ctrl+C
     )
     server = uvicorn.Server(config)
 

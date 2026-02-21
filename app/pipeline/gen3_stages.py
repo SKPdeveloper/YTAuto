@@ -286,6 +286,11 @@ class Gen3bStage(BasePipelineStage):
             gen1_brief = project_brief
             gen2_brief = await self._load_json(project_dir / "gen2_brief.json") or project_brief
 
+            # Load voiceover timing for VO-aware scene durations
+            vo_timing_data = await self._load_json(project_dir / "voiceover_timing.json")
+            if vo_timing_data:
+                logger.info(f"[{self.project_id}] Loaded VO timing ({len(vo_timing_data.get('segments', []))} segments)")
+
             await self.notify_progress(30, "Generating creative decisions...")
 
             # PUSH: Start notification
@@ -295,11 +300,12 @@ class Gen3bStage(BasePipelineStage):
                 project_id=self.project_id
             )
 
-            # Generate manifest
+            # Generate manifest (with VO timing for duration-aware scene planning)
             manifest = await self.gen3b_service.generate_manifest(
                 gen3a_analysis=gen3a_analysis,
                 gen1_brief=gen1_brief,
                 gen2_brief=gen2_brief,
+                voiceover_timing=vo_timing_data,
             )
 
             await self.notify_progress(80, "Saving manifest...")

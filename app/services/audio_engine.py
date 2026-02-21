@@ -667,7 +667,20 @@ class AudioEngine:
                 i += 1
 
         words = grouped_words
-        logger.info(f"  Grouped into {len(words)} subtitle chunks (merged articles/prepositions)")
+
+        # Enforce minimum word display duration (0.3s) — prevents
+        # invisible flashes like "STILL" showing for 0.05s
+        MIN_WORD_DURATION = 0.3
+        for idx in range(len(words)):
+            w = words[idx]
+            if w['end'] - w['start'] < MIN_WORD_DURATION:
+                desired_end = w['start'] + MIN_WORD_DURATION
+                # Don't overlap with next word
+                if idx + 1 < len(words):
+                    desired_end = min(desired_end, words[idx + 1]['start'] - 0.02)
+                w['end'] = max(w['end'], desired_end)
+
+        logger.info(f"  Grouped into {len(words)} subtitle chunks (merged articles/prepositions, min {MIN_WORD_DURATION}s)")
 
         # Helper function for ASS time format
         def time_to_ass(seconds: float) -> str:
@@ -881,6 +894,20 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             json.dump(timing_data, f, indent=2, ensure_ascii=False)
 
         logger.info(f"  Generated voiceover_timing.json with {len(final_segments)} scene segments (text-matched)")
+
+        # Validate per-scene VO durations (safety net for pathological TTS timing)
+        MAX_SCENE_VO = 5.0
+        for seg in final_segments:
+            dur = seg['end_time'] - seg['start_time']
+            sn = seg.get('scene_number', '?')
+            text_preview = seg.get('text', '')[:50]
+            if dur > MAX_SCENE_VO:
+                logger.warning(
+                    f"  ⚠ Scene {sn} VO duration {dur:.1f}s exceeds {MAX_SCENE_VO}s "
+                    f"— TTS may be too slow/dramatic (text: \"{text_preview}...\")"
+                )
+            else:
+                logger.info(f"  Scene {sn}: VO {dur:.1f}s — \"{text_preview}\"")
 
     async def list_voices(self) -> List[Dict[str, Any]]:
         """

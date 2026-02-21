@@ -24,6 +24,7 @@ Output: final_video.mp4 (9:16, 25s, 60fps)
 """
 
 import json
+import re
 import asyncio
 from pathlib import Path
 from typing import List, Optional, Dict, Any
@@ -489,22 +490,25 @@ class ManifestRenderer:
                         break
                     no_vo_between += 1
 
+                # Reserve MIN_NO_VO per no-VO scene in between
+                reserved = no_vo_between * MIN_NO_VO
+
                 if next_anchor_time is not None:
-                    # Reserve MIN_NO_VO per no-VO scene in between
-                    reserved = no_vo_between * MIN_NO_VO
                     max_end = next_anchor_time - reserved
                     # Scene must last at least until VO ends
                     ideal_end = vo_end_abs + 0.1
-                    new_ends[i] = max(
+                    raw_end = max(
                         new_starts[i] + 1.0,  # absolute minimum
                         min(ideal_end, max_end),
                     )
                 else:
                     # Last VO scene (or no more VO scenes after)
-                    new_ends[i] = max(
+                    raw_end = max(
                         new_starts[i] + 1.5,
                         vo_end_abs + 0.3,
                     )
+
+                new_ends[i] = raw_end
             else:
                 # No VO — fill gap until next anchor
                 next_anchor_time = None
@@ -518,10 +522,12 @@ class ManifestRenderer:
                 if next_anchor_time is not None:
                     available = next_anchor_time - new_starts[i]
                     per_scene = available / remaining_no_vo
-                    new_ends[i] = new_starts[i] + max(per_scene, 0.5)
+                    calculated = max(per_scene, 0.5)
                 else:
                     # No more anchors — use minimum duration
-                    new_ends[i] = new_starts[i] + MIN_NO_VO
+                    calculated = MIN_NO_VO
+
+                new_ends[i] = new_starts[i] + calculated
 
             cursor = new_ends[i]
 
@@ -532,6 +538,17 @@ class ManifestRenderer:
             new_ends[-1] = max(new_ends[-1], vo_end + TAIL_AFTER_LAST)
         else:
             new_ends[-1] = max(new_ends[-1], new_ends[-1] + TAIL_AFTER_LAST)
+
+        # Phase 2.5: Gap collapse — remove timeline gaps created by
+        # MAX_SCENE_DUR capping.  Concat places scenes back-to-back, so
+        # timeline_start/end must be contiguous for SFX / on-screen text
+        # to land at the correct video positions.
+        actual_cursor = 0.0
+        for i in range(n):
+            dur = new_ends[i] - new_starts[i]
+            new_starts[i] = actual_cursor
+            new_ends[i] = actual_cursor + dur
+            actual_cursor = new_ends[i]
 
         # Phase 3: apply new timings and rescale speed segments
         logger.info("  VO–Video Alignment:")
@@ -1063,6 +1080,18 @@ class ManifestRenderer:
 
         return output_path
 
+    # Regex to strip emoji characters (unsupported by Arial Bold in FFmpeg drawtext)
+    _EMOJI_RE = re.compile(
+        r'[\U0001F000-\U0001FFFF'    # Emoticons, Dingbats, Symbols
+        r'\U00002600-\U000027BF'      # Misc symbols
+        r'\U0000FE00-\U0000FE0F'      # Variation selectors
+        r'\U0000200D'                 # Zero-width joiner
+        r'\U0001FA00-\U0001FA6F'      # Chess, extended-A
+        r'\U0001FA70-\U0001FAFF'      # Symbols extended-A
+        r'\U00002702-\U000027B0'      # Dingbats
+        r']+'
+    )
+
     async def _add_on_screen_text(
         self,
         input_path: Path,
@@ -1103,6 +1132,11 @@ class ManifestRenderer:
             if not text or not text.strip():
                 continue
 
+            # Strip emoji (render as rectangles with Arial Bold in FFmpeg)
+            text = self._EMOJI_RE.sub('', text).strip()
+            if not text:
+                continue
+
             # Escape special characters for FFmpeg drawtext
             escaped = (
                 text.replace("\\", "\\\\")
@@ -1114,15 +1148,19 @@ class ManifestRenderer:
             start_t = scene.timeline_start + hook_duration
             end_t = scene.timeline_end + hook_duration
 
+            # Auto-reduce fontsize for long texts to prevent overflow
+            fontsize = 56 if len(text) > 25 else 72
+
             # Montserrat Bold preferred, Arial Bold fallback
+            # x clamped to min 10px so text never goes off-screen left
             drawtext_filters.append(
                 f"drawtext=text='{escaped}'"
                 f":fontfile='C\\:/Windows/Fonts/arialbd.ttf'"
-                f":fontsize=72"
+                f":fontsize={fontsize}"
                 f":fontcolor=white"
                 f":borderw=4"
                 f":bordercolor=black"
-                f":x=(w-text_w)/2"
+                f":x=max(10\\,(w-text_w)/2)"
                 f":y=h*0.35"
                 f":enable='between(t,{start_t:.2f},{end_t:.2f})'"
             )
@@ -1212,14 +1250,23 @@ class ManifestRenderer:
         target_offset: float,
     ) -> None:
         """
-        Re-write an ASS file so that all Dialogue lines are shifted to
-        start at `target_offset` instead of whatever offset they currently have.
+        Re-write an ASS file so that all Dialogue lines are correctly
+        offset for the actual hook duration, and enforce minimum word
+        display duration.
 
-        Approach: find the earliest Dialogue start time, compute the delta
-        between that and `target_offset`, then shift every Dialogue line by
-        that delta.
+        The .ass file is generated with hook_offset=0.3s baked into all
+        timestamps.  If the actual hook duration differs, we shift by the
+        DIFFERENCE (not by earliest-subtitle heuristic, which breaks sync
+        when the VO has natural silence at the start).
+
+        Also enforces MIN_WORD_DURATION so ultra-short words (e.g. "STILL"
+        at 0.05s) become readable.  This runs every render, bypassing the
+        subtitle cache issue.
         """
         import re
+
+        ASSUMED_HOOK_OFFSET = 0.3   # offset baked in during audio generation
+        MIN_WORD_DURATION = 0.30    # minimum display time per subtitle word
 
         _ASS_TIME_RE = re.compile(
             r"Dialogue:\s*\d+,(\d+):(\d+):(\d+)\.(\d+),(\d+):(\d+):(\d+)\.(\d+),"
@@ -1240,32 +1287,55 @@ class ManifestRenderer:
 
         lines = input_ass.read_text(encoding="utf-8").splitlines()
 
-        # First pass: find earliest start time
-        earliest = None
-        for line in lines:
-            match = _ASS_TIME_RE.match(line)
-            if match:
-                start = _parse_ass_ts(match.group(1), match.group(2), match.group(3), match.group(4))
-                if earliest is None or start < earliest:
-                    earliest = start
+        # Delta = difference between actual hook and assumed hook.
+        # If both are 0.3, delta=0 (no shift needed).
+        delta = target_offset - ASSUMED_HOOK_OFFSET
 
-        if earliest is None:
-            # No Dialogue lines — just copy as-is
-            output_ass.write_text(input_ass.read_text(encoding="utf-8"), encoding="utf-8")
-            return
-
-        delta = target_offset - earliest
-
-        # Second pass: shift all Dialogue times
-        shifted_lines = []
-        for line in lines:
+        # First pass: parse all Dialogue entries for shifting + min-duration
+        dialogue_indices = []   # (line_index, start, end)
+        for idx, line in enumerate(lines):
             match = _ASS_TIME_RE.match(line)
             if match:
                 start = _parse_ass_ts(match.group(1), match.group(2), match.group(3), match.group(4))
                 end = _parse_ass_ts(match.group(5), match.group(6), match.group(7), match.group(8))
-                new_start = _format_ass_ts(start + delta)
-                new_end = _format_ass_ts(end + delta)
-                # Replace the two timestamps in the Dialogue line
+                dialogue_indices.append((idx, start + delta, end + delta))
+
+        if not dialogue_indices:
+            output_ass.write_text(input_ass.read_text(encoding="utf-8"), encoding="utf-8")
+            return
+
+        # Enforce MIN_WORD_DURATION: bidirectional extension.
+        # First extend end, then pull start earlier if still too short.
+        for i in range(len(dialogue_indices)):
+            line_idx, start, end = dialogue_indices[i]
+            dur = end - start
+            if dur < MIN_WORD_DURATION:
+                # Step 1: try extending end (capped by next subtitle)
+                desired_end = start + MIN_WORD_DURATION
+                if i + 1 < len(dialogue_indices):
+                    next_start = dialogue_indices[i + 1][1]
+                    desired_end = min(desired_end, next_start - 0.02)
+                end = max(end, desired_end)
+
+                # Step 2: if still too short, pull start earlier
+                remaining = MIN_WORD_DURATION - (end - start)
+                if remaining > 0:
+                    earliest_start = 0.0
+                    if i > 0:
+                        prev_end = dialogue_indices[i - 1][2]
+                        earliest_start = prev_end + 0.02
+                    start = max(earliest_start, start - remaining)
+
+                dialogue_indices[i] = (line_idx, start, end)
+
+        # Second pass: rewrite Dialogue lines with corrected times
+        dialogue_map = {li: (s, e) for li, s, e in dialogue_indices}
+        shifted_lines = []
+        for idx, line in enumerate(lines):
+            if idx in dialogue_map:
+                start, end = dialogue_map[idx]
+                new_start = _format_ass_ts(start)
+                new_end = _format_ass_ts(end)
                 parts = line.split(",", 3)  # "Dialogue: 0", "H:MM:SS.CS", "H:MM:SS.CS", rest
                 parts[1] = new_start
                 parts[2] = new_end

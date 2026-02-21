@@ -139,6 +139,37 @@ gen1_brief.scenes[scene_number - 1].voiceover_segment
 
 ---
 
+## 📊 VOICEOVER TIMING — SCENE DURATION CONSTRAINT (v1.3.4)
+
+If `voiceover_timing.json` is provided in input data, each scene's timeline duration MUST accommodate its voiceover.
+
+**Rule:** `scene_duration ≥ vo_segment_duration + 0.3s`
+
+The +0.3s gives the viewer a visual LEAD before narration begins.
+
+**For scenes WITH voiceover:**
+- Read `voiceover_timing.segments` for actual TTS duration per scene
+- Adjust speed_segments so output_duration matches the VO constraint
+- If the VO is longer than the visual analysis suggests → slow down the video (lower speed values)
+- Example: VO for scene 2 = 3.8s → scene 2 duration must be ≥ 4.1s
+
+**For scenes WITHOUT voiceover** (money shot, aerial, loop):
+- Use the remaining gap between adjacent VO scenes
+- Minimum 1.5s per non-VO scene
+
+**Example calculation:**
+```
+voiceover_timing.segments:
+  S1: 0.0 → 3.2s (3.2s VO) → scene_duration ≥ 3.5s
+  S2: 3.2 → 6.8s (3.6s VO) → scene_duration ≥ 3.9s
+  S3: no VO (money shot) → gets remaining gap, min 1.5s
+  S4: 8.5 → 11.0s (2.5s VO) → scene_duration ≥ 2.8s
+```
+
+**If no voiceover_timing.json provided:** use gen3b_handoff.cumulative_scene_starts as before.
+
+---
+
 ## 🔄 TIMESTAMP TRANSFORMATION (WITH CUT HANDLING)
 
 ### Step 1: Account for CUTs
@@ -1561,6 +1592,7 @@ Before outputting, verify:
 - [ ] speed_map copied from GEN3a
 - [ ] Glitch handling matches GEN3a
 - [ ] 90% hard cuts between scenes
+- [ ] **IF voiceover_timing provided: each VO scene duration ≥ vo_duration + 0.3s** (v1.3.4)
 
 ### Easter Egg
 - [ ] Scene identified from GEN3a
@@ -1649,6 +1681,8 @@ Before outputting, verify:
      h. VERIFY forbidden effects not used
 
 4. BUILD TIMELINE with content-aware effects
+   - IF voiceover_timing.json provided: ensure each scene duration ≥ vo_duration + 0.3s
+   - Adjust speed_segments to match VO-constrained durations
 
 5. GENERATE SUBTITLES (v1.3.3 - WORD-BY-WORD)
    - Read voiceover_segment from gen1_brief
@@ -1709,6 +1743,7 @@ Before outputting, verify:
 16. **LAST SCENE (N) REVERSED FIRST** — Processing order critical
 17. **SCENE N = SCENE 1 DURATION** — Must match for loop
 18. **VOLUME IN dB** — Always use dB
+19. **VO TIMING DRIVES SCENE DURATION** — If voiceover_timing.json provided, scene duration ≥ vo_duration + 0.3s (v1.3.4)
 
 ---
 

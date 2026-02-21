@@ -1,5 +1,5 @@
 """
-GEN1 Python Validator v2.0
+GEN1 Python Validator v2.7
 
 Deterministic validator for GEN1 (Creative Director) output.
 Auto-corrections are handled by gen1_autocorrect.py (runs first).
@@ -51,6 +51,7 @@ from app.services.gen1_autocorrect import (
     VALID_FOOD_ACTIONS,
     NARRATIVE_BRIDGE_STARTERS,
     TEMPERATURE_WORDS,
+    ARCHITECTURAL_FORM_WORDS,
 )
 
 
@@ -802,6 +803,8 @@ class Gen1Validator:
         scene1_movement = ""
         low_count = 0
         prev_low = False
+        dual_id_checked = 0
+        dual_id_missing = 0
 
         for i, scene in enumerate(scenes):
             if not isinstance(scene, dict):
@@ -915,6 +918,16 @@ class Gen1Validator:
                 if len(ost_words) > 6:
                     self._warn(f"{prefix}.on_screen_text", f"Too long ({len(ost_words)} words, max 6)")
 
+                # Dual identity check (scenes 2 to N-1)
+                if 1 < sn < total:
+                    ost_token_set = {wd.strip(".,!?:;\"'").lower() for wd in ost.split()}
+                    has_form = bool(ost_token_set & ARCHITECTURAL_FORM_WORDS)
+                    dual_id_checked += 1
+                    if not has_form:
+                        dual_id_missing += 1
+                        self._warn(f"{prefix}.on_screen_text",
+                                   "No architectural form word (wall/arch/dome/column...) — mute viewers miss dual identity")
+
             # Money shot
             ms = scene.get("money_shot")
             if isinstance(ms, dict) and ms.get("is_money_shot"):
@@ -983,6 +996,12 @@ class Gen1Validator:
 
         if low_count > 1:
             self._warn("scenes", f"{low_count} LOW energy scenes (max 1 recommended)")
+
+        # Dual identity aggregate check
+        if dual_id_checked > 0 and dual_id_missing > dual_id_checked * 0.5:
+            self._warn("on_screen_text.dual_identity",
+                        f"{dual_id_missing}/{dual_id_checked} middle scenes lack architectural form words — "
+                        f"mute viewers miss dual identity (>50%)")
 
         # Money shot count
         ms_count = sum(1 for s in scenes if isinstance(s, dict) and isinstance(s.get("money_shot"), dict) and s["money_shot"].get("is_money_shot"))

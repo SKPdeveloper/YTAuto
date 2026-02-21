@@ -1949,11 +1949,12 @@ On-screen text is a SEPARATE message that makes the video understandable ON MUTE
 7. English. Use CAPS for ONE key word per text (emphasis).
 8. LOOP_CLOSE scene: 1-2 words or empty string (acceptable).
 9. **BANNED in on_screen_text:** Character names ("THE ARCHITECT"), lore references, meta-commentary ("wait for it"), channel branding. OSD = FOOD + ACTION information for mute viewers, nothing else.
+10. **DUAL IDENTITY in on_screen_text (Scenes 2+):** Mute viewers MUST understand that food has architectural SHAPE. Every scene (except Scene 1 macro + LOOP_CLOSE) should hint at FORM in food context. ✅ "BUTTER walls dripping 🧈" (food material + wall shape) ✅ "72 LAYERS thick 🥐" (food detail + structural scale) ✅ "golden ARCHES melting" (food color + arch form) ❌ "still RISING 🔥" (pure food, no form) ❌ "Gothic Cathedral" (pure architecture, no food)
 
-⛔ Scene 1: NOT just "[FOOD] [BUILDING]" — use curiosity/action.
-  ✅ "still warm inside 🔥" ✅ "BUTTER walls dripping 🧈" ❌ "Croissant Opera 🥐"
-⛔ Scene 2: NOT just "[MATERIAL] [emoji]" — add action or detail.
-  ✅ "BUTTER walls dripping 🧈" ✅ "72 LAYERS thick 🥐" ❌ "Butter 🧈"
+⛔ Scene 1: MACRO = pure food curiosity (architecture NOT visible yet).
+  ✅ "still warm inside 🔥" ✅ "Croissant dough — still RISING 🔥" ❌ "Croissant Cathedral 🥐" ❌ "Gothic arches 🏛️"
+⛔ Scene 2+: DUAL IDENTITY — food material + architectural form word.
+  ✅ "BUTTER walls dripping 🧈" (food + wall) ✅ "72 LAYERS of golden ARCH 🥐" (food + arch) ✅ "CHEESE dome still WARM" (food + dome) ❌ "Butter 🧈" (no form) ❌ "Gothic nave" (no food)
 
 **⛔ ON-SCREEN TEXT FORMAT VARIETY (ANTI-TEMPLATE — MANDATORY):**
 Do NOT use the same format "KEYWORD emoji" for every scene. Vary across these 5 formats per video (use ≥3 different formats):
@@ -2729,7 +2730,7 @@ In testing, THE_PRICE was chosen 5/5 times. It's the "safe default" because mone
       "audio_texture_layer": { "physical_sensation": "...", "reference_sound": "...", "frequency_range": "...", "stereo_position": "...", "intensity": "..." },
       "narrator_script": "Short. Sensory. 4 words max for 2s scene.",
       "voiceover_segment": "[whispers] ... [pause] ...",
-      "on_screen_text": "3-6 words, mute-friendly headline, CAPS emphasis",
+      "on_screen_text": "3-6 words, FOOD + FORM (wall/arch/dome/column), CAPS emphasis",
       "audio_moment": "...",
       "food_reclamation": { "type": "BITE_TAKEN|MELT_FAILURE|CRUMB_TRAIL|DRIP_REVEAL|STEAM_ESCAPE|SQUEEZE_DEFORM|CONDENSATION_PROOF|FLAVOR_LEAK|GRAVITY_SAG", "description": "..." }
     },
@@ -2768,10 +2769,10 @@ Example A (JSON skeleton above) and Example B (Cracker Galleon — CRISPY, 8 sce
 | Loop close VO | "All aboard." | "Anchor." |
 
 **Example B key scenes (inline reference — NOT a template to copy):**
-- S1: MACRO_ENTRY, cracker surface macro, `"Warm. Flaky."`, SP:7
-- S4: completion_bait vo_trigger `"One more deck..."` in voiceover_segment, SP:8
-- S6: STRUCTURAL_DETAIL + ASMR + money_shot, cracker hull fracture + melting butter drip, `"[silence]"` (MODE A CRISPY), SP:10
-- S7: AERIAL, `"[whispers] Don't touch the mast."`
+- S1: MACRO_ENTRY, cracker surface macro, `"Warm. Flaky."`, on_screen_text: `"CRACKER pirate ship"` (food+form), SP:7
+- S4: completion_bait vo_trigger `"One more deck..."` in voiceover_segment, on_screen_text: `"one more DECK... 🧂"` (anticipation+form), SP:8
+- S6: STRUCTURAL_DETAIL + ASMR + money_shot, cracker hull fracture + melting butter drip, `"[silence]"` (MODE A CRISPY), on_screen_text: `"Hull CRACK 🧂"` (food-action+form), SP:10
+- S7: AERIAL, `"[whispers] Don't touch the mast."`, on_screen_text: `"full GALLEON revealed"` (form-scale)
 - S8: LOOP_CLOSE, duplicates S1 visual_concept+gen2_visual_params, reversal-safe motion, `"[whispers] Anchor."`
 ---
 
@@ -2791,6 +2792,7 @@ Pipeline validator handles structural checks (field presence, JSON format, durat
 10. **VISUAL QUALITY:** Every scene has `gen2_visual_params` with specific values + `temperature_contrast` + `food_visual_ratio` (NEVER ARCHITECTURE_DOMINANT). Close-ups use MACRO_KEYWORDS, wides use SCALE_KEYWORDS. Warm light on food ONLY, environment retains natural colors. Max 3 dark-preset scenes.
 11. **METADATA:** 4 title variants ≤ 50 chars, food name + sensory word in each. Hashtags TIER 1-4 only. Description: statement + food keywords + warning-derived CTA. Tags: 4-7 real-world nouns. Pinned comment: Format A/B/C (warning callback). No forbidden words (real estate, artisan, stunning, etc.).
 12. **FINAL CHECKS:** `humor` array 1-2 objects, different types, SP ≤ 6 only. Scene 1/warning_line/Scene N = three DIFFERENT phrases. `on_screen_text` 1-2 = anticipation not facts. Food+subject combo unique (not oversaturated). Red food + dark preset → add warm accents. Duration 13-16s preferred.
+13. **DUAL IDENTITY CHECK (on_screen_text):** Read on_screen_text for scenes 2 to N-1. Each one should reference BOTH a food element (ingredient, texture, temperature, action) AND an architectural form (wall, arch, dome, column, tower, hull, deck, vault, floor, ceiling, gate, bridge, window, stair, spire). Scene 1 (macro) = food only. Scene N = LOOP_CLOSE. If ≥50% of scenes 2 to N-1 are food-only with ZERO form words → fix by adding form words. ❌ "still RISING 🔥" → ✅ "dough WALLS still rising 🔥"
 
 ---
 

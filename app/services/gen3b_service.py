@@ -124,6 +124,7 @@ Return ONLY valid JSON."""
         gen3a_analysis: Gen3aOutput,
         gen1_brief: Dict[str, Any],
         gen2_brief: Dict[str, Any],
+        voiceover_timing: Optional[Dict[str, Any]] = None,
     ) -> Gen3bManifest:
         """
         Generate FFmpeg manifest from GEN3a analysis.
@@ -143,11 +144,12 @@ Return ONLY valid JSON."""
         logger.info(f"  Recommended hook style: {gen3a_analysis.hook_variety_analysis.recommended_style}")
 
         try:
-            # Build generation request
+            # Build generation request (with VO timing for duration-aware scene planning)
             request_content = self._build_manifest_request(
                 gen3a_analysis=gen3a_analysis,
                 gen1_brief=gen1_brief,
                 gen2_brief=gen2_brief,
+                voiceover_timing=voiceover_timing,
             )
 
             # Generate manifest (async API)
@@ -198,10 +200,21 @@ Return ONLY valid JSON."""
         gen3a_analysis: Gen3aOutput,
         gen1_brief: Dict[str, Any],
         gen2_brief: Dict[str, Any],
+        voiceover_timing: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Build the manifest generation request."""
         # Convert Gen3aOutput to dict for JSON serialization
         analysis_dict = gen3a_analysis.model_dump()
+
+        # Build VO timing block if available
+        vo_timing_block = ""
+        if voiceover_timing and voiceover_timing.get("segments"):
+            vo_timing_block = f"""
+### voiceover_timing.json (ACTUAL TTS durations — use for scene duration planning):
+```json
+{json.dumps(voiceover_timing, indent=2, ensure_ascii=False)}
+```
+"""
 
         request = f"""GENERATE FFMPEG MANIFEST from the analysis.
 
@@ -221,7 +234,7 @@ Return ONLY valid JSON."""
 ```json
 {json.dumps(analysis_dict, indent=2, ensure_ascii=False)}
 ```
-
+{vo_timing_block}
 ## YOUR TASK
 
 Create production-ready manifest.json with:
@@ -231,6 +244,7 @@ Create production-ready manifest.json with:
    - speed_segments from gen3a
    - effects based on visual_classification
    - cuts for glitch removal
+   - **SCENE DURATION must accommodate voiceover** (see VO TIMING rule in system prompt)
 3. **SUBTITLES**: Create styled subtitles from VO segments
    - Apply style based on VO tags
    - Position in safe zone (NOT bottom 20%)

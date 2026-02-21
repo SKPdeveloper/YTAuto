@@ -591,7 +591,7 @@ building exterior, scale indicator, desaturated, muted colors, yellow color cast
 ```
 [Camera angle from camera_intent — medium or dynamic].
 [visual_concept.subject — describe the scene content]. 
-[architectural_identity style hints visible — building material, style]. 
+[architectural_identity as recognizable FORM — arches, columns, domes, vaults visible as FOOD-BUILT shapes]. 
 [food_identity.food_dna] texture visible on surfaces, 
 [gen2_visual_params.texture_focus] detail. 
 [Scale indicators if subject_scale = MASSIVE/LARGE/TOWERING]. 
@@ -1604,7 +1604,7 @@ When you receive GEN1 JSON:
       "visual_tier": "TIER_3_BALANCED",
       "motion_intensity": 6,
       "reference_type": "INDEPENDENT",
-      "image_prompt": "Low angle cinematic shot of the Pomegranate Fortress, a Gothic Revival structure built from stacked ruby seeds and white pith mortar. Juice moat ripples at the base. Atmospheric fog drifts around spires. Glistening seed texture on walls, wet pith catching light between clusters. Warm ruby tones against cold grey fog and midnight blue sky. Moonlight filtering from above, illuminating wet surfaces. Subject in upper frame. Editorial food photography, hyperrealistic, cinematic --no tilt-shift, miniature, diorama, toy, small scale, plastic, fake, 3d render, isometric, text, watermark, yellow color cast, sepia tone",
+      "image_prompt": "Low angle cinematic shot of stacked ruby pomegranate seeds and white pith mortar forming Gothic Revival fortress walls and spires. Juice moat ripples at the base. Atmospheric fog drifts around spires. Glistening seed texture on walls, wet pith catching light between clusters. Warm ruby tones against cold grey fog and midnight blue sky. Moonlight filtering from above, illuminating wet surfaces. Subject in upper frame. Editorial food photography, hyperrealistic, cinematic --no tilt-shift, miniature, diorama, toy, small scale, plastic, fake, 3d render, isometric, text, watermark, yellow color cast, sepia tone",
       "video_prompt": "Camera rising steadily, crimson juice seeping through mortar joints between seed clusters, fog sweeping past gothic walls, moat rippling with spreading waves, moonlight shifting across wet surfaces",
       "motion_elements": ["juice seeping through joints", "fog sweeping", "moat rippling"],
       "inheritance": null,

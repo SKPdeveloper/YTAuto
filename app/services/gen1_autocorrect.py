@@ -1,5 +1,5 @@
 """
-GEN1 Auto-Corrector v2.0
+GEN1 Auto-Corrector v3.3
 
 Deterministic auto-fix layer for GEN1 (Creative Director) output.
 Runs BEFORE validation to fix known Gemini 3 Pro hallucinations/confusions.
@@ -117,6 +117,22 @@ _THERMAL_HOOK_WORDS: set = TEMPERATURE_WORDS | {
     "fresh", "crisp",
     # Expanded thermal variants (from _TEXTURE_TO_TEMPS) — prevent double-prepend
     "barely", "scorched", "body", "room", "forty", "ice", "frozen",
+}
+
+# Architectural form words for dual identity check (on_screen_text scenes 2..N-1)
+# Includes structural, transport/vehicle, and scale words that hint at FORM
+ARCHITECTURAL_FORM_WORDS: set = {
+    # Structural
+    "wall", "walls", "arch", "arches", "dome", "domes", "column", "columns",
+    "tower", "towers", "vault", "vaults", "floor", "floors", "ceiling",
+    "gate", "gates", "bridge", "hull", "deck", "window", "windows",
+    "stair", "stairs", "spire", "spires", "buttress", "nave", "pillar",
+    "pillars", "facade", "parapet", "rampart", "turret", "balcony",
+    "corridor", "tunnel", "chamber", "roof", "rooftop",
+    # Transport/vehicle forms (pirate ships, trains, etc.)
+    "mast", "cabin", "rudder", "cockpit", "galleon", "keel",
+    # Scale/structural words used in food-form context
+    "layer", "layers", "tier", "tiers", "level", "levels",
 }
 
 # Reversal-safe motion elements for Scene N
@@ -419,6 +435,7 @@ def autocorrect_gen1(data: Dict[str, Any]) -> Tuple[Dict[str, Any], List[AutoFix
     _fix_narrative_bridges(scenes, w)
     _fix_silence_speech_contradiction(d, scenes, w)
     _fix_on_screen_text(d, scenes, w)
+    _warn_on_screen_text_dual_identity(d, scenes, w)
     _fix_scene_n_minus_1_aerial(scenes, w)
     _fix_warning_line_format_rotation(d, scenes, w)  # BUG 4: must be BEFORE delivery+sync
     _fix_warning_line_delivery(d, scenes, w)
@@ -925,6 +942,45 @@ def _fix_on_screen_text(d: dict, scenes: list, w: list) -> None:
             scene["on_screen_text"] = cleaned
             w.append(AutoFixWarning(f"scenes[{i}].on_screen_text",
                 f"Auto-cleaned parentheticals: '{on_screen.strip()[:40]}' → '{cleaned}'"))
+
+
+def _warn_on_screen_text_dual_identity(d: dict, scenes: list, w: list) -> None:
+    """Warn if on_screen_text in scenes 2..N-1 lacks architectural form words.
+
+    NOT an autofix — we can't deterministically pick the right form word
+    without visual_concept context. Gemini handles this via GEN1 prompt rules.
+    This just catches misses.
+    """
+    if len(scenes) < 3:
+        return
+    total = len(scenes)
+    missing_count = 0
+    checked_count = 0
+    for i, scene in enumerate(scenes):
+        sn = i + 1
+        if sn <= 1 or sn >= total:
+            continue  # skip Scene 1 (macro) and Scene N (LOOP_CLOSE)
+        if not isinstance(scene, dict):
+            continue
+        ost = scene.get("on_screen_text", "")
+        if not ost or not isinstance(ost, str) or not ost.strip():
+            continue
+        checked_count += 1
+        ost_words = {wd.strip(".,!?:;\"'").lower() for wd in ost.split()}
+        has_form = bool(ost_words & ARCHITECTURAL_FORM_WORDS)
+        if not has_form:
+            missing_count += 1
+            w.append(AutoFixWarning(
+                f"scenes[{i}].on_screen_text",
+                f"No architectural form word (wall/arch/dome/column...) — "
+                f"mute viewers miss dual identity: '{ost.strip()[:40]}'"
+            ))
+    if checked_count > 0 and missing_count > checked_count * 0.5:
+        w.append(AutoFixWarning(
+            "on_screen_text.dual_identity",
+            f"{missing_count}/{checked_count} middle scenes lack form words — "
+            f"dual identity weak (>50% miss)"
+        ))
 
 
 def _fix_scene_n_minus_1_aerial(scenes: list, w: list) -> None:
