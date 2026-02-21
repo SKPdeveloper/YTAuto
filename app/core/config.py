@@ -257,6 +257,13 @@ class Settings(BaseSettings):
         description="Кількість останніх тем для blacklist (5-100)"
     )
 
+    STRUCTURAL_MEMORY_LIMIT: int = Field(
+        default=10,
+        ge=3,
+        le=50,
+        description="Number of structural fingerprints to remember for anti-pattern"
+    )
+
     # ========================================================================
     # TOPAZ VIDEO AI SETTINGS
     # ========================================================================

@@ -14,6 +14,9 @@ from loguru import logger
 from app.pipeline.base import BasePipelineStage, StageResult, StageStatus
 from app.api.schemas import ProjectData, SceneData, SceneStatus, PipelineStage
 from app.services.prompt_router import PromptRouter
+from app.services.gen_models import Gen1Output, Gen2BatchOutput
+from app.services.topic_memory import topic_memory
+from app.services.structural_memory import structural_memory
 from app.services.glaze_parser import save_project_brief, save_merged_project_brief
 from app.core.paths import get_project_path
 from app.utils.yt_metadata_parser import parse_gen1_to_yt_file
@@ -96,6 +99,14 @@ class ScriptStage(BasePipelineStage):
                 if val_result and val_result.passed:
                     await self.notify_log(f"✅ GEN1 валідація PASSED (спроба {attempt})", "success")
                     gen1_validated = True
+                    # BUG-19a: Apply autocorrect corrections back to gen1_output
+                    corrected_gen1 = getattr(router, '_last_corrected_gen1_data', None)
+                    if corrected_gen1:
+                        try:
+                            gen1_output = Gen1Output.model_validate(corrected_gen1)
+                            logger.info("[ScriptStage] Applied autocorrect corrections to gen1_output")
+                        except Exception as e:
+                            logger.warning(f"[ScriptStage] Failed to re-parse corrected GEN1: {e}")
                     break
                 else:
                     await self.notify_log(f"⚠️ GEN1 валідація FAILED (спроба {attempt})", "warning")
@@ -158,6 +169,14 @@ class ScriptStage(BasePipelineStage):
                 if val_result and val_result.passed:
                     await self.notify_log(f"✅ GEN2 валідація PASSED (спроба {attempt})", "success")
                     gen2_validated = True
+                    # BUG-19b: Apply autocorrect corrections back to gen2_output
+                    corrected_gen2 = getattr(router, '_last_corrected_gen2_data', None)
+                    if corrected_gen2:
+                        try:
+                            gen2_output = Gen2BatchOutput.model_validate(corrected_gen2)
+                            logger.info("[ScriptStage] Applied autocorrect corrections to gen2_output")
+                        except Exception as e:
+                            logger.warning(f"[ScriptStage] Failed to re-parse corrected GEN2: {e}")
                     break
                 else:
                     await self.notify_log(f"⚠️ GEN2 валідація FAILED (спроба {attempt})", "warning")
@@ -201,7 +220,7 @@ class ScriptStage(BasePipelineStage):
                     await self.notify_log(f"❌ Помилка об'єднання GEN1 + GEN2 (спроба {merge_attempt})", "error")
                     if merge_attempt < MAX_MERGE_RETRIES:
                         await self.notify_log("🔄 Regenerating GEN1+GEN2...", "warning")
-                        # Regenerate GEN1
+                        # BUG-25: Regenerate GEN1 WITH validation
                         gen1_output = await router.run_gen1(
                             topic=self.project.topic,
                             num_scenes=self.project.num_scenes,
@@ -210,11 +229,24 @@ class ScriptStage(BasePipelineStage):
                             project_id=self.project.project_id,
                         )
                         if gen1_output:
+                            val_r = await router.validate_gen1(gen1_output=gen1_output, original_topic=self.project.topic or "", project_id=self.project.project_id)
+                            if val_r and val_r.passed:
+                                corrected = getattr(router, '_last_corrected_gen1_data', None)
+                                if corrected:
+                                    try: gen1_output = Gen1Output.model_validate(corrected)
+                                    except Exception: pass
                             delivery_payload = router.create_delivery_payload(gen1_output, self.project.project_id)
                             gen2_output = await router.run_gen2(
                                 payload=delivery_payload,
                                 project_id=self.project.project_id,
                             )
+                            if gen2_output:
+                                val_r2 = await router.validate_gen2(gen2_output=gen2_output, gen1_output=gen1_output, project_id=self.project.project_id)
+                                if val_r2 and val_r2.passed:
+                                    corrected2 = getattr(router, '_last_corrected_gen2_data', None)
+                                    if corrected2:
+                                        try: gen2_output = Gen2BatchOutput.model_validate(corrected2)
+                                        except Exception: pass
                     continue
 
                 # Validate merged brief for ALL required fields
@@ -242,7 +274,7 @@ class ScriptStage(BasePipelineStage):
 
                     if merge_attempt < MAX_MERGE_RETRIES:
                         await self.notify_log("🔄 Regenerating GEN1+GEN2 to fix missing fields...", "warning")
-                        # Regenerate GEN1
+                        # BUG-25: Regenerate GEN1 WITH validation
                         gen1_output = await router.run_gen1(
                             topic=self.project.topic,
                             num_scenes=self.project.num_scenes,
@@ -251,11 +283,24 @@ class ScriptStage(BasePipelineStage):
                             project_id=self.project.project_id,
                         )
                         if gen1_output:
+                            val_r = await router.validate_gen1(gen1_output=gen1_output, original_topic=self.project.topic or "", project_id=self.project.project_id)
+                            if val_r and val_r.passed:
+                                corrected = getattr(router, '_last_corrected_gen1_data', None)
+                                if corrected:
+                                    try: gen1_output = Gen1Output.model_validate(corrected)
+                                    except Exception: pass
                             delivery_payload = router.create_delivery_payload(gen1_output, self.project.project_id)
                             gen2_output = await router.run_gen2(
                                 payload=delivery_payload,
                                 project_id=self.project.project_id,
                             )
+                            if gen2_output:
+                                val_r2 = await router.validate_gen2(gen2_output=gen2_output, gen1_output=gen1_output, project_id=self.project.project_id)
+                                if val_r2 and val_r2.passed:
+                                    corrected2 = getattr(router, '_last_corrected_gen2_data', None)
+                                    if corrected2:
+                                        try: gen2_output = Gen2BatchOutput.model_validate(corrected2)
+                                        except Exception: pass
 
             if not glaze_project or not merge_valid:
                 await self.notify_log(f"❌ MERGE FAILED після {MAX_MERGE_RETRIES} спроб", "error")
@@ -265,6 +310,25 @@ class ScriptStage(BasePipelineStage):
                     status=StageStatus.FAILED,
                     message=f"Merge validation failed after {MAX_MERGE_RETRIES} attempts - missing required fields"
                 )
+
+            # BUG-20: Save topic_memory and structural_memory after successful merge
+            try:
+                gen1_dict = gen1_output.model_dump()
+                food = gen1_dict.get("food_identity", {}).get("primary_food", "")
+                subjects = gen1_dict.get("food_identity", {}).get("subjects", [])
+                if food:
+                    topic_memory.add_topic(food, subjects)
+                    logger.info(f"[ScriptStage] topic_memory saved: {food}")
+            except Exception as e:
+                logger.warning(f"[ScriptStage] Failed to save topic_memory: {e}")
+
+            try:
+                gen1_dict_for_fp = gen1_output.model_dump()
+                gen1_dict_for_fp["_project_id"] = self.project.project_id
+                structural_memory.add_fingerprint(gen1_dict_for_fp)
+                logger.info(f"[ScriptStage] structural_memory saved fingerprint for: {gen1_output.metadata.title}")
+            except Exception as e:
+                logger.warning(f"[ScriptStage] Failed to save structural_memory: {e}")
 
             # Log merge analysis to client
             await self._log_merge_analysis_to_client(gen1_output, gen2_output, glaze_project)

@@ -21,6 +21,8 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from loguru import logger
 
+from app.services.structural_memory import structural_memory
+
 
 # ---------------------------------------------------------------------------
 # CONSTANTS
@@ -425,6 +427,9 @@ def autocorrect_gen1(data: Dict[str, Any]) -> Tuple[Dict[str, Any], List[AutoFix
 
     _fix_metadata_types(d, w)
     _fix_hook_type(d, w)
+    _fix_body_trigger_hard_limits(d, w)
+    _fix_entry_type_hard_limit(d, w)
+    _warn_frequency_limits(d, w)
     _fix_narrative_purposes(d, w)
     _fix_structural_detail_count(scenes, w)  # Exactly 1 STRUCTURAL_DETAIL (Gemini ignores count)
     _fix_easter_egg_and_pinned(d, w)
@@ -502,6 +507,182 @@ def _fix_metadata_types(d: dict, w: list) -> None:
             w.append(AutoFixWarning("metadata.target_duration_seconds", f"Auto-coerced string '{tds}' → {meta['target_duration_seconds']}"))
         except ValueError:
             pass
+
+
+# ---------------------------------------------------------------------------
+# STRUCTURAL MEMORY ENFORCEMENT (HARD LIMITS)
+# ---------------------------------------------------------------------------
+
+_BODY_TRIGGERS = ["MOUTH", "EARS", "NOSE", "STOMACH", "SKIN"]
+
+
+def _fix_body_trigger_hard_limits(d: dict, w: list) -> None:
+    """Enforce body_trigger HARD LIMITS via StructuralMemory.
+
+    HARD LIMIT #17: same body_trigger 2x in a row → rotate to next
+    HARD LIMIT #16: SKIN max 1 in 3 → rotate if exceeded
+    """
+    hook = d.get("hook")
+    if not isinstance(hook, dict):
+        return
+    current = hook.get("body_trigger")
+    if not current or not isinstance(current, str):
+        return
+
+    current_upper = current.upper()
+
+    # Skip if not enough history
+    if len(structural_memory.fingerprints) < 1:
+        return
+
+    rotated = False
+
+    # HARD LIMIT #17: same trigger 2x in row → rotate
+    last = structural_memory.last_value("body_trigger")
+    if last and last.upper() == current_upper:
+        # Pick first trigger not used in last 2
+        recent_2 = {
+            str(fp.get("body_trigger", "")).upper()
+            for fp in structural_memory.get_recent(2)
+        }
+        for candidate in _BODY_TRIGGERS:
+            if candidate != current_upper and candidate not in recent_2:
+                hook["body_trigger"] = candidate
+                w.append(AutoFixWarning(
+                    "hook.body_trigger",
+                    f"HARD LIMIT #17: '{current_upper}' 2x in row → rotated to '{candidate}'",
+                ))
+                rotated = True
+                break
+
+    # HARD LIMIT #16: SKIN max 1 in 3
+    if not rotated and current_upper == "SKIN":
+        skin_count = structural_memory.count_in_window("body_trigger", "SKIN", 3)
+        if skin_count >= 1:
+            recent_3 = {
+                str(fp.get("body_trigger", "")).upper()
+                for fp in structural_memory.get_recent(3)
+            }
+            for candidate in _BODY_TRIGGERS:
+                if candidate != "SKIN" and candidate not in recent_3:
+                    hook["body_trigger"] = candidate
+                    w.append(AutoFixWarning(
+                        "hook.body_trigger",
+                        f"HARD LIMIT #16: SKIN {skin_count + 1}/3 → rotated to '{candidate}'",
+                    ))
+                    break
+
+
+def _fix_entry_type_hard_limit(d: dict, w: list) -> None:
+    """Enforce HARD LIMIT #18: MACRO_ENTRY max 3 consecutive → force SCALE_SHOCK."""
+    hook = d.get("hook")
+    if not isinstance(hook, dict):
+        return
+    current = hook.get("scene_1_entry_type", "")
+    if not isinstance(current, str):
+        return
+
+    if current.upper() != "MACRO_ENTRY":
+        return
+
+    consecutive = structural_memory.consecutive_count("scene_1_entry_type", "MACRO_ENTRY")
+    if consecutive >= 3:
+        hook["scene_1_entry_type"] = "SCALE_SHOCK"
+        w.append(AutoFixWarning(
+            "hook.scene_1_entry_type",
+            f"HARD LIMIT #18: MACRO_ENTRY {consecutive + 1}x consecutive → forced SCALE_SHOCK",
+        ))
+
+
+def _warn_frequency_limits(d: dict, w: list) -> None:
+    """Issue warnings for frequency HARD LIMITS (no mutation — changing these would break concept coherence).
+
+    #4: THE_IMPOSSIBLE max 1 in 4
+    #5: THE_SENSORY_ATTACK max 1 in 4
+    #8: FOG_GATE max 1 in 4
+    #3: scene_count=7 max 3 in 5
+    #19: SP peak at Scene 5 max 2 in 4
+    #20: Scene 1 SP=7 max 2 in 4
+    """
+    if len(structural_memory.fingerprints) < 2:
+        return
+
+    hook = d.get("hook", {})
+    if not isinstance(hook, dict):
+        hook = {}
+    hook_type = hook.get("type", "")
+    loop = d.get("loop", {})
+    if not isinstance(loop, dict):
+        loop = {}
+    loop_conn = loop.get("connection", "")
+    scenes = d.get("scenes", [])
+    scene_count = len(scenes)
+
+    # #4: THE_IMPOSSIBLE max 1 in 4
+    if hook_type == "THE_IMPOSSIBLE":
+        cnt = structural_memory.count_in_window("hook_type", "THE_IMPOSSIBLE", 4)
+        if cnt >= 1:
+            w.append(AutoFixWarning(
+                "hook.type",
+                f"HARD LIMIT #4 WARNING: THE_IMPOSSIBLE {cnt + 1}/4 in last 4 (max 1)",
+            ))
+
+    # #5: THE_SENSORY_ATTACK max 1 in 4
+    if hook_type == "THE_SENSORY_ATTACK":
+        cnt = structural_memory.count_in_window("hook_type", "THE_SENSORY_ATTACK", 4)
+        if cnt >= 1:
+            w.append(AutoFixWarning(
+                "hook.type",
+                f"HARD LIMIT #5 WARNING: THE_SENSORY_ATTACK {cnt + 1}/4 in last 4 (max 1)",
+            ))
+
+    # #8: FOG_GATE max 1 in 4
+    if loop_conn == "FOG_GATE":
+        cnt = structural_memory.count_in_window("loop_technique", "FOG_GATE", 4)
+        if cnt >= 1:
+            w.append(AutoFixWarning(
+                "loop.connection",
+                f"HARD LIMIT #8 WARNING: FOG_GATE {cnt + 1}/4 in last 4 (max 1)",
+            ))
+
+    # #3: scene_count=7 max 3 in 5
+    if scene_count == 7:
+        cnt = structural_memory.count_in_window("scene_count", "7", 5)
+        if cnt >= 3:
+            w.append(AutoFixWarning(
+                "metadata.scene_count",
+                f"HARD LIMIT #3 WARNING: scene_count=7 {cnt + 1}/5 in last 5 (max 3)",
+            ))
+
+    # #19: SP peak at Scene 5 max 2 in 4
+    sp_values = []
+    for s in scenes:
+        sp = s.get("sensory_pressure")
+        if isinstance(sp, (int, float)):
+            sp_values.append((s.get("scene_number", 0), int(sp)))
+    if sp_values:
+        peak = max(sp_values, key=lambda x: x[1])
+        if peak[0] == 5:
+            cnt = structural_memory.count_in_window("sp_peak_scene", "5", 4)
+            if cnt >= 2:
+                w.append(AutoFixWarning(
+                    "sensory_pressure.peak",
+                    f"HARD LIMIT #19 WARNING: SP peak at S5 {cnt + 1}/4 in last 4 (max 2)",
+                ))
+
+    # #20: Scene 1 SP=7 max 2 in 4
+    scene1_sp = None
+    for s in scenes:
+        if s.get("scene_number") == 1:
+            scene1_sp = s.get("sensory_pressure")
+            break
+    if scene1_sp == 7:
+        cnt = structural_memory.count_in_window("sp_scene_1", "7", 4)
+        if cnt >= 2:
+            w.append(AutoFixWarning(
+                "scenes[0].sensory_pressure",
+                f"HARD LIMIT #20 WARNING: Scene 1 SP=7 {cnt + 1}/4 in last 4 (max 2)",
+            ))
 
 
 def _fix_hook_type(d: dict, w: list) -> None:

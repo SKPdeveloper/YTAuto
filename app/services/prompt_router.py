@@ -140,6 +140,7 @@ from app.services.validation_models import (
     Gen2RetryGuidance,
 )
 from app.services.topic_memory import topic_memory
+from app.services.structural_memory import structural_memory
 from app.utils.prompt_loader import load_prompt_with_banlist
 
 # Python validators (deterministic, ~5ms, 0 tokens) - replacing LLM validators
@@ -198,6 +199,9 @@ class PromptRouter:
         self._last_gen2_truncated: bool = False
         # Track last GEN1 parse error for retry guidance
         self._last_gen1_parse_error: Optional[str] = None
+        # Auto-corrected data from validators (re-parsed before merge)
+        self._last_corrected_gen1_data: Optional[Dict] = None
+        self._last_corrected_gen2_data: Optional[Dict] = None
 
         # Pre-generate GEN2 JSON schema for Gemini structured output
         self._gen2_json_schema: Optional[Dict] = None
@@ -372,6 +376,12 @@ class PromptRouter:
             retry_guidance=retry_guidance,
         )
 
+        # Populate {{RECENT_TEXTURES}} placeholder in system prompt
+        system_prompt = self.gen1_prompt
+        if system_prompt and "{{RECENT_TEXTURES}}" in system_prompt:
+            textures = structural_memory.generate_recent_textures()
+            system_prompt = system_prompt.replace("{{RECENT_TEXTURES}}", textures or "(no history)")
+
         try:
             # Call Gemini with GEN1 system prompt (with timeout)
             response = await asyncio.wait_for(
@@ -379,7 +389,7 @@ class PromptRouter:
                     model=self.model,
                     contents=user_prompt,
                     config=types.GenerateContentConfig(
-                        system_instruction=self.gen1_prompt,
+                        system_instruction=system_prompt,
                         temperature=1.0,  # Gemini 3 Pro optimized (thinking model)
                         max_output_tokens=16384,  # Reduced - some models have lower limits
                         response_mime_type="application/json",
@@ -517,9 +527,18 @@ Using any blocked subject or food will result in IMMEDIATE REJECTION.
 
 """ if topic_memory.topics else ""
 
+        # Get structural diversity context
+        structural_context = structural_memory.generate_structural_context()
+        structural_section = f"""
+{structural_context}
+
+---
+
+""" if structural_memory.fingerprints else ""
+
         if auto_mode:
             # AUTO MODE: AI generates topic
-            return f"""{blacklist_section}NEW TOPIC
+            return f"""{blacklist_section}{structural_section}NEW TOPIC
 
 Generate a completely new, UNIQUE and VIRAL video concept.
 
@@ -560,7 +579,7 @@ CRITICAL REQUIREMENTS:
 {self._format_retry_guidance(retry_guidance)}Output ONLY valid JSON. Start with {{ and end with }}"""
         else:
             # IDEA MODE: User provided hint/topic
-            return f"""{blacklist_section}TOPIC: {topic}
+            return f"""{blacklist_section}{structural_section}TOPIC: {topic}
 
 Develop this idea into a complete video concept for "Glaze City" style channel.
 
@@ -1185,16 +1204,15 @@ REQUIREMENTS:
             # Run Python validator with auto-fix (deterministic, ~5ms)
             result: Gen2ValidationResult = python_validate_gen2(gen2_dict, gen1_dict, auto_fix=True)
 
-            # Store corrected dict for re-parsing in generate_full_project()
+            # Always store corrected dict for re-parsing in generate_full_project()
             # Mirrors GEN1 pattern: self._last_corrected_gen1_data → re-parse before merge
-            # NOTE: We store the dict (not re-parse here) because gen2_output is a local
-            # parameter — reassigning it here won't propagate to the caller.
-            if result.auto_fixes or ac_warnings:
-                if result.auto_fixes:
-                    logger.info(f"[VAL_GEN2_PYTHON] Applied {len(result.auto_fixes)} auto-fixes (saved a full retry ~4400 tokens)")
-                if ac_warnings:
-                    logger.info(f"[VAL_GEN2_PYTHON] {len(ac_warnings)} autocorrect fixes stored for re-parse before merge")
-                self._last_corrected_gen2_data = gen2_dict
+            # NOTE: We store unconditionally so the latest attempt's data is always available
+            # (prevents stale data from a failed previous attempt being used)
+            if result.auto_fixes:
+                logger.info(f"[VAL_GEN2_PYTHON] Applied {len(result.auto_fixes)} auto-fixes (saved a full retry ~4400 tokens)")
+            if ac_warnings:
+                logger.info(f"[VAL_GEN2_PYTHON] {len(ac_warnings)} autocorrect fixes stored for re-parse before merge")
+            self._last_corrected_gen2_data = gen2_dict
 
             # Save debug output
             debug_output = json.dumps(result.to_dict(), indent=2, ensure_ascii=False)
@@ -2298,6 +2316,7 @@ REQUIREMENTS:
         gen1_output: Optional[Gen1Output] = None
         gen1_validated = False
         last_retry_guidance: Optional[List[str]] = None
+        self._last_corrected_gen1_data = None  # Reset to prevent stale data from previous run
 
         for attempt in range(1, MAX_VALIDATION_RETRIES + 1):
             logger.info(f"\n[STAGE 1] Running GEN1 (attempt {attempt}/{MAX_VALIDATION_RETRIES})...")
@@ -2389,6 +2408,7 @@ REQUIREMENTS:
         gen2_output: Optional[Gen2BatchOutput] = None
         gen2_validated = False
         last_gen2_retry_guidance: Optional[List[str]] = None
+        self._last_corrected_gen2_data = None  # Reset to prevent stale data from previous run
 
         for attempt in range(1, MAX_VALIDATION_RETRIES + 1):
             logger.info(f"\n[STAGE 2] Running GEN2 (attempt {attempt}/{MAX_VALIDATION_RETRIES})...")
@@ -2465,6 +2485,14 @@ REQUIREMENTS:
             )
             if has_prompts:
                 logger.warning(f"[VAL_GEN2] Validation failed but GEN2 has all prompts - continuing anyway")
+                # Apply autocorrect fixes even on bypass (banned words removal, motion padding, etc.)
+                corrected_gen2 = self._last_corrected_gen2_data
+                if corrected_gen2:
+                    try:
+                        gen2_output = Gen2BatchOutput.model_validate(corrected_gen2)
+                        logger.info("[VAL_GEN2] Applied auto-corrections to gen2_output (bypass path)")
+                    except Exception as e:
+                        logger.warning(f"[VAL_GEN2] Failed to apply corrections on bypass: {e} — using original")
             else:
                 logger.error(f"[GEN2] Failed after {MAX_VALIDATION_RETRIES} attempts - validation failed and missing prompts")
                 return None
@@ -2479,6 +2507,15 @@ REQUIREMENTS:
         is_valid, missing = self.validate_merged_brief(project)
         if not is_valid:
             logger.warning(f"[MERGE] Post-merge validation found {len(missing)} missing fields — continuing (non-blocking)")
+
+        # Save structural fingerprint AFTER successful merge (prevents ghost fingerprints on GEN2 failure)
+        try:
+            gen1_dict = gen1_output.model_dump()
+            gen1_dict["_project_id"] = project_id
+            structural_memory.add_fingerprint(gen1_dict)
+            logger.info(f"[StructuralMemory] Saved fingerprint for: {gen1_output.metadata.title}")
+        except Exception as e:
+            logger.warning(f"[StructuralMemory] Failed to save fingerprint: {e}")
 
         logger.info("=" * 70)
         logger.success("TWO-STAGE PIPELINE v3.0 COMPLETED SUCCESSFULLY")
