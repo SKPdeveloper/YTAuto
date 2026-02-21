@@ -1,5 +1,5 @@
 """
-GEN1 Auto-Corrector v3.3
+GEN1 Auto-Corrector v3.4
 
 Deterministic auto-fix layer for GEN1 (Creative Director) output.
 Runs BEFORE validation to fix known Gemini 3 Pro hallucinations/confusions.
@@ -133,6 +133,10 @@ ARCHITECTURAL_FORM_WORDS: set = {
     "corridor", "tunnel", "chamber", "roof", "rooftop",
     # Transport/vehicle forms (pirate ships, trains, etc.)
     "mast", "cabin", "rudder", "cockpit", "galleon", "keel",
+    # Aquatic/futuristic/industrial enclosures
+    "room", "rooms", "tank", "tanks", "aquarium", "pod", "pods",
+    "capsule", "hangar", "atrium", "lobby", "shaft", "duct",
+    "pipe", "pipes", "silo", "bunker", "observatory",
     # Scale/structural words used in food-form context
     "layer", "layers", "tier", "tiers", "level", "levels",
 }
@@ -441,6 +445,7 @@ def autocorrect_gen1(data: Dict[str, Any]) -> Tuple[Dict[str, Any], List[AutoFix
     _fix_silence_speech_contradiction(d, scenes, w)
     _fix_on_screen_text(d, scenes, w)
     _warn_on_screen_text_dual_identity(d, scenes, w)
+    _warn_vo_dual_identity(d, scenes, w)
     _fix_scene_n_minus_1_aerial(scenes, w)
     _fix_warning_line_format_rotation(d, scenes, w)  # BUG 4: must be BEFORE delivery+sync
     _fix_warning_line_delivery(d, scenes, w)
@@ -1161,6 +1166,58 @@ def _warn_on_screen_text_dual_identity(d: dict, scenes: list, w: list) -> None:
             "on_screen_text.dual_identity",
             f"{missing_count}/{checked_count} middle scenes lack form words — "
             f"dual identity weak (>50% miss)"
+        ))
+
+
+# Interior/structural narrative purposes where VO should reinforce dual identity
+_VO_DUAL_IDENTITY_PURPOSES: set = {
+    "THEMATIC_INTERIOR", "FEATURE_HIGHLIGHT", "STRUCTURAL_DETAIL", "CONTEXTUAL_ENVIRONMENT",
+}
+
+
+def _warn_vo_dual_identity(d: dict, scenes: list, w: list) -> None:
+    """Warn if voiceover in interior/structural scenes lacks architectural context words.
+
+    Scenes with narrative_purpose in (THEMATIC_INTERIOR, FEATURE_HIGHLIGHT,
+    STRUCTURAL_DETAIL, CONTEXTUAL_ENVIRONMENT) should reference architectural
+    forms in VO to reinforce dual identity for sound-on viewers.
+
+    NOT an autofix — VO is too nuanced for deterministic changes.
+    """
+    if len(scenes) < 3:
+        return
+    total = len(scenes)
+    missing_count = 0
+    checked_count = 0
+    for i, scene in enumerate(scenes):
+        sn = i + 1
+        if sn <= 1 or sn >= total:
+            continue  # skip Scene 1 (macro) and Scene N (LOOP_CLOSE)
+        if not isinstance(scene, dict):
+            continue
+        purpose = scene.get("narrative_purpose", "")
+        if not isinstance(purpose, str) or purpose.upper() not in _VO_DUAL_IDENTITY_PURPOSES:
+            continue
+        # Check narrator_script or voiceover_segment for arch words
+        # Strip VO tags ([whispers], [pause], etc.) before matching
+        narrator = scene.get("narrator_script", "") or ""
+        vo_seg = _strip_tags(scene.get("voiceover_segment", "") or "")
+        combined = f"{narrator} {vo_seg}".lower()
+        combined_words = {wd.strip(".,!?:;\"'") for wd in combined.split()}
+        has_form = bool(combined_words & ARCHITECTURAL_FORM_WORDS)
+        checked_count += 1
+        if not has_form:
+            missing_count += 1
+            w.append(AutoFixWarning(
+                f"scenes[{i}].voiceover_segment",
+                f"VO lacks architectural context word (wall/corridor/tank...) — "
+                f"sound-on viewers miss dual identity: '{narrator.strip()[:40]}'"
+            ))
+    if checked_count > 0 and missing_count > checked_count * 0.5:
+        w.append(AutoFixWarning(
+            "voiceover.dual_identity",
+            f"{missing_count}/{checked_count} interior scenes lack arch words in VO — "
+            f"dual identity weak for sound-on viewers (>50% miss)"
         ))
 
 
@@ -3071,4 +3128,5 @@ __all__ = [
     "NARRATIVE_BRIDGE_STARTERS",
     "TEMPERATURE_WORDS",
     "REVERSAL_SAFE_MOTIONS",
+    "ARCHITECTURAL_FORM_WORDS",
 ]

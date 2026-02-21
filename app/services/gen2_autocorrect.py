@@ -1,5 +1,5 @@
 """
-GEN2 Auto-Corrector v2.2
+GEN2 Auto-Corrector v2.3
 
 Deterministic auto-fix layer for GEN2 (Visual Director) output.
 Runs BEFORE gen2_validator.py to fix known Gemini 3 Pro hallucinations.
@@ -9,6 +9,10 @@ Architecture mirrors gen1_autocorrect.py:
 
 Separated from gen2_validator.py for maintainability and testability.
 Each fix is a standalone method with clear pre/post conditions.
+
+v2.3 changelog (19→20 auto-fixes):
+  - NEW: _fix_aerial_scene_no_block — remove "architecture dominant", "building exterior"
+    from AERIAL scene --no blocks (these block architectural FORM that aerial must reveal)
 
 v2.2 changelog (18→19 auto-fixes):
   - NEW: _fix_subject_motion_enforcement — inject physical state change into scenes
@@ -177,6 +181,21 @@ _VIDEO_EXPANSION_PHRASES: List[str] = [
     "foreground elements separating",
     "spatial depth layering",
     "tonal contrast building",
+]
+
+# Words to REMOVE from --no blocks of AERIAL scenes (they block architectural FORM visibility)
+_AERIAL_NO_BLOCK_REMOVE: Set[str] = {
+    "architecture dominant",
+    "building exterior",
+    "architecture",
+}
+
+# Narrative purposes that count as AERIAL
+_AERIAL_PURPOSES: Set[str] = {"AERIAL", "AERIAL_WOW", "AERIAL_REVEAL"}
+
+# Replacement negatives for AERIAL scenes: ban material realism, not form
+_AERIAL_REPLACEMENT_NEGATIVES: List[str] = [
+    "real stone", "real concrete", "mundane building", "suburban", "residential",
 ]
 
 # ---------------------------------------------------------------------------
@@ -416,6 +435,7 @@ def autocorrect_gen2(
     _fix_first_frame_composition(d, scenes, gen1_data, w)
     _fix_video_prompt_camera_gerund(d, scenes, w)               # ensure camera gerund
     _fix_video_prompt_expansion(d, scenes, gen1_data, w)        # expand short video_prompts
+    _fix_aerial_scene_no_block(d, scenes, gen1_data, w)           # remove form-blocking words from AERIAL --no
 
     # Phase 4: Global settings
     _fix_negative_prompt_tier_additions(d, scenes, w)
@@ -1207,6 +1227,81 @@ def _fix_video_prompt_expansion(d: dict, scenes: list, gen1_data: Optional[dict]
         w.append(AutoFixWarning(
             f"scenes[{i}].video_prompt",
             f"Expanded: {word_count} → {len(expanded.split())} words (tier {tier} min={min_wc})",
+        ))
+
+
+def _fix_aerial_scene_no_block(d: dict, scenes: list, gen1_data: Optional[Dict], w: list) -> None:
+    """Remove form-blocking words from AERIAL scene --no blocks and add replacements.
+
+    AERIAL scenes must reveal the architectural FORM of the building.
+    Words like "architecture dominant" and "building exterior" in the --no
+    block prevent Kling from showing the building shape. Remove them and
+    inject material-realism negatives ("real stone", "real concrete", etc.)
+    to ban photorealistic architecture without blocking the food-form shape.
+
+    NOTE: narrative_purpose lives in GEN1 output, not GEN2. We look it up
+    via _get_gen1_scene() — same pattern as other cross-referencing fixes.
+    """
+    for i, scene in enumerate(scenes):
+        if not isinstance(scene, dict):
+            continue
+
+        # narrative_purpose is a GEN1 field — look it up from gen1_data
+        sn = scene.get("scene_number", i + 1)
+        gen1_scene = _get_gen1_scene(gen1_data, sn)
+        purpose = gen1_scene.get("narrative_purpose", "") if gen1_scene else ""
+        if not isinstance(purpose, str) or purpose.upper() not in _AERIAL_PURPOSES:
+            continue
+
+        prompt = scene.get("image_prompt", "")
+        if not isinstance(prompt, str) or not prompt:
+            continue
+
+        core, no_block = _split_no_block(prompt)
+        if not no_block:
+            continue
+
+        # Extract the words after "--no " prefix
+        no_prefix_match = re.match(r'--no\s+', no_block, re.IGNORECASE)
+        if not no_prefix_match:
+            continue
+        no_content = no_block[no_prefix_match.end():]
+
+        # Split into comma-separated items and filter (skip empty from double commas)
+        items = [item.strip() for item in no_content.split(",") if item.strip()]
+        removed = []
+        kept = []
+        for item in items:
+            item_lower = item.lower()
+            if any(banned == item_lower for banned in _AERIAL_NO_BLOCK_REMOVE):
+                removed.append(item)
+            else:
+                kept.append(item)
+
+        if not removed:
+            continue
+
+        # Inject replacement negatives (ban material realism, not form)
+        kept_lower = {k.lower() for k in kept}
+        for repl in _AERIAL_REPLACEMENT_NEGATIVES:
+            if repl.lower() not in kept_lower:
+                kept.append(repl)
+                kept_lower.add(repl.lower())
+
+        # Rejoin
+        if kept:
+            new_no_block = "--no " + ", ".join(kept)
+        else:
+            new_no_block = ""
+
+        if new_no_block:
+            scene["image_prompt"] = f"{core} {new_no_block}"
+        else:
+            scene["image_prompt"] = core
+
+        w.append(AutoFixWarning(
+            f"scenes[{i}].image_prompt",
+            f"AERIAL --no cleanup: removed {', '.join(removed)} → added material-realism negatives",
         ))
 
 

@@ -415,6 +415,7 @@ class Gen1Validator:
         self._validate_humor()
         self._validate_dominant_color_appetite()
         self._validate_money_shot_saliva_trigger()
+        self._validate_aerial_reveals_architecture()
 
     # ========================================================================
     # VALIDATION METHODS
@@ -1437,6 +1438,25 @@ class Gen1Validator:
                     suggestion="Include one of: stretching, dripping, cracking, melting, pouring, oozing, soaking, bubbling, sizzling",
                 )
             break  # Only one money_shot
+
+    def _validate_aerial_reveals_architecture(self) -> None:
+        """Warn if AERIAL scene has FOOD_DOMINANT ratio — AERIAL should be BALANCED to show building form."""
+        scenes = self._data.get("scenes", [])
+        if not isinstance(scenes, list):
+            return
+        for i, scene in enumerate(scenes):
+            if not isinstance(scene, dict):
+                continue
+            purpose = scene.get("narrative_purpose", "")
+            if not isinstance(purpose, str) or purpose.upper() not in ("AERIAL", "AERIAL_WOW", "AERIAL_REVEAL"):
+                continue
+            ratio = scene.get("food_visual_ratio", "")
+            if isinstance(ratio, str) and ratio.upper() == "FOOD_DOMINANT":
+                self._warn(
+                    f"scenes[{i}].food_visual_ratio",
+                    f"AERIAL scene is FOOD_DOMINANT — viewers may not see building form. Consider BALANCED.",
+                    suggestion="AERIAL exists to reveal the building shape. FOOD_DOMINANT hides architecture.",
+                )
 
     # ========================================================================
     # HELPERS

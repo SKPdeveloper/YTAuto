@@ -916,16 +916,29 @@ ONE scene MUST include a moment where the building becomes FOOD again — the vi
 | **CONDENSATION_PROOF** | Moisture proves it's cold/fresh food |
 | **FLAVOR_LEAK** | Internal filling visible through gap/crack |
 | **GRAVITY_SAG** | Structure droops under its own weight |
+| **FINGER_DRAG** | Visible finger trail/touch impression across food surface (wall, column, railing) |
 
 **Placement:** Scenes 3-6, SP 6-8. NOT money shot, NOT hook.
 
 **JSON (add to the scene with reclamation):**
 ```json
 "food_reclamation": {
-  "type": "BITE_TAKEN | MELT_FAILURE | CRUMB_TRAIL | DRIP_REVEAL | STEAM_ESCAPE | SQUEEZE_DEFORM | CONDENSATION_PROOF | FLAVOR_LEAK | GRAVITY_SAG",
+  "type": "BITE_TAKEN | MELT_FAILURE | CRUMB_TRAIL | DRIP_REVEAL | STEAM_ESCAPE | SQUEEZE_DEFORM | CONDENSATION_PROOF | FLAVOR_LEAK | GRAVITY_SAG | FINGER_DRAG",
   "description": "What happens — describe the moment the building ACTS LIKE FOOD"
 }
 ```
+
+**Type catalog:**
+- BITE_TAKEN — visible bite mark in wall/pillar (proves edibility)
+- MELT_FAILURE — structure sagging/deforming from heat (proves food responds to temperature)
+- CRUMB_TRAIL — crumbs/debris fallen from ceiling/arch (proves brittle food texture)
+- DRIP_REVEAL — liquid seeping from joint/crack (proves food contains moisture)
+- STEAM_ESCAPE — visible steam from vent/window (proves food is hot)
+- SQUEEZE_DEFORM — handprint/compression mark on surface (proves food is soft)
+- CONDENSATION_PROOF — moisture beads on cold food surface (proves temperature)
+- FLAVOR_LEAK — colored liquid staining from inside (proves food has filling)
+- GRAVITY_SAG — slight droop in overhang/cantilever (proves food has weight)
+- FINGER_DRAG — visible finger trail or touch impression across food surface (wall, column, railing). Proves someone interacted. Triggers mirror neurons. Use: interior FEATURE_HIGHLIGHT scenes with high sensory_pressure.
 
 ### 3 Audio Hunger Triggers (mandatory in foley_palette)
 
@@ -952,6 +965,8 @@ ONE scene MUST include a moment where the building becomes FOOD again — the vi
 **THE RULE:** Warm light applies to **FOOD SURFACES ONLY**. Environment retains **TRUE, SATURATED NATURAL COLORS.** Vivid saturated = "edible". Desaturated grey/beige KILLS appetite.
 
 **⛔ DOMINANT_COLOR RULE:** In `gen2_visual_params.dominant_color`, NEVER use grey/gray/blue/purple for food-dominant scenes. Food's `dominant_color` MUST be a warm appetite color (golden, brown, amber, copper, caramel, honey, cream, etc.). Grey/blue ONLY allowed when `temperature_contrast.subject_temp = "COLD"` (ice cream, frozen desserts). Violation = viewer's appetite shuts down.
+
+**⚠️ COLD/TRANSPARENT FOOD COLOR RULE:** When primary_food is transparent/translucent (gelatin, ice, glass, crystal, jelly, agar): the dominant palette WILL be cold (blue, cyan, clear) — this is correct. But MUST include at least ONE warm color accent in 1-2 scenes: fruit suspended inside (red/orange), warm rim lighting on ONE surface, or golden reflection in ONE scene. This prevents 100% cold palette which suppresses appetite response. Apply via: `food_dna.columns_become` (fruit inside), `lighting_master.prompt_snippet` (warm accent light), or `temperature_contrast.contrast_method` in 1-2 scenes.
 
 | Element | CORRECT | WRONG (warm-bias) |
 |---------|---------|-------------------|
@@ -1698,6 +1713,8 @@ Exception: "Sixty percent sugar" style (number as deadpan engineering joke, not 
 
 **⛔ EVENT NARRATION BAN:** If a `narrator_script` describes something HAPPENING on screen ("The X arrives/opens/falls/breaks/appears"), it's narrating the VIDEO, not reporting SENSATION. The Sensory Witness self-check: "Could the viewer know this WITHOUT watching?" — if the answer is NO, it's visual narration → rewrite as what you'd FEEL.
 
+**⚠️ VO DUAL IDENTITY RULE:** For interior scenes (THEMATIC_INTERIOR, FEATURE_HIGHLIGHT, STRUCTURAL_DETAIL, CONTEXTUAL_ENVIRONMENT): VO MUST reference at least ONE architectural form word per 2 interior scenes. Pattern: "[sensory adjective] + [architectural word]". ✅ "Sticky walls." / "Cold corridor." / "These columns..." / "The ceiling drips." ❌ "Sticky." / "Cold air." / "So smooth." (pure sensory without architecture context). Sound-on viewers (15%) need verbal confirmation that food HAS architectural form. This does NOT conflict with SENSORY ONLY rule — "Sticky walls" IS a sensation (touch + location).
+
 **⛔ SENSORY LINE VALIDATOR (STOP-LEVEL — execute for EVERY narrator_script):**
 
 Run this 3-step test on EACH `narrator_script` before outputting:
@@ -1708,6 +1725,9 @@ STEP 1: BODY TEST — Does the line describe a PHYSICAL SENSATION (touch/smell/t
 
 STEP 2: LABEL TEST — Does EVERY word describe a sensation (not a label/name/color/
         nationality/engineering term)? If any non-sensation word found → replace it.
+        Exception: architectural LOCATION words (walls, corridor, ceiling, columns,
+        floor, arches, dome, tunnel, tank, room) are ALLOWED when paired with a
+        sensation word — per VO DUAL IDENTITY RULE. ✅ "Sticky walls." ✅ "Cold corridor."
         ✅ "Crispy. Still warm." ✅ "Burnt air. In your throat."
 
 STEP 3: SENSATION WORD CHECK — Does the line contain at least ONE sensation word
@@ -1718,7 +1738,7 @@ STEP 3: SENSATION WORD CHECK — Does the line contain at least ONE sensation wo
 
 **COMMON FAILURES → REWRITE:**
 ```
-❌ "The walls are closing in."   → VISUAL EVENT → ✅ "Tight. Pressure."
+❌ "The walls are closing in."   → VISUAL EVENT → ✅ "Tight walls. Pressure." (keep location word)
 ❌ "This is pure chocolate."     → FOOD LABEL  → ✅ "Rich. Thick on your tongue."
 ```
 
@@ -1805,6 +1825,13 @@ When using Format C, you may ALSO reference "the architect" in ONE of these addi
 This builds a recurring mystery character that returning viewers follow. Do NOT overuse — max 1 architect spotlight per video, and ONLY when using Format C warning_line.
 
 **⛔ RECURRING CHARACTER VISUAL RULE:** The Architect is NEVER shown as a human silhouette, person, or figure. AI image generators produce distorted, uncanny human forms. Instead, represent The Architect through OBJECTS: a tiny glowing lantern, a blueprint scroll, a compass, a hard hat on a railing, a measuring tape, a pencil mark on a wall. These objects imply presence without triggering AI distortion.
+
+**⚠️ RECURRING CHARACTER SCALE RULE:**
+- In TUNNEL/CORRIDOR/INTERIOR scenes: `size_pct` = 3-5% (visible scale reference)
+- In AERIAL scenes: `size_pct` = 1-2% (subtle)
+- In MACRO scenes: DO NOT include (conflicts with close-up focus)
+- The Architect object PROVES this is a BUILDING, not just food
+- Placement: end of tunnel, edge of balcony, top of railing — where it creates depth AND scale reference simultaneously
 
 **FOOD_ACTION must be one of:**
 ```
@@ -2732,7 +2759,7 @@ In testing, THE_PRICE was chosen 5/5 times. It's the "safe default" because mone
       "voiceover_segment": "[whispers] ... [pause] ...",
       "on_screen_text": "3-6 words, FOOD + FORM (wall/arch/dome/column), CAPS emphasis",
       "audio_moment": "...",
-      "food_reclamation": { "type": "BITE_TAKEN|MELT_FAILURE|CRUMB_TRAIL|DRIP_REVEAL|STEAM_ESCAPE|SQUEEZE_DEFORM|CONDENSATION_PROOF|FLAVOR_LEAK|GRAVITY_SAG", "description": "..." }
+      "food_reclamation": { "type": "BITE_TAKEN|MELT_FAILURE|CRUMB_TRAIL|DRIP_REVEAL|STEAM_ESCAPE|SQUEEZE_DEFORM|CONDENSATION_PROOF|FLAVOR_LEAK|GRAVITY_SAG|FINGER_DRAG", "description": "..." }
     },
     "... repeat for each scene — food_reclamation on exactly 1 scene (scenes 3-6, SP 6-8) ...",
     {

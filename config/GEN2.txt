@@ -220,7 +220,7 @@ If food_visual_ratio contradicts tier (e.g., TIER_1 + ARCHITECTURE_DOMINANT) →
 **⛔ AERIAL FOOD TEXTURE ENFORCEMENT:** For ANY scene with `narrative_purpose = "AERIAL"` and `food_visual_ratio = "BALANCED"`:
 1. Image prompt MUST contain at least 2 food-texture phrases: "visible porous [food] texture on all surfaces", "[food] sheen/glaze/color visible from above", "golden [food] surface detail on rooftops"
 2. If the image prompt describes ONLY architectural forms (blocks, pyramid, grid, structure) without food-texture adjectives → it reads as architecture → REWRITE to add food surface qualities (moisture, color gradients, pores, cracks, glaze)
-3. The negative_prompt should include "architecture dominant" for BALANCED aerial scenes
+3. For BALANCED aerial scenes: negative_prompt should include "real stone, real concrete, mundane building, suburban, residential" — NOT "architecture dominant" or "building exterior" (these block the architectural FORM that aerial must reveal)
 
 ---
 
@@ -576,9 +576,11 @@ glistening, cracking, stretching, bubbling].
 Shallow depth of field. [Lighting: adapt prompt_snippet mood, using light_direction naturally — see LIGHT DIRECTION table above]. 
 Subject positioned in upper portion of frame. 
 Editorial food photography, hyperrealistic, appetite-triggering 
---no tilt-shift, miniature, diorama, toy, text, watermark, architecture dominant, 
+--no tilt-shift, miniature, diorama, toy, text, watermark, architecture dominant,
 building exterior, scale indicator, desaturated, muted colors, yellow color cast, sepia tone
 ```
+
+⚠️ **AERIAL EXCEPTION:** If this scene has `narrative_purpose = "AERIAL"`, REMOVE "architecture dominant" and "building exterior" from --no. AERIAL scenes must reveal architectural FORM — banning "architecture" hides the building shape. Instead use: "real stone, real concrete, mundane building, suburban, residential" to ban material realism without blocking form.
 
 **Target: 80-100 words.**
 
