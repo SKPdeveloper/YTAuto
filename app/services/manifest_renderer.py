@@ -448,7 +448,7 @@ class ManifestRenderer:
         LEAD = 0.3           # show visual before narration starts
         MIN_NO_VO = 1.5      # minimum duration for scenes without VO
         TAIL_AFTER_LAST = 2.0 # visual tail after last VO ends
-        MAX_SPEED = 8.0       # don't speed up beyond this
+        MAX_SPEED = 4.0       # don't speed up beyond this (was 8.0 — unwatchable)
         MIN_SPEED = 0.5       # don't slow down beyond this
 
         n = len(scenes)
@@ -539,6 +539,20 @@ class ManifestRenderer:
         else:
             new_ends[-1] = max(new_ends[-1], new_ends[-1] + TAIL_AFTER_LAST)
 
+        # Phase 2.4: MONEY_SHOT floor — never compress below 3.0s
+        MONEY_SHOT_MIN = 3.0
+        for i, scene in enumerate(scenes):
+            if "MONEY_SHOT" in (scene.special_flags or []):
+                scene_dur = new_ends[i] - new_starts[i]
+                if scene_dur < MONEY_SHOT_MIN:
+                    deficit = MONEY_SHOT_MIN - scene_dur
+                    new_ends[i] = new_starts[i] + MONEY_SHOT_MIN
+                    # Shift subsequent scenes
+                    for j in range(i + 1, n):
+                        new_starts[j] += deficit
+                        new_ends[j] += deficit
+                    logger.info(f"  Money shot floor: S{scene.scene_number} expanded by {deficit:.1f}s")
+
         # Phase 2.5: Gap collapse — remove timeline gaps created by
         # MAX_SCENE_DUR capping.  Concat places scenes back-to-back, so
         # timeline_start/end must be contiguous for SFX / on-screen text
@@ -549,6 +563,53 @@ class ManifestRenderer:
             new_starts[i] = actual_cursor
             new_ends[i] = actual_cursor + dur
             actual_cursor = new_ends[i]
+
+        # Phase 2.6: Beat-snap scene transitions to nearest strong beat (#11)
+        gen3a_path = project_dir / "gen3a_analysis.json"
+        if gen3a_path.exists():
+            try:
+                with open(gen3a_path, "r", encoding="utf-8") as f:
+                    gen3a_data = _json.load(f)
+                strong_beats = gen3a_data.get("music_analysis", {}).get("strong_beats_for_cuts", [])
+                if strong_beats:
+                    BEAT_SNAP_TOLERANCE = 0.3  # max shift to reach a beat
+                    snapped = 0
+                    for i in range(n - 1):  # each transition between scene i and i+1
+                        boundary = new_ends[i]
+                        # Find nearest strong beat
+                        nearest_beat = min(strong_beats, key=lambda b: abs(b - boundary))
+                        delta = nearest_beat - boundary
+                        if abs(delta) <= BEAT_SNAP_TOLERANCE and abs(delta) > 0.01:
+                            # Check VO constraints before snapping
+                            can_snap = True
+                            if delta > 0:
+                                # Snapping later — scene i+1 gets shorter
+                                sn_next = scenes[i + 1].scene_number
+                                if sn_next in vo_map:
+                                    vo_dur_next = vo_map[sn_next][1] - vo_map[sn_next][0]
+                                    new_dur_next = new_ends[i + 1] - nearest_beat
+                                    if new_dur_next < vo_dur_next + 0.1:
+                                        can_snap = False
+                            else:
+                                # Snapping earlier — scene i gets shorter
+                                sn_curr = scenes[i].scene_number
+                                if sn_curr in vo_map:
+                                    vo_dur_curr = vo_map[sn_curr][1] - vo_map[sn_curr][0]
+                                    new_dur_curr = nearest_beat - new_starts[i]
+                                    if new_dur_curr < vo_dur_curr + 0.1:
+                                        can_snap = False
+
+                            if can_snap:
+                                new_ends[i] = nearest_beat
+                                new_starts[i + 1] = nearest_beat
+                                snapped += 1
+
+                    if snapped:
+                        logger.info(f"  Beat-snapped {snapped}/{n-1} transitions (tolerance {BEAT_SNAP_TOLERANCE}s)")
+                    else:
+                        logger.info(f"  Beat-snap: 0/{n-1} transitions within {BEAT_SNAP_TOLERANCE}s of strong beats")
+            except Exception as e:
+                logger.warning(f"  Beat-snap failed: {e}")
 
         # Phase 3: apply new timings and rescale speed segments
         logger.info("  VO–Video Alignment:")
@@ -584,7 +645,7 @@ class ManifestRenderer:
     def _rescale_speed_segments(
         scene: ManifestScene,
         new_target_duration: float,
-        max_speed: float = 8.0,
+        max_speed: float = 4.0,
         min_speed: float = 0.5,
     ) -> None:
         """
@@ -1487,7 +1548,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
         # AUTO-SFX: If no SFX were actually loaded, auto-discover from sfx/ directory
         if manifest_sfx_added == 0:
+            logger.info("  No manifest SFX — triggering Auto-SFX discovery")
             await self._auto_add_sfx(audio_config, manifest, project_dir)
+        else:
+            logger.info(f"  Loaded {manifest_sfx_added} manifest SFX events")
 
         # Add FOLEY events
         for foley in audio_layers.foley_events:
@@ -1629,7 +1693,19 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         - scene_N_sfx.mp3 -> plays at action_peak or scene midpoint + hook offset
         """
         sfx_dir = project_dir / "sfx"
-        logger.info(f"  Auto-SFX: Checking {sfx_dir}")
+
+        if not sfx_dir.exists():
+            logger.warning(f"  Auto-SFX: Directory {sfx_dir} not found — skipping")
+            return
+
+        sfx_files = list(sfx_dir.glob("*.mp3"))
+        logger.info(f"  Auto-SFX: Found {len(sfx_files)} files in {sfx_dir}")
+
+        if not sfx_files:
+            logger.info("  Auto-SFX: No .mp3 files found — skipping")
+            return
+
+        added_count = 0
 
         # Hook duration - scene SFX need this offset
         hook_duration = manifest.hook.duration if manifest.hook else 0.3
@@ -1659,25 +1735,58 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 volume=0.8,
                 reason="hook_impact",
             )
+            added_count += 1
             logger.info(f"  Auto-added SFX: sonic_hook.mp3 @ 0.0s")
+
+        # Load snap_moment data from project_brief for money_shot scenes (Fix #5)
+        snap_moment = {}
+        money_shot_scenes = set()
+        brief_path = project_dir / "project_brief.json"
+        if brief_path.exists():
+            import json as _json
+            with open(brief_path, "r", encoding="utf-8") as f:
+                brief_data = _json.load(f)
+            # Get snap_moment config
+            snap_moment = brief_data.get("audio", {}).get("snap_moment", {})
+            if not snap_moment:
+                snap_moment = brief_data.get("snap_moment", {})
+            # Find money_shot scenes
+            for s in brief_data.get("scenes", []):
+                if s.get("spectacle_potential", 0) >= 9 or "MONEY_SHOT" in (s.get("special_flags", []) or []):
+                    money_shot_scenes.add(s.get("scene_number"))
 
         # Add per-scene SFX at action peaks (or scene midpoint as fallback)
         # All scene SFX get hook offset since scenes start after hook
         for scene in manifest.scenes:
-            sfx_file = sfx_dir / f"scene_{scene.scene_number}_sfx.mp3"
+            sn = scene.scene_number
+            # SFX file discovery with glob fallback (Fix #3)
+            sfx_file = sfx_dir / f"scene_{sn}_sfx.mp3"
+            if not sfx_file.exists():
+                # Glob fallback: try various naming patterns
+                candidates = list(sfx_dir.glob(f"*scene*{sn}*.*")) + list(sfx_dir.glob(f"*{sn}_sfx*.*"))
+                candidates = [c for c in candidates if c.suffix.lower() in ('.mp3', '.wav', '.ogg')]
+                if candidates:
+                    sfx_file = candidates[0]
+                    logger.info(f"  Auto-SFX: Glob fallback found {sfx_file.name} for scene {sn}")
+
             if sfx_file.exists():
-                # Calculate SFX timestamp (relative to scene start)
-                if scene.scene_number in action_peaks_by_scene:
+                # Money shot + snap moment: use snap timing (Fix #5)
+                if sn in money_shot_scenes and snap_moment:
+                    pre_silence = snap_moment.get("pre_silence_seconds", 0.5)
+                    relative_time = pre_silence
+                    reason = f"scene_{sn}_snap_moment"
+                    logger.info(f"  Snap moment: S{sn} SFX at +{pre_silence:.1f}s pre-silence")
+                elif scene.scene_number in action_peaks_by_scene:
                     # Transform source_timestamp to output_timestamp using speed_map
                     source_time = action_peaks_by_scene[scene.scene_number]
                     output_time = self._transform_source_to_output(source_time, scene)
                     relative_time = output_time
-                    reason = f"scene_{scene.scene_number}_action_peak"
+                    reason = f"scene_{sn}_action_peak"
                 else:
                     # Fallback: use scene midpoint
                     scene_duration = scene.timeline_end - scene.timeline_start
                     relative_time = scene_duration / 2
-                    reason = f"scene_{scene.scene_number}_midpoint"
+                    reason = f"scene_{sn}_midpoint"
 
                 # Final timestamp = hook_offset + scene_start + relative_time_in_scene
                 timestamp = hook_duration + scene.timeline_start + relative_time
@@ -1689,7 +1798,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     volume=0.6,
                     reason=reason,
                 )
-                logger.info(f"  Auto-added SFX: scene_{scene.scene_number}_sfx.mp3 @ {timestamp:.1f}s ({reason})")
+                added_count += 1
+                logger.info(f"  Auto-added SFX: {sfx_file.name} @ {timestamp:.1f}s ({reason})")
+
+        logger.info(f"  Auto-SFX complete: {added_count} SFX events added")
 
     def _transform_source_to_output(self, source_time: float, scene) -> float:
         """Transform a source video timestamp to output time using scene's speed_map."""

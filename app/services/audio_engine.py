@@ -245,6 +245,7 @@ class AudioEngine:
                 similarity_boost=voice_settings.similarity_boost,
                 style=voice_settings.style,
                 use_speaker_boost=voice_settings.speaker_boost,
+                speed=getattr(voice_settings, 'speed', 1.0),
             )
         else:
             elevenlabs_settings = None
@@ -332,6 +333,7 @@ class AudioEngine:
                 similarity_boost=voice_settings.similarity_boost,
                 style=voice_settings.style,
                 use_speaker_boost=voice_settings.speaker_boost,
+                speed=getattr(voice_settings, 'speed', 1.0),
             )
         else:
             elevenlabs_settings = None
@@ -499,11 +501,51 @@ class AudioEngine:
         logger.info(f"  Script: {voiceover_config.full_script[:60]}...")
         logger.info(f"  Hook offset: {hook_offset}s")
 
-        # Generate voiceover with timestamps
-        audio_bytes, alignment = await self.generate_voiceover_with_timestamps(
-            text=voiceover_config.full_script,
-            voice_settings=voiceover_config.settings,
-        )
+        # Generate voiceover with timestamps — retry with speed adjustment if overrun
+        expected_duration = voiceover_config.total_duration_seconds
+        max_retries = 2  # original + 1 retry
+        current_speed = getattr(voiceover_config.settings, 'speed', 1.0)
+
+        audio_bytes = None
+        alignment = None
+        ratio = 1.0
+
+        for attempt in range(max_retries):
+            voiceover_config.settings.speed = current_speed
+            audio_bytes, alignment = await self.generate_voiceover_with_timestamps(
+                text=voiceover_config.full_script,
+                voice_settings=voiceover_config.settings,
+            )
+
+            # Measure actual duration from alignment
+            end_times = alignment.get("character_end_times_seconds", [])
+            actual_duration = end_times[-1] if end_times else 0.0
+            ratio = actual_duration / expected_duration if expected_duration > 0 else 1.0
+
+            logger.info(
+                f"  TTS attempt {attempt + 1}: actual={actual_duration:.1f}s, "
+                f"expected={expected_duration:.1f}s, ratio={ratio:.2f}x, speed={current_speed}"
+            )
+
+            if ratio <= 1.15:
+                break
+
+            if attempt < max_retries - 1:
+                needed_speed = min(current_speed * ratio, 1.2)
+                if needed_speed > current_speed + 0.01:
+                    logger.info(f"  VO overrun {ratio:.2f}x — retrying with speed={needed_speed:.2f}")
+                    current_speed = round(needed_speed, 2)
+                else:
+                    logger.warning(f"  VO overrun {ratio:.2f}x but speed already at max {current_speed}")
+                    break
+
+        if ratio > 1.3:
+            end_times = alignment.get("character_end_times_seconds", [])
+            actual_duration = end_times[-1] if end_times else 0.0
+            logger.error(
+                f"  VO DURATION WARNING: {actual_duration:.1f}s for {expected_duration:.1f}s "
+                f"video ({ratio:.1f}x) even after speed={current_speed}"
+            )
 
         # Save audio
         voiceover_path = project_dir / "voiceover.mp3"
@@ -573,6 +615,27 @@ class AudioEngine:
                         easter_egg_scene = max(2, total // 2) if total else 4
                     logger.info(f"  Easter egg detected in scene {easter_egg_scene}")
 
+        # Load voiceover_timing.json to map words to scenes (needed for merge/bleed protection)
+        scene_timings = []
+        if project_dir:
+            timing_path = project_dir / "voiceover_timing.json"
+            if timing_path.exists():
+                with open(timing_path, 'r', encoding='utf-8') as f:
+                    timing_data = json.load(f)
+                for seg in timing_data.get('segments', []):
+                    scene_timings.append({
+                        'scene': seg.get('scene_number', 0),
+                        'start': seg.get('start_time', 0) + hook_offset,
+                        'end': seg.get('end_time', 0) + hook_offset,
+                    })
+
+        def get_scene_for_time(t: float) -> int:
+            """Find which scene a timestamp belongs to."""
+            for st in scene_timings:
+                if st['start'] <= t <= st['end']:
+                    return st['scene']
+            return 0
+
         # Parse words with their exact timestamps from character-level data
         words = []
         current_word = ''
@@ -620,6 +683,7 @@ class AudioEngine:
                             'word': display_word.upper(),  # UPPERCASE
                             'start': word_start + hook_offset,
                             'end': word_end + hook_offset,
+                            'scene': get_scene_for_time(word_start + hook_offset),
                         })
                 current_word = ''
 
@@ -631,6 +695,7 @@ class AudioEngine:
                     'word': display_word.upper(),
                     'start': word_start + hook_offset,
                     'end': word_end + hook_offset,
+                    'scene': get_scene_for_time(word_start + hook_offset),
                 })
 
         # ================================================================
@@ -655,13 +720,20 @@ class AudioEngine:
             # Check if current word should be merged with next
             if current['word'] in MERGE_WORDS and i + 1 < len(words):
                 next_word = words[i + 1]
-                # Merge: combine text, use start of first, end of last
-                grouped_words.append({
-                    'word': f"{current['word']} {next_word['word']}",
-                    'start': current['start'],
-                    'end': next_word['end'],
-                })
-                i += 2  # Skip both words
+                # Don't merge across scene boundaries (Fix #8 cross-scene subtitle merge)
+                same_scene = current.get('scene', 0) == next_word.get('scene', 0) or current.get('scene', 0) == 0
+                if same_scene:
+                    # Merge: combine text, use start of first, end of last
+                    grouped_words.append({
+                        'word': f"{current['word']} {next_word['word']}",
+                        'start': current['start'],
+                        'end': next_word['end'],
+                        'scene': current.get('scene', 0),
+                    })
+                    i += 2  # Skip both words
+                else:
+                    grouped_words.append(current)
+                    i += 1
             else:
                 grouped_words.append(current)
                 i += 1
@@ -679,6 +751,20 @@ class AudioEngine:
                 if idx + 1 < len(words):
                     desired_end = min(desired_end, words[idx + 1]['start'] - 0.02)
                 w['end'] = max(w['end'], desired_end)
+
+        # Clamp subtitle end times to scene VO boundaries (Fix #10 subtitle bleed)
+        scene_end_map = {st['scene']: st['end'] for st in scene_timings}
+        for w in words:
+            w_scene = w.get('scene', 0)
+            if w_scene and w_scene in scene_end_map:
+                scene_vo_end = scene_end_map[w_scene]
+                if w['end'] > scene_vo_end + 0.05:
+                    w['end'] = scene_vo_end + 0.05
+
+        # Pre-display offset: show subtitle 50ms before audio (Fix #7 perceived delay)
+        PRE_DISPLAY_OFFSET = 0.05
+        for w in words:
+            w['start'] = max(0.0, w['start'] - PRE_DISPLAY_OFFSET)
 
         logger.info(f"  Grouped into {len(words)} subtitle chunks (merged articles/prepositions, min {MIN_WORD_DURATION}s)")
 
@@ -716,27 +802,6 @@ Style: Top,Montserrat Black,76,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,1,0,0
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 '''
-
-        # Load voiceover_timing.json to map words to scenes
-        scene_timings = []
-        if project_dir:
-            timing_path = project_dir / "voiceover_timing.json"
-            if timing_path.exists():
-                with open(timing_path, 'r', encoding='utf-8') as f:
-                    timing_data = json.load(f)
-                for seg in timing_data.get('segments', []):
-                    scene_timings.append({
-                        'scene': seg.get('scene_number', 0),
-                        'start': seg.get('start_time', 0) + hook_offset,
-                        'end': seg.get('end_time', 0) + hook_offset,
-                    })
-
-        def get_scene_for_time(t: float) -> int:
-            """Find which scene a timestamp belongs to."""
-            for st in scene_timings:
-                if st['start'] <= t <= st['end']:
-                    return st['scene']
-            return 0
 
         for w in words:
             start = time_to_ass(w['start'])
@@ -889,14 +954,64 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         # Sort by start time and save
         final_segments = sorted(segments_by_scene.values(), key=lambda s: s['start_time'])
 
+        # Safety net: split segments exceeding MAX_SCENE_VO at sentence boundary (Fix #4)
+        MAX_SCENE_VO = 5.0
+        split_segments = []
+        for seg in final_segments:
+            dur = seg['end_time'] - seg['start_time']
+            if dur > MAX_SCENE_VO:
+                text = seg['text']
+                sentences = re.split(r'(?<=[.!?])\s+', text)
+                if len(sentences) >= 2:
+                    # Find split point closest to MAX_SCENE_VO proportion
+                    total_chars = len(text)
+                    char_pos = 0
+                    best_split = None
+                    best_diff = float('inf')
+                    for k, sent in enumerate(sentences[:-1]):
+                        char_pos += len(sent) + 1  # +1 for space
+                        proportion = char_pos / total_chars if total_chars > 0 else 0.5
+                        split_time = seg['start_time'] + proportion * dur
+                        diff = abs((split_time - seg['start_time']) - MAX_SCENE_VO)
+                        if diff < best_diff:
+                            best_diff = diff
+                            best_split = (k, split_time, char_pos)
+
+                    if best_split:
+                        _, split_time, cpos = best_split
+                        text1 = text[:cpos].strip()
+                        text2 = text[cpos:].strip()
+                        if text1 and text2:
+                            split_segments.append({
+                                'scene_number': seg['scene_number'],
+                                'start_time': seg['start_time'],
+                                'end_time': split_time,
+                                'text': text1,
+                            })
+                            split_segments.append({
+                                'scene_number': seg['scene_number'],
+                                'start_time': split_time,
+                                'end_time': seg['end_time'],
+                                'text': text2,
+                            })
+                            logger.info(
+                                f"  Split S{seg['scene_number']} VO ({dur:.1f}s > {MAX_SCENE_VO}s) "
+                                f"into {split_time - seg['start_time']:.1f}s + {seg['end_time'] - split_time:.1f}s"
+                            )
+                            continue
+                # No suitable split found — keep as-is
+                split_segments.append(seg)
+            else:
+                split_segments.append(seg)
+        final_segments = split_segments
+
         timing_data = {'segments': final_segments}
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(timing_data, f, indent=2, ensure_ascii=False)
 
         logger.info(f"  Generated voiceover_timing.json with {len(final_segments)} scene segments (text-matched)")
 
-        # Validate per-scene VO durations (safety net for pathological TTS timing)
-        MAX_SCENE_VO = 5.0
+        # Validate per-scene VO durations
         for seg in final_segments:
             dur = seg['end_time'] - seg['start_time']
             sn = seg.get('scene_number', '?')
