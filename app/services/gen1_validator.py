@@ -415,6 +415,7 @@ class Gen1Validator:
         self._validate_sensory_channels()
         self._validate_sp_curve_rules()
         self._validate_humor()
+        self._validate_humor_surfaced()
         self._validate_dominant_color_appetite()
         self._validate_money_shot_saliva_trigger()
         self._validate_aerial_reveals_architecture()
@@ -1380,6 +1381,73 @@ class Gen1Validator:
                         self._warn(f"humor[{i}]", f"Humor in Scene {hsn} (SP={sp_val}) — jokes only in SP ≤ 6 scenes")
                 except (ValueError, TypeError):
                     pass
+
+    def _validate_humor_surfaced(self) -> None:
+        """Warn if humor lines are orphaned — exist in humor array but absent from VO/OSD.
+
+        Viewers never see the humor[] array directly. At least some key words from
+        each humor line MUST appear in the associated scene's voiceover_segment or
+        on_screen_text, otherwise the joke is invisible.
+        """
+        humor = self._data.get("humor")
+        if not humor or not isinstance(humor, list):
+            return
+        scenes = self._data.get("scenes", [])
+        if not isinstance(scenes, list):
+            return
+
+        orphaned = 0
+        for i, h in enumerate(humor):
+            if not isinstance(h, dict):
+                continue
+            scene_num = h.get("scene_number")
+            line = h.get("line", "")
+            if not scene_num or not isinstance(line, str) or not line.strip():
+                continue
+
+            try:
+                s_idx = int(scene_num) - 1
+            except (ValueError, TypeError):
+                continue
+            if s_idx < 0 or s_idx >= len(scenes):
+                continue
+            scene = scenes[s_idx]
+            if not isinstance(scene, dict):
+                continue
+
+            # Extract key words from humor line (>3 chars)
+            humor_words = {
+                wd.strip(".,!?:;\"'").lower()
+                for wd in line.split()
+                if len(wd.strip(".,!?:;\"'")) > 3
+            }
+            if not humor_words:
+                continue
+
+            vo_seg = scene.get("voiceover_segment", "") or ""
+            on_screen = scene.get("on_screen_text", "") or ""
+            vo_plain = re.sub(r'\[[\w\s]+\]\s*', '', vo_seg).lower()
+            osd_plain = on_screen.lower()
+
+            vo_hits = sum(1 for hw in humor_words if hw in vo_plain)
+            osd_hits = sum(1 for hw in humor_words if hw in osd_plain)
+
+            if vo_hits < 2 and osd_hits < 2:
+                orphaned += 1
+                self._warn(
+                    f"humor[{i}]",
+                    f"Orphaned humor — line exists in humor array but Scene {scene_num} "
+                    f"VO and on_screen_text don't contain it: '{line[:70]}'",
+                    suggestion="Inject humor line into scene's voiceover_segment or on_screen_text "
+                    "so viewers actually see/hear it"
+                )
+
+        if orphaned >= 2:
+            self._warn(
+                "humor",
+                f"All {orphaned} humor lines are orphaned — viewer sees/hears ZERO jokes",
+                suggestion="At least 1 humor line must appear in VO or on-screen text"
+            )
 
     def _validate_dominant_color_appetite(self) -> None:
         """Warn when food-dominant scenes use appetite-killing dominant_color."""

@@ -2056,6 +2056,7 @@ Do NOT use the same format "KEYWORD emoji" for every scene. Vary across these 5 
 | **The Turn** | Every joke needs an UNEXPECTED element — setup leads one way, punchline goes another |
 | **Explanation** | NEVER explain the joke |
 | **Quotability** | Each joke should work as standalone caption or comment |
+| **Surfacing** | Every humor `line` MUST appear in its scene's `voiceover_segment` (preferred) or `on_screen_text`. The humor array is invisible metadata — if the line is NOT in VO or OSD, viewers never see/hear it = zero engagement value. Shorten to fit word limit if needed. |
 | **Audio Tags** | Use [pause] before punchline, [whispers] for secrets |
 | **Placement** | Jokes go in ESTABLISHING or CONTEXTUAL scenes (pressure 1-6). NEVER put jokes in sensory_pressure ≥ 7 scenes — those are APPETITE territory |
 
@@ -2716,7 +2717,7 @@ S8: SP:6. Loop close: "Dripping red." PARTICLE_DISSOLVE → S1.
     { "humor_type": "DEADPAN_CONSEQUENCE", "scene_number": 3, "line": "The fire department said no more caramel. We added more caramel.", "setup": "Authority figure sets limit", "turn": "Limit immediately ignored", "standalone_caption": true },
     { "humor_type": "UNDERSTATED_INSANITY", "scene_number": 4, "line": "Structurally questionable. Emotionally necessary.", "setup": "Acknowledges the problem", "turn": "Dismisses it with feeling", "standalone_caption": true }
   ],
-  "⚠️ humor REQUIRED": "EXACTLY 2 entries, DIFFERENT types, ONLY in SP ≤ 6 scenes. DO NOT leave empty.",
+  "⚠️ humor REQUIRED": "EXACTLY 2 entries, DIFFERENT types, ONLY in SP ≤ 6 scenes. DO NOT leave empty. Each humor line MUST also appear (shortened if needed) in its scene's voiceover_segment or on_screen_text — otherwise viewer never sees it.",
 
   "engagement": { "replay_hooks": [
     { "tier": "FEEL_AGAIN", "format": "SENSORY_PEAK", "description": "...", "scene_number": "...", "rewatch_trigger": "...", "comment_bait": "...", "validation_check": "..." },
@@ -2840,7 +2841,7 @@ Pipeline validator handles structural checks (field presence, JSON format, durat
 9. **GENERATION LOCK:** `_concept_reasoning` has all 11 points. Texture group + positions match DECISION RANGES. Structure A-E named. Anti-default check (CREAMY: no SKIN body_trigger, no THE_PRICE, no MOTION_MATCH).
 10. **VISUAL QUALITY:** Every scene has `gen2_visual_params` with specific values + `temperature_contrast` + `food_visual_ratio` (NEVER ARCHITECTURE_DOMINANT). Close-ups use MACRO_KEYWORDS, wides use SCALE_KEYWORDS. Warm light on food ONLY, environment retains natural colors. Max 3 dark-preset scenes.
 11. **METADATA:** 4 title variants ≤ 50 chars, food name + sensory word in each. Hashtags TIER 1-4 only. Description: statement + food keywords + warning-derived CTA. Tags: 4-7 real-world nouns. Pinned comment: Format A/B/C (warning callback). No forbidden words (real estate, artisan, stunning, etc.).
-12. **FINAL CHECKS:** `humor` array 1-2 objects, different types, SP ≤ 6 only. Scene 1/warning_line/Scene N = three DIFFERENT phrases. `on_screen_text` 1-2 = anticipation not facts. Food+subject combo unique (not oversaturated). Red food + dark preset → add warm accents. Duration 13-16s preferred.
+12. **FINAL CHECKS:** `humor` array 1-2 objects, different types, SP ≤ 6 only. **HUMOR SURFACING:** verify each humor `line` appears (shortened ok) in its scene's `voiceover_segment` or `on_screen_text` — orphaned humor = wasted engagement. Scene 1/warning_line/Scene N = three DIFFERENT phrases. `on_screen_text` 1-2 = anticipation not facts. Food+subject combo unique (not oversaturated). Red food + dark preset → add warm accents. Duration 13-16s preferred.
 13. **DUAL IDENTITY CHECK (on_screen_text):** Read on_screen_text for scenes 2 to N-1. Each one should reference BOTH a food element (ingredient, texture, temperature, action) AND an architectural form (wall, arch, dome, column, tower, hull, deck, vault, floor, ceiling, gate, bridge, window, stair, spire). Scene 1 (macro) = food only. Scene N = LOOP_CLOSE. If ≥50% of scenes 2 to N-1 are food-only with ZERO form words → fix by adding form words. ❌ "still RISING 🔥" → ✅ "dough WALLS still rising 🔥"
 
 ---

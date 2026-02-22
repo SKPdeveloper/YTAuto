@@ -444,6 +444,7 @@ def autocorrect_gen1(data: Dict[str, Any]) -> Tuple[Dict[str, Any], List[AutoFix
     _fix_narrative_bridges(scenes, w)
     _fix_silence_speech_contradiction(d, scenes, w)
     _fix_on_screen_text(d, scenes, w)
+    _surface_humor_to_vo(d, scenes, w)  # Humor must be heard/seen — inject BEFORE word count
     _warn_on_screen_text_dual_identity(d, scenes, w)
     _warn_vo_dual_identity(d, scenes, w)
     _fix_scene_n_minus_1_aerial(scenes, w)
@@ -1130,6 +1131,110 @@ def _fix_on_screen_text(d: dict, scenes: list, w: list) -> None:
             scene["on_screen_text"] = cleaned
             w.append(AutoFixWarning(f"scenes[{i}].on_screen_text",
                 f"Auto-cleaned parentheticals: '{on_screen.strip()[:40]}' → '{cleaned}'"))
+
+
+def _surface_humor_to_vo(d: dict, scenes: list, w: list) -> None:
+    """Surface humor lines into VO or on-screen text so viewers actually see/hear them.
+
+    Problem: humor array is metadata — viewers never see it unless the humor line
+    also appears in voiceover_segment or on_screen_text. Gemini often assigns humor
+    to [silence] scenes, leaving jokes orphaned.
+
+    Strategy:
+    1. For each humor entry, check if its key words appear in the scene's VO or OSD.
+    2. If the scene has [silence] VO → inject first sentence of humor line as whispered VO.
+    3. If the scene already has VO but humor is still absent → warn (can't auto-fix safely).
+    """
+    humor = d.get("humor")
+    if not humor or not isinstance(humor, list):
+        return
+
+    for h_idx, h in enumerate(humor):
+        if not isinstance(h, dict):
+            continue
+        scene_num = h.get("scene_number")
+        line = h.get("line", "")
+        if not scene_num or not isinstance(line, str) or not line.strip():
+            continue
+
+        # Find the associated scene (0-indexed)
+        try:
+            s_idx = int(scene_num) - 1
+        except (ValueError, TypeError):
+            continue
+        if s_idx < 0 or s_idx >= len(scenes):
+            continue
+        scene = scenes[s_idx]
+        if not isinstance(scene, dict):
+            continue
+
+        # Check if humor is already surfaced in VO or on-screen text
+        vo_seg = scene.get("voiceover_segment", "") or ""
+        on_screen = scene.get("on_screen_text", "") or ""
+        narrator = scene.get("narrator_script", "") or ""
+
+        # Extract key content words from humor line (strip punctuation, lowercase)
+        humor_words = {
+            wd.strip(".,!?:;\"'").lower()
+            for wd in line.split()
+            if len(wd.strip(".,!?:;\"'")) > 3  # skip short words
+        }
+        vo_plain = _strip_tags(vo_seg).lower()
+        osd_plain = on_screen.lower()
+
+        # Count how many humor keywords appear in VO or OSD
+        vo_hits = sum(1 for hw in humor_words if hw in vo_plain)
+        osd_hits = sum(1 for hw in humor_words if hw in osd_plain)
+        surfaced = (vo_hits >= 2) or (osd_hits >= 2)  # at least 2 key words match
+
+        if surfaced:
+            continue  # humor is already visible/audible
+
+        # --- Attempt auto-fix: inject humor into [silence] VO ---
+        is_silence = (not vo_seg.strip() or vo_seg.strip() == "[silence]")
+        if not is_silence:
+            # Scene has VO but humor isn't in it — warn, don't overwrite
+            w.append(AutoFixWarning(
+                f"humor[{h_idx}]",
+                f"Humor line orphaned — exists in humor array but absent from "
+                f"Scene {scene_num} VO and on_screen_text: '{line[:60]}'"
+            ))
+            continue
+
+        # Extract first sentence (the punchier part) from humor line
+        sentences = re.split(r'(?<=[.!?])\s+', line.strip())
+        candidate = sentences[0].rstrip(".")
+        candidate_words = candidate.split()
+
+        # Check word limit for scene duration
+        dur = scene.get("duration_seconds", 2.0)
+        try:
+            dur_f = float(dur)
+        except (ValueError, TypeError):
+            dur_f = 2.0
+        max_w = _max_words_for_duration(dur_f)
+
+        if len(candidate_words) > max_w:
+            # First sentence too long — try second sentence if exists
+            if len(sentences) > 1:
+                candidate = sentences[1].rstrip(".")
+                candidate_words = candidate.split()
+            if len(candidate_words) > max_w:
+                # Still too long — warn
+                w.append(AutoFixWarning(
+                    f"humor[{h_idx}]",
+                    f"Humor line too long for Scene {scene_num} ({len(candidate_words)}w > {max_w}w limit): "
+                    f"'{line[:60]}'"
+                ))
+                continue
+
+        # Inject as whispered VO
+        scene["voiceover_segment"] = f"[whispers] {candidate}."
+        scene["narrator_script"] = f"{candidate}."
+        w.append(AutoFixWarning(
+            f"scenes[{s_idx}].voiceover_segment",
+            f"Auto-injected humor line into [silence] scene: '[whispers] {candidate}.'"
+        ))
 
 
 def _warn_on_screen_text_dual_identity(d: dict, scenes: list, w: list) -> None:
