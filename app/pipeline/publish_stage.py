@@ -142,6 +142,15 @@ class PublishStage(BasePipelineStage):
                         stage="publish",
                     )
 
+                # Launch A/B daemon after successful publish
+                logger.info(f"[{project_id}] Post-publish: launching A/B daemon...")
+                try:
+                    from app.utils.ab_daemon_launcher import ensure_ab_daemon_running
+                    if ensure_ab_daemon_running("publish_stage"):
+                        logger.success(f"[{project_id}] Post-publish: A/B daemon running")
+                except Exception as e:
+                    logger.warning(f"[{project_id}] Post-publish: A/B daemon launch failed — {e}")
+
                 return StageResult(
                     success=True,
                     stage_name=self.name,

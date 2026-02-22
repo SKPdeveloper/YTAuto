@@ -45,16 +45,10 @@ from .ab_store import ABStore
 from .config_manager import get_config_manager
 from .youtube_api import YouTubeAPI
 
-# HumanCommenter for pinning comments via browser automation
-try:
-    from ..human_commenter import HumanCommenter, CommenterConfig
-    HUMAN_COMMENTER_AVAILABLE = True
-except ImportError:
-    try:
-        from human_commenter import HumanCommenter, CommenterConfig
-        HUMAN_COMMENTER_AVAILABLE = True
-    except ImportError:
-        HUMAN_COMMENTER_AVAILABLE = False
+# HumanCommenter DISABLED — all comment pinning is done manually by the user
+# to avoid YouTube anti-fraud detection. A/B rotation only changes
+# title/description/tags; pinned comment must be updated manually.
+HUMAN_COMMENTER_AVAILABLE = False
 
 
 def _set_error(video: VideoABRecord) -> str:
@@ -413,82 +407,23 @@ class ABMonitor:
         new_comment_text: Optional[str],
     ) -> bool:
         """
-        Delete old pinned comment and post+pin new one (if provided).
+        Log the new pinned comment text for manual action.
 
-        Strategy:
-        1. Try HumanCommenter (AdsPower browser automation) — posts AND pins
-        2. Fallback to YouTube API — posts comment but CANNOT pin it
+        Automated comment posting/pinning is DISABLED to avoid YouTube
+        anti-fraud detection. The user must update the pinned comment
+        manually via YouTube Studio after each A/B swap.
 
-        Returns True if all operations succeeded, False if any failed.
+        Returns True always (comment rotation is informational only).
         """
-        all_ok = True
-
-        # Delete old comment via API (always works, no browser needed)
-        if video.current_comment_id:
-            success, error = youtube.delete_comment(video.current_comment_id)
-            if not success:
-                logger.warning(f"Failed to delete old comment {video.current_comment_id}: {error}")
-                all_ok = False
-            video.current_comment_id = None
-
         if not new_comment_text:
-            return all_ok
+            return True
 
-        # Try HumanCommenter first (posts + pins via browser)
-        channel_config = self._config.load_channel_config(video.channel_id)
-        if (
-            HUMAN_COMMENTER_AVAILABLE
-            and channel_config
-            and getattr(channel_config, "adspower_profile_id", None)
-        ):
-            try:
-                commenter = HumanCommenter(CommenterConfig())
-                loop = asyncio.new_event_loop()
-                try:
-                    result = loop.run_until_complete(
-                        commenter.add_and_pin_comment(
-                            video_id=video.video_id,
-                            comment_text=new_comment_text,
-                            profile_id=channel_config.adspower_profile_id,
-                            channel_keywords=getattr(channel_config, "channel_keywords", None),
-                            expected_region=getattr(channel_config, "region", None),
-                            expected_timezone=getattr(channel_config, "timezone", None),
-                        )
-                    )
-                finally:
-                    loop.close()
-
-                if result.success:
-                    video.current_comment_id = "human_commenter"
-                    logger.info(f"{video.video_id}: Comment posted and pinned via HumanCommenter")
-                    return all_ok
-                else:
-                    logger.warning(
-                        f"{video.video_id}: HumanCommenter failed ({result.error}), "
-                        f"falling back to API (comment will NOT be pinned)"
-                    )
-            except Exception as e:
-                logger.warning(
-                    f"{video.video_id}: HumanCommenter error ({e}), "
-                    f"falling back to API (comment will NOT be pinned)"
-                )
-
-        # Fallback: post via API (comment will NOT be pinned)
-        success, comment_id, error = youtube.insert_comment_thread(
-            video_id=video.video_id,
-            text=new_comment_text,
+        logger.info(
+            f"{video.video_id}: A/B swap suggests new pinned comment — "
+            f"please update manually in YouTube Studio:\n"
+            f"  \"{new_comment_text[:120]}{'...' if len(new_comment_text) > 120 else ''}\""
         )
-        if success:
-            video.current_comment_id = comment_id
-            if HUMAN_COMMENTER_AVAILABLE and channel_config and getattr(channel_config, "adspower_profile_id", None):
-                logger.warning(f"{video.video_id}: Comment posted via API but NOT pinned (HumanCommenter failed)")
-            else:
-                logger.warning(f"{video.video_id}: Comment posted via API but NOT pinned (no AdsPower profile)")
-        else:
-            logger.warning(f"Failed to post new comment: {error}")
-            all_ok = False
-
-        return all_ok
+        return True
 
     # ========================================================================
     # HELPERS

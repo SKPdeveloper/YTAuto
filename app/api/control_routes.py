@@ -743,8 +743,8 @@ def _rename_project_for_editing(project_id: str) -> Optional[str]:
     # Save session state BEFORE rename
     _save_session_state(project_id, project_dir)
 
-    # Create TOPAZ.bat BEFORE rename (folder still accessible by old name)
-    _create_topaz_bat(project_dir)
+    # Copy APPROVE.bat BEFORE rename (folder still accessible by old name)
+    _copy_approve_bat(project_dir)
 
     # Strip existing suffix if re-marking
     base_name = project_id.replace("_ДОМОНТУВАТИ", "")
@@ -762,6 +762,28 @@ def _rename_project_for_editing(project_id: str) -> Optional[str]:
     except Exception as e:
         logger.error(f"Failed to rename project folder: {e}")
         return None
+
+
+def _copy_approve_bat(project_dir: Path) -> None:
+    """
+    Copy scripts/APPROVE.bat into the project folder.
+    Falls back to generating TOPAZ.bat if the source is not found.
+    """
+    import shutil
+
+    source = settings.BASE_DIR / "scripts" / "APPROVE.bat"
+    dest = project_dir / "APPROVE.bat"
+
+    if source.exists():
+        try:
+            shutil.copy2(source, dest)
+            logger.info(f"Copied APPROVE.bat to {project_dir}")
+            return
+        except Exception as e:
+            logger.warning(f"Failed to copy APPROVE.bat: {e}, falling back to TOPAZ.bat")
+
+    # Fallback: generate TOPAZ.bat
+    _create_topaz_bat(project_dir)
 
 
 def _create_topaz_bat(project_dir: Path) -> None:

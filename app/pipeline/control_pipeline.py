@@ -2021,6 +2021,13 @@ class ControlPipeline:
                         channel_id=target_channel,
                         project_dir=project_dir,
                     )
+
+                    # Launch A/B daemon after registration
+                    try:
+                        from app.utils.ab_daemon_launcher import ensure_ab_daemon_running
+                        ensure_ab_daemon_running("control_pipeline")
+                    except Exception as e:
+                        logger.warning(f"[PIPELINE] AB daemon launch failed: {e}")
                 else:
                     logger.info("[PIPELINE] No target_channel set, AB metadata rotation unavailable for this upload")
             else:

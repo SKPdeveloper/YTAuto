@@ -31,16 +31,9 @@ from .scheduler import PublicationScheduler, create_scheduler, PublishStatus as 
 from .ab_models import ABStatus, VariantData, VideoABRecord, parse_metadata_variants
 from .ab_store import ABStore
 
-# Import HumanCommenter for comment automation
-try:
-    from ..human_commenter import HumanCommenter, CommenterConfig
-    HUMAN_COMMENTER_AVAILABLE = True
-except ImportError:
-    try:
-        from human_commenter import HumanCommenter, CommenterConfig
-        HUMAN_COMMENTER_AVAILABLE = True
-    except ImportError:
-        HUMAN_COMMENTER_AVAILABLE = False
+# HumanCommenter DISABLED — all comment pinning is done manually by the user
+# to avoid YouTube anti-fraud detection. See: CLAUDE.md / memory notes.
+HUMAN_COMMENTER_AVAILABLE = False
 
 
 class Publisher:
@@ -277,42 +270,33 @@ class Publisher:
                 )
                 logger.info(f"Added to publish queue: {scheduled_local_str or scheduled_datetime}")
 
-            # Step 7: Add pinned comment
+            # Step 7: Post comment via YouTube API (user pins manually)
+            # Browser automation (HumanCommenter) is DISABLED to avoid YouTube
+            # anti-fraud detection. The comment is posted via official API,
+            # but PINNING must be done manually via YouTube Studio.
             if brief.youtube.pinned_comment:
-                logger.info("Adding pinned comment...")
+                status.pinned_comment_text = brief.youtube.pinned_comment
 
-                # Use HumanCommenter with AdsPower if profile configured
-                if channel_config.adspower_profile_id and HUMAN_COMMENTER_AVAILABLE:
-                    logger.info("Using HumanCommenter for human-like behavior...")
-
-                    commenter = HumanCommenter(CommenterConfig())
-                    result = asyncio.get_event_loop().run_until_complete(
-                        commenter.add_and_pin_comment(
-                            video_id=video_id,
-                            comment_text=brief.youtube.pinned_comment,
-                            profile_id=channel_config.adspower_profile_id,
-                            channel_keywords=channel_config.channel_keywords or None,
-                            expected_region=channel_config.region,
-                            expected_timezone=channel_config.timezone,
-                        )
+                try:
+                    comment_ok, comment_id, comment_err = youtube.insert_comment_thread(
+                        video_id=video_id,
+                        text=brief.youtube.pinned_comment,
                     )
-
-                    if result.success:
-                        status.comment_id = "human_commenter"
+                    if comment_ok:
+                        status.comment_id = comment_id
+                        logger.success(f"Comment posted via API (id={comment_id}) — PIN IT manually in YouTube Studio")
 
                         self.config.append_history_event(PublishEvent(
-                            event="comment_pinned",
+                            event="comment_posted",
                             project_id=project_id,
                             video_id=video_id,
-                            comment_id="human_commenter",
+                            comment_id=comment_id,
+                            details={"needs_manual_pin": True},
                         ))
                     else:
-                        logger.warning(f"Failed to add/pin comment: {result.error}")
-                else:
-                    if not HUMAN_COMMENTER_AVAILABLE:
-                        logger.warning("HumanCommenter not available, skipping comment")
-                    else:
-                        logger.warning("No AdsPower profile configured, skipping comment")
+                        logger.warning(f"Failed to post comment via API: {comment_err}")
+                except Exception as e:
+                    logger.warning(f"Comment posting failed: {e}")
 
             # Step 8: Update status
             status.status = (

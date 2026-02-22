@@ -20,6 +20,7 @@ from app.pipeline.audio_stage import AudioStage
 from app.pipeline.gen3_stages import Gen3aStage, Gen3bStage
 from app.pipeline.postprocess_stage import PostProcessStage
 from app.pipeline.video_approval_stage import VideoApprovalStage
+from app.pipeline.topaz_stage import TopazUpscaleStage
 from app.pipeline.cleanup_stage import CleanupStage
 from app.pipeline.publish_stage import PublishStage
 from app.api.schemas import ProjectData, ProjectStatus, PipelineStage
@@ -40,8 +41,9 @@ class PipelineOrchestrator:
     7. Gen3bStage - Manifest generation
     8. PostProcessStage - FFmpeg rendering, assembly
     9. VideoApprovalStage - User approval before upscaling (web interface)
-    10. CleanupStage - Topaz upscale, import SFX, cleanup
-    11. PublishStage - Upload to YouTube (якщо target_channel вказано)
+    10. TopazUpscaleStage - Topaz Video AI (FPS + 4K), non-fatal
+    11. CleanupStage - Import SFX, cleanup
+    12. PublishStage - Upload to YouTube (якщо target_channel вказано)
 
     Each stage is independent and can be resumed after failure.
 
@@ -67,7 +69,8 @@ class PipelineOrchestrator:
         Gen3bStage,         # Manifest generation
         PostProcessStage,   # FFmpeg rendering, assembly
         VideoApprovalStage, # User approval before upscaling
-        CleanupStage,       # Topaz upscale, import SFX, cleanup
+        TopazUpscaleStage,  # Topaz Video AI (FPS + 4K), non-fatal
+        CleanupStage,       # Import SFX, cleanup
         PublishStage,       # Upload to YouTube (if target_channel configured)
     ]
 

@@ -193,6 +193,7 @@ class PublishStatusRecord(BaseModel):
     video_id: Optional[str] = None
     video_url: Optional[str] = None
     comment_id: Optional[str] = None
+    pinned_comment_text: Optional[str] = None  # Saved for manual pinning
     published_at: Optional[datetime] = None
     channel_id: Optional[str] = None
     attempts: int = 0
