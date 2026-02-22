@@ -134,6 +134,13 @@ class ABMonitor:
             logger.warning(f"Cannot get YouTube API for channel {video_snapshot.channel_id}")
             return "no_api"
 
+        # --- Phase 1.5: Post deferred comment if video just went live ---
+        if video_snapshot.pending_comment_text:
+            now = datetime.now(timezone.utc)
+            go_live = video_snapshot.scheduled_go_live or video_snapshot.upload_time
+            if now >= go_live:
+                self._post_deferred_comment(video_id, youtube)
+
         # --- Phase 2: Fetch stats (NO lock held — slow network I/O) ---
         stats = self._fetch_stats_with_retry(youtube, video_id)
         if stats is None:
@@ -424,6 +431,61 @@ class ABMonitor:
             f"  \"{new_comment_text[:120]}{'...' if len(new_comment_text) > 120 else ''}\""
         )
         return True
+
+    # ========================================================================
+    # DEFERRED COMMENT POSTING
+    # ========================================================================
+
+    def _post_deferred_comment(self, video_id: str, youtube: YouTubeAPI) -> None:
+        """
+        Post a deferred comment when a scheduled video goes live.
+
+        Called by _evaluate_video() on the first cycle after go-live time.
+        Posts via YouTube API commentThreads.insert(), then clears
+        pending_comment_text under lock. If the video was registered only
+        for comment tracking (no AB variants), marks it as SUCCESS.
+
+        Non-fatal: failures are logged but don't block the monitor cycle.
+        """
+        # Read fresh state
+        self.store.reload()
+        video = self.store.get_video(video_id)
+        if not video or not video.pending_comment_text:
+            return
+
+        comment_text = video.pending_comment_text
+
+        # API call (no lock held — slow network I/O)
+        try:
+            ok, comment_id, err = youtube.insert_comment_thread(
+                video_id=video_id,
+                text=comment_text,
+            )
+
+            if ok:
+                # Clear pending comment and save comment_id under lock
+                def _commit_comment(v: VideoABRecord) -> str:
+                    v.pending_comment_text = None
+                    v.current_comment_id = comment_id
+                    # If registered only for comment (no real AB variants),
+                    # mark as done — no checkpoint evaluation needed
+                    if len(v.variants) < 2:
+                        v.status = ABStatus.SUCCESS
+                        v.final_variant = v.current_variant
+                    return "comment_posted"
+
+                self.store.locked_update(
+                    video_id, _commit_comment, require_monitoring=False
+                )
+                logger.success(
+                    f"{video_id}: Deferred comment posted via API (id={comment_id}) "
+                    f"— PIN IT manually in YouTube Studio"
+                )
+            else:
+                logger.warning(f"{video_id}: Failed to post deferred comment: {err}")
+
+        except Exception as e:
+            logger.warning(f"{video_id}: Deferred comment posting failed: {e}")
 
     # ========================================================================
     # HELPERS

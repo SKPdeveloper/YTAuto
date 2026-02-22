@@ -81,6 +81,10 @@ class VideoABRecord(BaseModel):
         default_factory=list,
         description="Time-series metrics snapshots",
     )
+    pending_comment_text: Optional[str] = Field(
+        default=None,
+        description="Comment to post via API when scheduled video goes live (cleared after posting)",
+    )
     current_comment_id: Optional[str] = Field(
         default=None,
         description="YouTube comment ID of current pinned comment",

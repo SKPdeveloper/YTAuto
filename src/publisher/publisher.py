@@ -277,26 +277,41 @@ class Publisher:
             if brief.youtube.pinned_comment:
                 status.pinned_comment_text = brief.youtube.pinned_comment
 
-                try:
-                    comment_ok, comment_id, comment_err = youtube.insert_comment_thread(
+                if scheduled_datetime:
+                    # Video is scheduled (private with publishAt) — defer comment
+                    # to A/B daemon which will post it when the video goes live.
+                    self._save_deferred_comment(
                         video_id=video_id,
-                        text=brief.youtube.pinned_comment,
+                        project_id=project_id,
+                        channel_id=target_channel,
+                        comment_text=brief.youtube.pinned_comment,
+                        scheduled_go_live=scheduled_datetime,
                     )
-                    if comment_ok:
-                        status.comment_id = comment_id
-                        logger.success(f"Comment posted via API (id={comment_id}) — PIN IT manually in YouTube Studio")
-
-                        self.config.append_history_event(PublishEvent(
-                            event="comment_posted",
-                            project_id=project_id,
+                    logger.info(
+                        f"Comment deferred to A/B daemon — will auto-post when video goes live "
+                        f"({scheduled_local_str or scheduled_datetime})"
+                    )
+                else:
+                    try:
+                        comment_ok, comment_id, comment_err = youtube.insert_comment_thread(
                             video_id=video_id,
-                            comment_id=comment_id,
-                            details={"needs_manual_pin": True},
-                        ))
-                    else:
-                        logger.warning(f"Failed to post comment via API: {comment_err}")
-                except Exception as e:
-                    logger.warning(f"Comment posting failed: {e}")
+                            text=brief.youtube.pinned_comment,
+                        )
+                        if comment_ok:
+                            status.comment_id = comment_id
+                            logger.success(f"Comment posted via API (id={comment_id}) — PIN IT manually in YouTube Studio")
+
+                            self.config.append_history_event(PublishEvent(
+                                event="comment_posted",
+                                project_id=project_id,
+                                video_id=video_id,
+                                comment_id=comment_id,
+                                details={"needs_manual_pin": True},
+                            ))
+                        else:
+                            logger.warning(f"Failed to post comment via API: {comment_err}")
+                    except Exception as e:
+                        logger.warning(f"Comment posting failed: {e}")
 
             # Step 8: Update status
             status.status = (
@@ -427,6 +442,63 @@ class Publisher:
 
         except Exception as e:
             logger.warning(f"Failed to register for AB monitoring: {e}")
+
+    def _save_deferred_comment(
+        self,
+        video_id: str,
+        project_id: str,
+        channel_id: str,
+        comment_text: str,
+        scheduled_go_live: datetime,
+    ) -> None:
+        """
+        Save a comment for deferred posting by the A/B daemon.
+
+        When a video is scheduled (private with publishAt), the comment can't
+        be posted immediately. Instead, we save it to the AB record and the
+        A/B daemon will post it when the video goes live.
+
+        If the video was already registered for AB monitoring, updates the
+        existing record. If not (e.g., no AB variants), creates a minimal
+        record just for comment tracking.
+
+        Non-fatal: errors logged but don't block the publish flow.
+        """
+        try:
+            from datetime import timezone
+
+            store = ABStore(config_dir=self.config.config_dir)
+
+            # Try to update existing AB record
+            def _set_comment(video: VideoABRecord) -> bool:
+                video.pending_comment_text = comment_text
+                return True
+
+            result = store.locked_update(
+                video_id, _set_comment, require_monitoring=False
+            )
+
+            if result is not None:
+                logger.info(f"Saved deferred comment to existing AB record for {video_id}")
+                return
+
+            # No AB record exists — create a minimal one for comment tracking
+            now = datetime.now(timezone.utc)
+            go_live = scheduled_go_live if scheduled_go_live > now else None
+
+            record = VideoABRecord(
+                video_id=video_id,
+                project_id=project_id,
+                channel_id=channel_id,
+                scheduled_go_live=go_live,
+                variant_start_time=go_live or now,
+                pending_comment_text=comment_text,
+            )
+            store.register_video(record)
+            logger.info(f"Registered {video_id} for deferred comment posting (no AB variants)")
+
+        except Exception as e:
+            logger.warning(f"Failed to save deferred comment: {e}")
 
     # ========================================================================
     # PUBLISH ALL PENDING

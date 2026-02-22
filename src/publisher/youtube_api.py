@@ -233,6 +233,16 @@ class YouTubeAPI:
             with open(self.token_path, "r") as f:
                 token_data = json.load(f)
 
+            # Parse expiry so Credentials knows when the token is stale
+            expiry = None
+            expiry_str = token_data.get("expiry")
+            if expiry_str:
+                from datetime import datetime
+                try:
+                    expiry = datetime.fromisoformat(expiry_str)
+                except (ValueError, TypeError):
+                    pass
+
             creds = Credentials(
                 token=token_data.get("token"),
                 refresh_token=token_data.get("refresh_token"),
@@ -240,6 +250,7 @@ class YouTubeAPI:
                 client_id=token_data.get("client_id"),
                 client_secret=token_data.get("client_secret"),
                 scopes=token_data.get("scopes", SCOPES),
+                expiry=expiry,
             )
 
             return creds
