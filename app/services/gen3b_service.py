@@ -182,6 +182,9 @@ Return ONLY valid JSON."""
             # Convert to Gen3bManifest
             manifest = self._convert_to_manifest(manifest_data, gen3a_analysis, gen1_brief)
 
+            # Post-process: enforce money shot minimum duration
+            self._enforce_money_shot_floor(manifest, gen3a_analysis)
+
             logger.success("=" * 60)
             logger.success("GEN3b: Manifest Generated")
             logger.success(f"  Total duration: {manifest.total_duration}s")
@@ -804,6 +807,63 @@ NO markdown formatting."""
 
         logger.info(f"Parsed {len(result)} subtitles from Gemini response")
         return result
+
+    def _enforce_money_shot_floor(
+        self,
+        manifest: Gen3bManifest,
+        gen3a_analysis: Gen3aOutput,
+    ) -> None:
+        """Ensure money shot gets at least gen3a-recommended duration (min 3.0s).
+
+        If the money shot was compressed below the floor, expand it and shift
+        all subsequent scenes forward.
+        """
+        MONEY_SHOT_MIN = 3.0
+        gen3a_scenes_map = {s.scene_number: s for s in gen3a_analysis.scenes}
+
+        shifted = False
+        for scene in manifest.scenes:
+            if "MONEY_SHOT" not in (scene.special_flags or []):
+                continue
+
+            sn = scene.scene_number
+            gen3a_scene = gen3a_scenes_map.get(sn)
+            gen3a_dur = 0.0
+            if gen3a_scene and gen3a_scene.speed_map:
+                gen3a_dur = sum(
+                    (seg.source_end - seg.source_start) / (seg.speed or 1.0)
+                    for seg in gen3a_scene.speed_map
+                )
+
+            min_dur = max(gen3a_dur, MONEY_SHOT_MIN)
+            current_dur = scene.timeline_end - scene.timeline_start
+
+            if current_dur < min_dur:
+                deficit = min_dur - current_dur
+                scene.timeline_end = scene.timeline_start + min_dur
+                logger.info(f"  Money shot S{sn}: {current_dur:.1f}s → {min_dur:.1f}s (floor, +{deficit:.1f}s)")
+
+                # Shift subsequent scenes
+                for later_scene in manifest.scenes:
+                    if later_scene.scene_number > sn:
+                        later_scene.timeline_start += deficit
+                        later_scene.timeline_end += deficit
+
+                # Rescale speed segments for new duration
+                if scene.speed_segments:
+                    source_dur = scene.source_duration or 10.0
+                    new_speed = round(source_dur / min_dur, 2)
+                    scene.speed_segments = [SpeedSegment(
+                        source_start=0.0,
+                        source_end=source_dur,
+                        speed=new_speed,
+                        output_duration=min_dur,
+                    )]
+
+                shifted = True
+
+        if shifted:
+            manifest.total_duration = manifest.scenes[-1].timeline_end
 
     def _convert_to_manifest(
         self,

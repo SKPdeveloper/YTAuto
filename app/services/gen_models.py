@@ -668,6 +668,7 @@ class Gen1VoiceoverConfig(BaseModel):
     similarity_boost: float = Field(default=0.75, ge=0.0, le=1.0)
     style: float = Field(default=0.30, ge=0.0, le=1.0)
     speaker_boost: bool = Field(default=True, description="ElevenLabs speaker boost for voice clarity")
+    speed: float = Field(default=1.0, ge=0.7, le=1.2, description="TTS speech speed (0.7=slow, 1.2=fast)")
 
 
 class Gen1SonicHook(BaseModel):

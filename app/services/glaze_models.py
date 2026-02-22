@@ -581,6 +581,7 @@ class VoiceoverSettings(BaseModel):
     similarity_boost: float = Field(default=0.75, description="Similarity boost")
     style: float = Field(default=0.30, description="Style")
     speaker_boost: bool = Field(default=True, description="Speaker boost")
+    speed: float = Field(default=1.0, ge=0.7, le=1.2, description="TTS speech speed (0.7=slow, 1.2=fast)")
 
 
 class VoiceoverConfig(BaseModel):

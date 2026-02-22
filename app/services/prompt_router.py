@@ -1914,6 +1914,7 @@ REQUIREMENTS:
                     similarity_boost=gen1.voiceover.similarity_boost,
                     style=gen1.voiceover.style if hasattr(gen1.voiceover, 'style') else 0.30,
                     speaker_boost=gen1.voiceover.speaker_boost if hasattr(gen1.voiceover, 'speaker_boost') else True,
+                    speed=gen1.voiceover.speed if hasattr(gen1.voiceover, 'speed') else 1.0,
                 ),
                 full_script=gen1.voiceover.full_script,
                 character=gen1.voiceover.character if hasattr(gen1.voiceover, 'character') else "sensory_witness",

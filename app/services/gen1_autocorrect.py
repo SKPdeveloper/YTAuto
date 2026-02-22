@@ -1,5 +1,5 @@
 """
-GEN1 Auto-Corrector v3.4
+GEN1 Auto-Corrector v3.5
 
 Deterministic auto-fix layer for GEN1 (Creative Director) output.
 Runs BEFORE validation to fix known Gemini 3 Pro hallucinations/confusions.
@@ -479,6 +479,8 @@ def autocorrect_gen1(data: Dict[str, Any]) -> Tuple[Dict[str, Any], List[AutoFix
     _fix_temporal_channel_injection(d, scenes, w)   # 4-channel: inject "still X-ing" if missing
     _fix_tactile_channel_injection(d, scenes, w)    # 4-channel: inject texture word if missing
     _fix_narrator_word_count(scenes, w)     # Re-truncate after all injections (2nd pass)
+    _fix_voiceover_segment_word_sync(d, scenes, w)  # Sync VO content words to narrator (after truncation)
+    _warn_total_vo_budget(d, scenes, w)              # Warn if estimated VO > target duration
     _fix_full_script_rebuild(d, scenes, w)  # ALWAYS last — rebuilds from segments
 
     return d, w
@@ -1970,7 +1972,17 @@ def _fix_narrator_word_count(scenes: list, w: list) -> None:
         # Account for pause tags consuming scene time budget
         vo_seg = scene.get("voiceover_segment", "")
         pause_time = _estimate_pause_time(vo_seg) if isinstance(vo_seg, str) else 0.0
-        effective_duration = max(duration - pause_time, 1.0)  # floor 1.0s
+
+        # Account for slow-delivery tags (ElevenLabs whisper/calm = slower TTS)
+        whisper_factor = 1.0
+        if isinstance(vo_seg, str):
+            vo_lower = vo_seg.lower()
+            if "[whispers]" in vo_lower or "[drawn out]" in vo_lower:
+                whisper_factor = 1.4  # ElevenLabs whisper is ~40% slower
+            elif "[calm]" in vo_lower or "[gentle]" in vo_lower:
+                whisper_factor = 1.15  # Calm delivery slightly slower
+
+        effective_duration = max((duration - pause_time) / whisper_factor, 0.8)
 
         max_words = _max_words_for_duration(effective_duration)
         words = narrator.strip().split()
@@ -3093,6 +3105,123 @@ def _fix_tactile_channel_injection(d: dict, scenes: list, w: list) -> None:
         f"scenes[{target_idx}].narrator_script",
         f"Injected TACTILE in Scene {sn}: '{phrase}'",
     ))
+
+
+# ---------------------------------------------------------------------------
+# VO SEGMENT WORD SYNC + BUDGET (v3.5)
+# ---------------------------------------------------------------------------
+
+# Empirical TTS rate (seconds per content word) by ElevenLabs delivery style
+_TTS_RATE = {
+    "whispers": 0.55,
+    "drawn out": 0.60,
+    "calm": 0.45,
+    "gentle": 0.45,
+    "default": 0.40,
+}
+
+
+def _rebuild_vo_from_narrator(leading_tags: str, narrator: str, original_tags: list) -> str:
+    """Rebuild voiceover_segment from narrator_script + leading tags.
+
+    Keeps first 1-2 emotion/delivery tags, inserts [pause] at sentence
+    boundaries (after . ! ?).
+    """
+    parts = []
+    if leading_tags.strip():
+        parts.append(leading_tags.strip())
+    # Insert [pause] at sentence boundaries inside narrator
+    words = narrator.strip().split()
+    for word in words:
+        parts.append(word)
+        if word.rstrip().endswith((".")) and word != words[-1]:
+            # Check if original had [pause] — preserve intent
+            if any("pause" in t.lower() for t in original_tags):
+                parts.append("[pause]")
+    return " ".join(parts)
+
+
+def _fix_voiceover_segment_word_sync(d: dict, scenes: list, w: list) -> None:
+    """Ensure voiceover_segment content words match narrator_script.
+
+    narrator_script = clean text (word-count-limited).
+    voiceover_segment = same words + [tags].
+    If voiceover_segment has MORE content words -> rebuild from tags + narrator_script.
+    """
+    for i, scene in enumerate(scenes):
+        if not isinstance(scene, dict):
+            continue
+
+        narrator = scene.get("narrator_script", "")
+        vo = scene.get("voiceover_segment", "")
+
+        # Skip silence / empty scenes
+        if not isinstance(narrator, str) or not narrator.strip():
+            continue
+        if not isinstance(vo, str) or vo.strip() == "[silence]" or not vo.strip():
+            continue
+
+        # Extract content words (strip all [tags])
+        narrator_words = [w_ for w_ in re.sub(r'\[.*?\]', '', narrator).split() if w_.strip()]
+        vo_words = [w_ for w_ in re.sub(r'\[.*?\]', '', vo).split() if w_.strip()]
+
+        if len(vo_words) > len(narrator_words) and narrator_words:
+            # Rebuild: extract tags + narrator content
+            tags = re.findall(r'\[.*?\]', vo)
+            leading_tags = " ".join(tags[:2]) if tags else ""
+
+            rebuilt = _rebuild_vo_from_narrator(leading_tags, narrator, tags)
+            scene["voiceover_segment"] = rebuilt
+
+            w.append(AutoFixWarning(
+                f"scenes[{i}].voiceover_segment",
+                f"VO had {len(vo_words)} content words vs narrator's {len(narrator_words)} "
+                f"— rebuilt from narrator_script + tags"
+            ))
+
+
+def _warn_total_vo_budget(d: dict, scenes: list, w: list) -> None:
+    """Estimate total VO duration from text + tags, warn if exceeds target."""
+    target = 16  # default
+    meta = d.get("metadata")
+    if isinstance(meta, dict):
+        try:
+            target = float(meta.get("target_duration_seconds", 16))
+        except (ValueError, TypeError):
+            target = 16
+
+    total_est = 0.0
+    for scene in scenes:
+        if not isinstance(scene, dict):
+            continue
+        vo = scene.get("voiceover_segment", "")
+        if not isinstance(vo, str) or not vo.strip() or vo.strip() == "[silence]":
+            continue
+
+        # Detect style
+        vo_lower = vo.lower()
+        style = "default"
+        for tag in ("whispers", "drawn out", "calm", "gentle"):
+            if f"[{tag}]" in vo_lower:
+                style = tag
+                break
+
+        # Count pauses
+        pause_time = _estimate_pause_time(vo)
+
+        # Count content words
+        words = [w_ for w_ in re.sub(r'\[.*?\]', '', vo).split() if w_.strip()]
+        word_time = len(words) * _TTS_RATE.get(style, 0.40)
+
+        total_est += word_time + pause_time
+
+    ratio = total_est / target if target > 0 else 999
+    if ratio > 1.2:
+        w.append(AutoFixWarning(
+            "voiceover.total_budget",
+            f"Estimated VO ~{total_est:.1f}s for {target:.0f}s video "
+            f"(ratio {ratio:.2f}x) — likely to overshoot target duration"
+        ))
 
 
 def _fix_full_script_rebuild(d: dict, scenes: list, w: list) -> None:
