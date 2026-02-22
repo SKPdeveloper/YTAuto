@@ -291,7 +291,11 @@ class ConfigManager:
             for mp4 in upscaled_dir.glob("*.mp4"):
                 return mp4
 
-        # Check project root
+        # Check project root — prefer 4K upscaled version
+        final_4k = project_dir / "final_4k.mp4"
+        if final_4k.exists():
+            return final_4k
+
         final = project_dir / "final_video.mp4"
         if final.exists():
             return final

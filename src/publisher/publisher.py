@@ -168,6 +168,11 @@ class Publisher:
                 if not self.cleaner.is_ffmpeg_available():
                     logger.warning("FFmpeg not available, skipping metadata cleaning")
 
+            # Build final description (before dry_run check so it's available for logging)
+            description = brief.youtube.description
+            if brief.save_trigger:
+                description = f"{description}\n\n💾 {brief.save_trigger}"
+
             # Step 6: Upload to YouTube
             if dry_run:
                 logger.info("[DRY RUN] Would upload video to YouTube")
@@ -184,11 +189,6 @@ class Publisher:
                 status.status = PublishStatus.PENDING
                 status.error = "Dry run - not uploaded"
                 return True, status
-
-            # Append save_trigger CTA to description if available
-            description = brief.youtube.description
-            if brief.save_trigger:
-                description = f"{description}\n\n💾 {brief.save_trigger}"
 
             # Create YouTube API client
             youtube = YouTubeAPI(
