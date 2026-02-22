@@ -1,5 +1,5 @@
 """
-GEN1 Python Validator v2.7
+GEN1 Python Validator v2.8
 
 Deterministic validator for GEN1 (Creative Director) output.
 Auto-corrections are handled by gen1_autocorrect.py (runs first).
@@ -52,6 +52,8 @@ from app.services.gen1_autocorrect import (
     NARRATIVE_BRIDGE_STARTERS,
     TEMPERATURE_WORDS,
     ARCHITECTURAL_FORM_WORDS,
+    _TTS_RATE,
+    _estimate_pause_time,
 )
 
 
@@ -416,6 +418,7 @@ class Gen1Validator:
         self._validate_dominant_color_appetite()
         self._validate_money_shot_saliva_trigger()
         self._validate_aerial_reveals_architecture()
+        self._validate_vo_budget()
 
     # ========================================================================
     # VALIDATION METHODS
@@ -1457,6 +1460,99 @@ class Gen1Validator:
                     f"AERIAL scene is FOOD_DOMINANT — viewers may not see building form. Consider BALANCED.",
                     suggestion="AERIAL exists to reveal the building shape. FOOD_DOMINANT hides architecture.",
                 )
+
+    # ========================================================================
+    # VO BUDGET VALIDATION (v2.8)
+    # ========================================================================
+
+    def _validate_vo_budget(self) -> None:
+        """Validate total voiceover duration fits within target video length.
+
+        Uses corrected ElevenLabs TTS rates from gen1_autocorrect._TTS_RATE.
+        ratio > 1.3 → ERROR (triggers retry in prompt_router)
+        ratio > 1.15 → WARNING (tight but passable)
+        """
+        scenes = self._data.get("scenes")
+        if not isinstance(scenes, list) or not scenes:
+            return
+
+        # Get target duration
+        target = 16.0
+        meta = self._data.get("metadata")
+        if isinstance(meta, dict):
+            try:
+                target = float(meta.get("target_duration_seconds", 16))
+            except (ValueError, TypeError):
+                target = 16.0
+
+        total_est = 0.0
+        scene_details = []  # (scene_number, word_count, est_seconds)
+
+        for i, scene in enumerate(scenes):
+            if not isinstance(scene, dict):
+                continue
+
+            vo = scene.get("voiceover_segment", "")
+            if not isinstance(vo, str) or not vo.strip() or vo.strip() == "[silence]":
+                continue
+
+            # Detect delivery style
+            vo_lower = vo.lower()
+            style = "default"
+            for tag in ("whispers", "drawn out", "calm", "gentle"):
+                if f"[{tag}]" in vo_lower:
+                    style = tag
+                    break
+
+            # Count pauses
+            pause_time = _estimate_pause_time(vo)
+
+            # Count content words (strip all [tags])
+            words = [w_ for w_ in re.sub(r'\[.*?\]', '', vo).split() if w_.strip()]
+            word_count = len(words)
+            word_time = word_count * _TTS_RATE.get(style, 0.45)
+
+            scene_est = word_time + pause_time
+            total_est += scene_est
+
+            sn = scene.get("scene_number", i + 1)
+            scene_details.append((sn, word_count, scene_est, style))
+
+        if target <= 0:
+            return
+
+        ratio = total_est / target
+
+        # Find heaviest scenes for diagnostic
+        scene_details.sort(key=lambda x: x[2], reverse=True)
+        top3 = scene_details[:3]
+        heaviest_str = ", ".join(
+            f"S{sn}={wc}w/{est:.1f}s({sty})" for sn, wc, est, sty in top3
+        )
+
+        total_words = sum(wc for _, wc, _, _ in scene_details)
+        word_budget = int(target * 0.75)
+
+        if ratio > 1.3:
+            self._error(
+                "voiceover.total_budget",
+                f"Total VO ~{total_est:.1f}s for {target:.0f}s video "
+                f"(ratio {ratio:.2f}x). Total words: {total_words}, "
+                f"budget: ~{word_budget} words. "
+                f"Heaviest: {heaviest_str}. "
+                f"Shorten narrator_script across scenes to fit ≤{word_budget} total words.",
+                code="VO_BUDGET_EXCEEDED",
+                suggestion=f"Target ≤{word_budget} total narrator_script words for a {target:.0f}s video. "
+                           f"Current {total_words} words produce ~{total_est:.1f}s of audio.",
+            )
+        elif ratio > 1.15:
+            self._warn(
+                "voiceover.total_budget",
+                f"VO budget tight: ~{total_est:.1f}s for {target:.0f}s video "
+                f"(ratio {ratio:.2f}x). Total words: {total_words}, "
+                f"budget: ~{word_budget}. Heaviest: {heaviest_str}.",
+                suggestion=f"Consider trimming to ≤{word_budget} total words.",
+            )
 
     # ========================================================================
     # HELPERS

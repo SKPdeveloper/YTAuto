@@ -3108,16 +3108,16 @@ def _fix_tactile_channel_injection(d: dict, scenes: list, w: list) -> None:
 
 
 # ---------------------------------------------------------------------------
-# VO SEGMENT WORD SYNC + BUDGET (v3.5)
+# VO SEGMENT WORD SYNC + BUDGET (v3.6)
 # ---------------------------------------------------------------------------
 
 # Empirical TTS rate (seconds per content word) by ElevenLabs delivery style
 _TTS_RATE = {
-    "whispers": 0.55,
-    "drawn out": 0.60,
-    "calm": 0.45,
-    "gentle": 0.45,
-    "default": 0.40,
+    "whispers": 0.85,    # measured ElevenLabs whisper rate (was 0.55)
+    "drawn out": 0.90,   # measured ElevenLabs drawn-out rate (was 0.60)
+    "calm": 0.60,        # measured ElevenLabs calm rate (was 0.45)
+    "gentle": 0.55,      # measured ElevenLabs gentle rate (was 0.45)
+    "default": 0.45,     # measured ElevenLabs default rate (was 0.40)
 }
 
 
@@ -3258,4 +3258,6 @@ __all__ = [
     "TEMPERATURE_WORDS",
     "REVERSAL_SAFE_MOTIONS",
     "ARCHITECTURAL_FORM_WORDS",
+    "_TTS_RATE",
+    "_estimate_pause_time",
 ]

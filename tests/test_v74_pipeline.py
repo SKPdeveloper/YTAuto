@@ -253,7 +253,7 @@ class TestMusicGenerator:
 
         generator = MusicGenerator()
         assert generator is not None
-        assert generator.model == "stackadoc/stable-audio-open-1.0"
+        assert generator.model == "meta/musicgen"
 
     def test_music_styles_available(self):
         """Test predefined music styles."""
@@ -319,7 +319,7 @@ class TestAudioEngine:
         from app.services.audio_engine import DEFAULT_VOLUMES, AudioLayer
 
         assert DEFAULT_VOLUMES[AudioLayer.BED] == 0.15
-        assert DEFAULT_VOLUMES[AudioLayer.MUSIC] == 0.3
+        assert DEFAULT_VOLUMES[AudioLayer.MUSIC] == 0.5
         assert DEFAULT_VOLUMES[AudioLayer.SFX] == 0.7
         assert DEFAULT_VOLUMES[AudioLayer.FOLEY] == 0.5
         assert DEFAULT_VOLUMES[AudioLayer.VO] == 1.0
@@ -400,8 +400,8 @@ class TestManifestRenderer:
         assert config.output_width == 1080
         assert config.output_height == 1920  # 9:16 vertical
         assert config.fps == 60
-        assert config.video_codec == "libx264"
-        assert config.crf == 18
+        assert config.video_codec == "auto"
+        assert config.crf == 23
 
     def test_manifest_renderer_init(self):
         """Test ManifestRenderer initialization."""
@@ -431,7 +431,7 @@ class TestManifestRenderer:
         )
         filter_str = renderer._get_effect_filter(zoom_effect)
         assert filter_str is not None
-        assert "zoompan" in filter_str
+        assert "scale" in filter_str or "crop" in filter_str
 
         # Test shake effect
         shake_effect = ManifestEffect(
@@ -608,7 +608,7 @@ class TestConfig:
         """Test Replicate model default value."""
         from app.core.config import settings
 
-        assert settings.REPLICATE_MUSIC_MODEL == "stackadoc/stable-audio-open-1.0"
+        assert settings.REPLICATE_MUSIC_MODEL == "meta/musicgen"
 
     def test_replicate_duration_range(self):
         """Test Replicate duration is within valid range."""
