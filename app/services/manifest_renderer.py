@@ -223,8 +223,8 @@ class ManifestRenderer:
         subtitled_path = None
 
         try:
-            # Step 0: Align scene boundaries to voiceover timing
-            self._align_scenes_to_voiceover(manifest, project_dir)
+            # Step 0: Compute deterministic scene timeline from VO + brief
+            self._compute_deterministic_timeline(manifest, project_dir)
 
             # Step 1: Process scenes with speed changes
             processed_scenes = await self._process_scenes(manifest.scenes, project_dir)
@@ -381,264 +381,140 @@ class ManifestRenderer:
     # VO–Video Alignment
     # ------------------------------------------------------------------
 
-    def _align_scenes_to_voiceover(
+    def _compute_deterministic_timeline(
         self,
         manifest: Gen3bManifest,
         project_dir: Path,
     ) -> None:
         """
-        Recalculate scene timeline boundaries so each scene is visible
-        when its voiceover segment plays.
+        Compute scene timeline from brief duration_seconds + voiceover_timing.json.
 
-        The voiceover audio has fixed timing (from TTS).  Gen3b scene
-        durations are driven by video analysis and may differ from VO
-        segment durations, causing narration about scene N to play while
-        scene N-1 (or N+1) is still on screen.
-
-        Algorithm:
-        1. For each VO scene, compute an anchor = hook_offset + vo_start − LEAD
-           (the scene should appear slightly before narration begins).
-        2. Forward sweep: VO scenes snap to their anchors, no-VO scenes
-           fill the gaps (treated as B-roll for the adjacent narration).
-        3. Speed segments are rescaled proportionally so the new output
-           duration matches the adjusted timeline slot.
+        Single source of truth.  No Gemini timeline, no beat-snap, no heuristic.
+        Scene boundaries are deterministic: each scene lasts at least its brief
+        duration, expanded only when VO audio physically requires more time.
 
         Must be called BEFORE _process_scenes() since it modifies
         speed_segments in-place.
         """
         import json as _json
 
-        vo_timing_path = project_dir / "voiceover_timing.json"
-        if not vo_timing_path.exists():
-            logger.info("  No voiceover_timing.json — skipping VO alignment")
-            return
-
-        try:
-            with open(vo_timing_path, "r", encoding="utf-8") as f:
-                vo_data = _json.load(f)
-        except Exception as e:
-            logger.warning(f"  Failed to read voiceover_timing.json: {e}")
-            return
-
-        segments = vo_data.get("segments", [])
-        if not segments:
-            logger.info("  No VO segments — skipping alignment")
-            return
-
         scenes = manifest.scenes
         if not scenes:
             return
 
-        hook_offset = manifest.hook.duration if manifest.hook else 0.0
+        # ── Constants ──
+        VO_LEAD = 0.15        # scene appears 0.15s before narration
+        VO_TAIL = 0.15        # scene lingers 0.15s after narration
+        MONEY_SHOT_MIN = 3.0  # minimum duration for money shot scenes
+        MAX_SPEED = 4.0
+        MIN_SPEED = 0.5
+        DEFAULT_DUR = 2.0     # fallback if brief missing duration
 
-        # Build VO map: scene_number → (abs_start, abs_end)
+        # 1. Load voiceover_timing.json → vo_map[scene_number] = (start, end)
+        #    Times are raw ElevenLabs positions (no hook offset)
         vo_map: Dict[int, tuple] = {}
-        for seg in segments:
-            sn = seg.get("scene_number")
-            if sn is not None:
-                vo_map[sn] = (
-                    seg["start_time"] + hook_offset,
-                    seg["end_time"] + hook_offset,
-                )
+        vo_timing_path = project_dir / "voiceover_timing.json"
+        if vo_timing_path.exists():
+            try:
+                with open(vo_timing_path, "r", encoding="utf-8") as f:
+                    vo_data = _json.load(f)
+                for seg in vo_data.get("segments", []):
+                    sn = seg.get("scene_number")
+                    if sn is not None:
+                        vo_map[sn] = (seg["start_time"], seg["end_time"])
+            except Exception as e:
+                logger.warning(f"  Failed to read voiceover_timing.json: {e}")
 
-        if not vo_map:
+        # 2. Load project_brief.json → brief_dur[scene_number] = duration_seconds
+        brief_dur: Dict[int, float] = {}
+        brief_flags: Dict[int, list] = {}
+        brief_path = project_dir / "project_brief.json"
+        if brief_path.exists():
+            try:
+                with open(brief_path, "r", encoding="utf-8") as f:
+                    brief_data = _json.load(f)
+                for s in brief_data.get("scenes", []):
+                    sn = s.get("scene_number")
+                    if sn is not None:
+                        brief_dur[sn] = s.get("duration_seconds", DEFAULT_DUR)
+                        brief_flags[sn] = s.get("special_flags", []) or []
+            except Exception as e:
+                logger.warning(f"  Failed to read project_brief.json: {e}")
+
+        if not brief_dur and not vo_map:
+            logger.info("  No brief or VO timing — using GEN3b timelines as-is")
             return
 
-        # ── tunables ──
-        LEAD = 0.3           # show visual before narration starts
-        MIN_NO_VO = 1.5      # minimum duration for scenes without VO
-        TAIL_AFTER_LAST = 2.0 # visual tail after last VO ends
-        MAX_SPEED = 4.0       # don't speed up beyond this (was 8.0 — unwatchable)
-        MIN_SPEED = 0.5       # don't slow down beyond this
-
+        # 3. Compute deterministic timeline
+        old_total = manifest.total_duration
+        cumulative = 0.0
         n = len(scenes)
 
-        # Phase 1: compute anchor (desired start) for every VO scene
-        anchors: Dict[int, float] = {}  # scene index → desired start
+        logger.info("  Deterministic Timeline:")
         for i, scene in enumerate(scenes):
             sn = scene.scene_number
-            if sn in vo_map:
-                if i == 0:
-                    anchors[i] = 0.0  # first scene always starts at 0
-                else:
-                    anchors[i] = max(0.0, vo_map[sn][0] - LEAD)
-
-        # Phase 2: forward sweep — compute new start / end for each scene
-        new_starts = [0.0] * n
-        new_ends = [0.0] * n
-        cursor = 0.0
-
-        for i in range(n):
-            sn = scenes[i].scene_number
-
-            # --- determine start ---
-            if i in anchors:
-                new_starts[i] = max(cursor, anchors[i])
-            else:
-                new_starts[i] = cursor
-
-            # --- determine end ---
-            if sn in vo_map:
-                vo_end_abs = vo_map[sn][1]
-
-                # find next anchor (next VO scene)
-                next_anchor_time = None
-                no_vo_between = 0
-                for j in range(i + 1, n):
-                    if j in anchors:
-                        next_anchor_time = anchors[j]
-                        break
-                    no_vo_between += 1
-
-                # Reserve MIN_NO_VO per no-VO scene in between
-                reserved = no_vo_between * MIN_NO_VO
-
-                if next_anchor_time is not None:
-                    max_end = next_anchor_time - reserved
-                    # Scene must last at least until VO ends
-                    ideal_end = vo_end_abs + 0.1
-                    raw_end = max(
-                        new_starts[i] + 1.0,  # absolute minimum
-                        min(ideal_end, max_end),
-                    )
-                else:
-                    # Last VO scene (or no more VO scenes after)
-                    raw_end = max(
-                        new_starts[i] + 1.5,
-                        vo_end_abs + 0.3,
-                    )
-
-                new_ends[i] = raw_end
-            else:
-                # No VO — fill gap until next anchor
-                next_anchor_time = None
-                remaining_no_vo = 1
-                for j in range(i + 1, n):
-                    if j in anchors:
-                        next_anchor_time = anchors[j]
-                        break
-                    remaining_no_vo += 1
-
-                if next_anchor_time is not None:
-                    available = next_anchor_time - new_starts[i]
-                    per_scene = available / remaining_no_vo
-                    calculated = max(per_scene, 0.5)
-                else:
-                    # No more anchors — use minimum duration
-                    calculated = MIN_NO_VO
-
-                new_ends[i] = new_starts[i] + calculated
-
-            cursor = new_ends[i]
-
-        # Extend last scene for visual tail after VO
-        last_sn = scenes[-1].scene_number
-        if last_sn in vo_map:
-            vo_end = vo_map[last_sn][1]
-            new_ends[-1] = max(new_ends[-1], vo_end + TAIL_AFTER_LAST)
-        else:
-            new_ends[-1] = max(new_ends[-1], new_ends[-1] + TAIL_AFTER_LAST)
-
-        # Phase 2.4: MONEY_SHOT floor — never compress below 3.0s
-        MONEY_SHOT_MIN = 3.0
-        for i, scene in enumerate(scenes):
-            if "MONEY_SHOT" in (scene.special_flags or []):
-                scene_dur = new_ends[i] - new_starts[i]
-                if scene_dur < MONEY_SHOT_MIN:
-                    deficit = MONEY_SHOT_MIN - scene_dur
-                    new_ends[i] = new_starts[i] + MONEY_SHOT_MIN
-                    # Shift subsequent scenes
-                    for j in range(i + 1, n):
-                        new_starts[j] += deficit
-                        new_ends[j] += deficit
-                    logger.info(f"  Money shot floor: S{scene.scene_number} expanded by {deficit:.1f}s")
-
-        # Phase 2.5: Gap collapse — remove timeline gaps created by
-        # MAX_SCENE_DUR capping.  Concat places scenes back-to-back, so
-        # timeline_start/end must be contiguous for SFX / on-screen text
-        # to land at the correct video positions.
-        actual_cursor = 0.0
-        for i in range(n):
-            dur = new_ends[i] - new_starts[i]
-            new_starts[i] = actual_cursor
-            new_ends[i] = actual_cursor + dur
-            actual_cursor = new_ends[i]
-
-        # Phase 2.6: Beat-snap scene transitions to nearest strong beat (#11)
-        gen3a_path = project_dir / "gen3a_analysis.json"
-        if gen3a_path.exists():
-            try:
-                with open(gen3a_path, "r", encoding="utf-8") as f:
-                    gen3a_data = _json.load(f)
-                strong_beats = gen3a_data.get("music_analysis", {}).get("strong_beats_for_cuts", [])
-                if strong_beats:
-                    BEAT_SNAP_TOLERANCE = 0.3  # max shift to reach a beat
-                    snapped = 0
-                    for i in range(n - 1):  # each transition between scene i and i+1
-                        boundary = new_ends[i]
-                        # Find nearest strong beat
-                        nearest_beat = min(strong_beats, key=lambda b: abs(b - boundary))
-                        delta = nearest_beat - boundary
-                        if abs(delta) <= BEAT_SNAP_TOLERANCE and abs(delta) > 0.01:
-                            # Check VO constraints before snapping
-                            can_snap = True
-                            if delta > 0:
-                                # Snapping later — scene i+1 gets shorter
-                                sn_next = scenes[i + 1].scene_number
-                                if sn_next in vo_map:
-                                    vo_dur_next = vo_map[sn_next][1] - vo_map[sn_next][0]
-                                    new_dur_next = new_ends[i + 1] - nearest_beat
-                                    if new_dur_next < vo_dur_next + 0.1:
-                                        can_snap = False
-                            else:
-                                # Snapping earlier — scene i gets shorter
-                                sn_curr = scenes[i].scene_number
-                                if sn_curr in vo_map:
-                                    vo_dur_curr = vo_map[sn_curr][1] - vo_map[sn_curr][0]
-                                    new_dur_curr = nearest_beat - new_starts[i]
-                                    if new_dur_curr < vo_dur_curr + 0.1:
-                                        can_snap = False
-
-                            if can_snap:
-                                new_ends[i] = nearest_beat
-                                new_starts[i + 1] = nearest_beat
-                                snapped += 1
-
-                    if snapped:
-                        logger.info(f"  Beat-snapped {snapped}/{n-1} transitions (tolerance {BEAT_SNAP_TOLERANCE}s)")
-                    else:
-                        logger.info(f"  Beat-snap: 0/{n-1} transitions within {BEAT_SNAP_TOLERANCE}s of strong beats")
-            except Exception as e:
-                logger.warning(f"  Beat-snap failed: {e}")
-
-        # Phase 3: apply new timings and rescale speed segments
-        logger.info("  VO–Video Alignment:")
-        old_total = manifest.total_duration
-        for i, scene in enumerate(scenes):
             old_dur = scene.timeline_end - scene.timeline_start
-            new_dur = new_ends[i] - new_starts[i]
 
-            scene.timeline_start = new_starts[i]
-            scene.timeline_end = new_ends[i]
+            # Base duration from brief (or fallback)
+            intended = brief_dur.get(sn, DEFAULT_DUR)
 
-            self._rescale_speed_segments(scene, new_dur, MAX_SPEED, MIN_SPEED)
+            # VO expansion: scene must fit VO audio + lead/tail padding
+            vo_dur = 0.0
+            if sn in vo_map:
+                vo_start, vo_end = vo_map[sn]
+                vo_dur = vo_end - vo_start
 
-            vo_tag = ""
-            if scene.scene_number in vo_map:
-                vs, ve = vo_map[scene.scene_number]
-                vo_tag = f"  VO {vs:.1f}–{ve:.1f}"
-            else:
-                vo_tag = "  (no VO)"
+            min_for_vo = (vo_dur + VO_LEAD + VO_TAIL) if vo_dur > 0 else 0.0
+            scene_dur = max(intended, min_for_vo)
+
+            # Money shot floor
+            flags = brief_flags.get(sn, []) or (scene.special_flags or [])
+            if "MONEY_SHOT" in flags:
+                if scene_dur < MONEY_SHOT_MIN:
+                    logger.info(f"    Money shot floor: S{sn} {scene_dur:.2f}s → {MONEY_SHOT_MIN}s")
+                    scene_dur = MONEY_SHOT_MIN
+
+            # Set timeline boundaries
+            scene.timeline_start = cumulative
+            scene.timeline_end = cumulative + scene_dur
+
+            # Ensure speed segments exist — without them _process_scenes()
+            # copies the full source video (~10s Kling) instead of trimming.
+            if not scene.speed_segments:
+                src_dur = scene.source_duration if hasattr(scene, 'source_duration') and scene.source_duration else scene_dur
+                if src_dur >= scene_dur:
+                    # Source longer than needed — trim to first scene_dur seconds at 1x
+                    seg_end = scene_dur
+                    seg_speed = 1.0
+                else:
+                    # Source shorter — slow down to fill
+                    seg_end = src_dur
+                    seg_speed = max(MIN_SPEED, src_dur / scene_dur)
+                scene.speed_segments = [SpeedSegment(
+                    source_start=0.0,
+                    source_end=seg_end,
+                    speed=round(seg_speed, 4),
+                    output_duration=round(scene_dur, 4),
+                    reason="deterministic_trim",
+                    motion_density="MEDIUM",
+                    technique="NORMAL",
+                )]
+
+            # Rescale speed segments to match new duration
+            self._rescale_speed_segments(scene, scene_dur, MAX_SPEED, MIN_SPEED)
+
+            # Log
+            vo_tag = f"  VO {vo_dur:.2f}s" if vo_dur > 0 else "  (no VO)"
             logger.info(
-                f"    S{scene.scene_number}: "
-                f"{new_starts[i]:.2f}–{new_ends[i]:.2f} "
-                f"({new_dur:.2f}s, was {old_dur:.2f}s)"
-                f"{vo_tag}"
+                f"    S{sn}: {cumulative:.2f}–{cumulative + scene_dur:.2f} "
+                f"({scene_dur:.2f}s, was {old_dur:.2f}s){vo_tag}"
             )
 
-        manifest.total_duration = new_ends[-1]
+            cumulative += scene_dur
+
+        manifest.total_duration = cumulative
         logger.info(
-            f"  Aligned total: {manifest.total_duration:.2f}s (was {old_total:.2f}s)"
+            f"  Timeline total: {manifest.total_duration:.2f}s (was {old_total:.2f}s)"
         )
 
     @staticmethod

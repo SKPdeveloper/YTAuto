@@ -1469,8 +1469,8 @@ class Gen1Validator:
         """Validate total voiceover duration fits within target video length.
 
         Uses corrected ElevenLabs TTS rates from gen1_autocorrect._TTS_RATE.
-        ratio > 1.3 → ERROR (triggers retry in prompt_router)
-        ratio > 1.15 → WARNING (tight but passable)
+        ratio > 1.5 → ERROR (triggers retry in prompt_router)
+        ratio > 1.25 → WARNING (tight but passable)
         """
         scenes = self._data.get("scenes")
         if not isinstance(scenes, list) or not scenes:
@@ -1531,9 +1531,9 @@ class Gen1Validator:
         )
 
         total_words = sum(wc for _, wc, _, _ in scene_details)
-        word_budget = int(target * 0.75)
+        word_budget = int(target * 1.5)
 
-        if ratio > 1.3:
+        if ratio > 1.5:
             self._error(
                 "voiceover.total_budget",
                 f"Total VO ~{total_est:.1f}s for {target:.0f}s video "
@@ -1545,7 +1545,7 @@ class Gen1Validator:
                 suggestion=f"Target ≤{word_budget} total narrator_script words for a {target:.0f}s video. "
                            f"Current {total_words} words produce ~{total_est:.1f}s of audio.",
             )
-        elif ratio > 1.15:
+        elif ratio > 1.25:
             self._warn(
                 "voiceover.total_budget",
                 f"VO budget tight: ~{total_est:.1f}s for {target:.0f}s video "

@@ -1925,8 +1925,10 @@ def _fix_description_line1(d: dict, w: list) -> None:
 
 
 # Word limits by scene duration (TOP RULE #1)
+# v3.7: raised limits — deterministic timeline expands scenes to fit VO,
+# so per-scene overflow is handled gracefully. Total budget (validator) is the real safety net.
 _DURATION_WORD_LIMITS: dict = {
-    1.0: 2, 1.5: 3, 2.0: 4, 2.5: 5, 3.0: 7, 3.5: 8, 4.0: 10,
+    1.0: 3, 1.5: 4, 2.0: 6, 2.5: 7, 3.0: 9, 3.5: 10, 4.0: 12,
 }
 
 _CONSEQUENCE_VERBS_LIST = ["remembers", "knows", "watches", "waits", "listens", "breathes"]
@@ -1939,14 +1941,14 @@ def _max_words_for_duration(duration: float) -> int:
     for d_val in sorted(_DURATION_WORD_LIMITS.keys()):
         if duration <= d_val + 0.01:
             return _DURATION_WORD_LIMITS[d_val]
-    return 10
+    return 12
 
 
 def _fix_narrator_word_count(scenes: list, w: list) -> None:
     """Truncate narrator_script if word count exceeds duration limit.
 
-    TOP RULE #1: 2.0s = MAX 4 words, 3.0s = MAX 7, 4.0s = MAX 10.
-    Overflow = TTS audio gets cut off = broken scene timing.
+    TOP RULE #1: 2.0s = MAX 6 words, 3.0s = MAX 9, 4.0s = MAX 12.
+    Deterministic timeline expands scene if VO overflows brief duration.
     Skips last 2 scenes (overwritten by _fix_scene_n_constraints / _fix_scene_n_minus_1_vo).
     """
     if len(scenes) < 3:
