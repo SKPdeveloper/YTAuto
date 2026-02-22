@@ -204,6 +204,10 @@ class ManifestRenderer:
         # Ensure codec is detected before rendering (async, non-blocking)
         await self._ensure_codec_detected()
 
+        # Resolve project_dir to absolute path to avoid cwd conflicts
+        # (some steps use cwd=project_dir, so relative paths would double up)
+        project_dir = project_dir.resolve()
+
         logger.info("=" * 60)
         logger.info("ManifestRenderer: Starting Render")
         logger.info("=" * 60)
@@ -223,8 +227,29 @@ class ManifestRenderer:
         subtitled_path = None
 
         try:
-            # Step 0: Compute deterministic scene timeline from VO + brief
-            self._compute_deterministic_timeline(manifest, project_dir)
+            # Step -2: Restore original subtitles if backup exists (idempotent re-render)
+            import shutil as _shutil_render
+            _orig_ass = project_dir / "subtitles_original.ass"
+            _curr_ass = project_dir / "subtitles.ass"
+            if _orig_ass.exists() and _curr_ass.exists():
+                _shutil_render.copy2(_orig_ass, _curr_ass)
+                logger.info("  Restored subtitles.ass from subtitles_original.ass (re-render)")
+
+            # Step -1: Compress VO per-scene + extract segments
+            scene_vo_data = await self._compress_and_retime_vo(project_dir)
+
+            # Step 0: Compute deterministic scene timeline (with compressed VO durations)
+            vo_override: Dict[int, float] | None = None
+            if scene_vo_data:
+                vo_override = {}
+                for d in scene_vo_data:
+                    sn = d["scene_number"]
+                    vo_override[sn] = vo_override.get(sn, 0.0) + d["compressed_dur"]
+            self._compute_deterministic_timeline(manifest, project_dir, vo_duration_override=vo_override)
+
+            # Step 0.5: Build retimed composite VO + update timing + rescale subtitles
+            if scene_vo_data:
+                await self._build_retimed_vo(project_dir, manifest, scene_vo_data)
 
             # Step 1: Process scenes with speed changes
             processed_scenes = await self._process_scenes(manifest.scenes, project_dir)
@@ -244,7 +269,7 @@ class ManifestRenderer:
             )
 
             # Step 4.5: Add on-screen text overlays (v8.3.0 — mute-friendly headlines)
-            hook_dur = manifest.hook.duration if manifest.hook else 0.0
+            hook_dur = manifest.hook.duration if manifest.hook else 0.3
             on_screen_path = await self._add_on_screen_text(
                 effects_path, manifest.scenes, project_dir, hook_dur
             )
@@ -320,6 +345,11 @@ class ManifestRenderer:
             f.unlink(missing_ok=True)
             cleaned += 1
 
+        # Clean _vo_scene_N.mp3 intermediates (per-scene VO compression)
+        for f in project_dir.glob("_vo_scene_*.mp3"):
+            f.unlink(missing_ok=True)
+            cleaned += 1
+
         # Clean concat_list.txt
         concat_list = project_dir / "concat_list.txt"
         if concat_list.exists():
@@ -385,6 +415,7 @@ class ManifestRenderer:
         self,
         manifest: Gen3bManifest,
         project_dir: Path,
+        vo_duration_override: Dict[int, float] = None,
     ) -> None:
         """
         Compute scene timeline from brief duration_seconds + voiceover_timing.json.
@@ -421,7 +452,11 @@ class ManifestRenderer:
                 for seg in vo_data.get("segments", []):
                     sn = seg.get("scene_number")
                     if sn is not None:
-                        vo_map[sn] = (seg["start_time"], seg["end_time"])
+                        if sn in vo_map:
+                            old_s, old_e = vo_map[sn]
+                            vo_map[sn] = (min(old_s, seg["start_time"]), max(old_e, seg["end_time"]))
+                        else:
+                            vo_map[sn] = (seg["start_time"], seg["end_time"])
             except Exception as e:
                 logger.warning(f"  Failed to read voiceover_timing.json: {e}")
 
@@ -460,7 +495,9 @@ class ManifestRenderer:
 
             # VO expansion: scene must fit VO audio + lead/tail padding
             vo_dur = 0.0
-            if sn in vo_map:
+            if vo_duration_override and sn in vo_duration_override:
+                vo_dur = vo_duration_override[sn]
+            elif sn in vo_map:
                 vo_start, vo_end = vo_map[sn]
                 vo_dur = vo_end - vo_start
 
@@ -544,14 +581,571 @@ class ManifestRenderer:
 
         ratio = new_target_duration / current_total  # >1 means slower, <1 means faster
 
+        clamped_any = False
         for seg in segs:
             new_speed = seg.speed / ratio
-            # Clamp to sane range
-            new_speed = max(min_speed, min(new_speed, max_speed))
-            seg.speed = round(new_speed, 4)
+            clamped_speed = max(min_speed, min(new_speed, max_speed))
+            if clamped_speed != new_speed:
+                clamped_any = True
+            seg.speed = round(clamped_speed, 4)
             seg.output_duration = round(
                 (seg.source_end - seg.source_start) / seg.speed, 6
             )
+
+        # Compensate drift from clamping: redistribute to unclamped segments
+        if clamped_any:
+            actual_total = sum(seg.output_duration for seg in segs)
+            drift = actual_total - new_target_duration
+            if abs(drift) > 0.01:
+                unclamped = [
+                    s for s in segs
+                    if min_speed < s.speed < max_speed
+                ]
+                if unclamped:
+                    per_seg = drift / len(unclamped)
+                    for seg in unclamped:
+                        seg.output_duration = round(max(0.1, seg.output_duration - per_seg), 6)
+                        src_dur = seg.source_end - seg.source_start
+                        seg.speed = round(src_dur / seg.output_duration, 4)
+
+    # ------------------------------------------------------------------
+    # Per-scene VO Compression + Re-timing
+    # ------------------------------------------------------------------
+
+    async def _compress_and_retime_vo(self, project_dir: Path) -> list:
+        """
+        Per-scene VO compression: extract each scene's VO segment from the
+        original voiceover file and apply atempo to fit the brief duration.
+
+        Returns list of dicts with per-scene VO data:
+        [{scene_number, temp_file, compressed_dur, atempo_ratio,
+          original_start, original_end, text}]
+
+        Idempotent: uses voiceover_original.mp3 as source (creates backup
+        on first call).
+        """
+        import json as _json
+        import shutil
+
+        VO_LEAD = 0.15
+        VO_TAIL = 0.15
+        MAX_ATEMPO = 1.2  # cap: >1.2x sounds robotic on whisper voices
+        DEFAULT_DUR = 2.0
+
+        vo_path = project_dir / "voiceover.mp3"
+        original_vo_path = project_dir / "voiceover_original.mp3"
+        vo_timing_path = project_dir / "voiceover_timing.json"
+        original_timing_path = project_dir / "voiceover_timing_original.json"
+
+        if not vo_path.exists():
+            logger.info("  VO compress: voiceover.mp3 not found — skipping")
+            return []
+
+        # Backup originals (idempotent — use existing backups on re-render)
+        if not original_vo_path.exists():
+            shutil.copy2(vo_path, original_vo_path)
+            logger.info("  VO compress: backed up voiceover.mp3 → voiceover_original.mp3")
+        if not original_timing_path.exists() and vo_timing_path.exists():
+            shutil.copy2(vo_timing_path, original_timing_path)
+            logger.info("  VO compress: backed up voiceover_timing.json → voiceover_timing_original.json")
+
+        # ALWAYS read from original timing to avoid double-compression on re-render
+        timing_source = original_timing_path if original_timing_path.exists() else vo_timing_path
+        if not timing_source.exists():
+            logger.info("  VO compress: voiceover_timing.json not found — skipping")
+            return []
+
+        with open(timing_source, "r", encoding="utf-8") as f:
+            vo_data = _json.load(f)
+        logger.info(f"  VO compress: reading timing from {timing_source.name}")
+
+        segments = vo_data.get("segments", [])
+        if not segments:
+            return []
+
+        # Load brief durations
+        brief_dur: Dict[int, float] = {}
+        brief_path = project_dir / "project_brief.json"
+        if brief_path.exists():
+            with open(brief_path, "r", encoding="utf-8") as f:
+                brief_data = _json.load(f)
+            for s in brief_data.get("scenes", []):
+                sn = s.get("scene_number")
+                if sn is not None:
+                    brief_dur[sn] = s.get("duration_seconds", DEFAULT_DUR)
+
+        # Process each scene segment
+        scene_vo_data = []
+        scene_seg_counter: Dict[int, int] = {}  # per-scene index for unique naming
+        for seg in segments:
+            sn = seg.get("scene_number")
+            if sn is None:
+                continue
+
+            orig_start = seg["start_time"]
+            orig_end = seg["end_time"]
+            orig_dur = orig_end - orig_start
+            if orig_dur <= 0:
+                continue
+
+            # Target: fit VO into brief_dur minus lead/tail padding
+            intended = brief_dur.get(sn, DEFAULT_DUR)
+            max_vo_dur = intended - VO_LEAD - VO_TAIL
+            if max_vo_dur <= 0:
+                max_vo_dur = intended * 0.8  # fallback: 80% of scene
+
+            # Calculate compression ratio
+            if orig_dur > max_vo_dur and max_vo_dur > 0:
+                ratio = min(orig_dur / max_vo_dur, MAX_ATEMPO)
+            else:
+                ratio = 1.0  # no compression needed
+
+            compressed_dur = orig_dur / ratio
+
+            # Build atempo filter chain (ffmpeg atempo range: 0.5–2.0)
+            # For ratio > 2.0, chain multiple atempo filters
+            if ratio <= 2.0:
+                atempo_filter = f"atempo={ratio:.4f}"
+            else:
+                atempo_filter = f"atempo=2.0,atempo={ratio / 2.0:.4f}"
+
+            # Extract + compress segment (unique name for multi-segment scenes)
+            seg_idx = scene_seg_counter.get(sn, 0)
+            scene_seg_counter[sn] = seg_idx + 1
+            temp_file = project_dir / f"_vo_scene_{sn}_{seg_idx}.mp3"
+            cmd = [
+                self.ffmpeg_path, "-y",
+                "-ss", f"{orig_start:.4f}",
+                "-t", f"{orig_dur:.4f}",
+                "-i", str(original_vo_path),
+                "-af", atempo_filter,
+                "-c:a", "libmp3lame", "-q:a", "2",
+                str(temp_file),
+            ]
+
+            try:
+                await self._run_ffmpeg(cmd)
+            except Exception as e:
+                logger.warning(f"  VO compress: scene {sn} failed: {e} — extracting without compression")
+                # Fallback: extract without compression
+                ratio = 1.0
+                compressed_dur = orig_dur
+                cmd_fallback = [
+                    self.ffmpeg_path, "-y",
+                    "-ss", f"{orig_start:.4f}",
+                    "-t", f"{orig_dur:.4f}",
+                    "-i", str(original_vo_path),
+                    "-c:a", "libmp3lame", "-q:a", "2",
+                    str(temp_file),
+                ]
+                try:
+                    await self._run_ffmpeg(cmd_fallback)
+                except Exception:
+                    continue
+
+            if not temp_file.exists():
+                continue
+
+            # Probe real duration (MP3 padding can shift by ~50ms)
+            real_dur = await self._probe_duration(temp_file)
+            if real_dur and abs(real_dur - compressed_dur) > 0.02:
+                logger.info(
+                    f"  VO compress: S{sn} calculated {compressed_dur:.3f}s, "
+                    f"actual {real_dur:.3f}s (delta {real_dur - compressed_dur:+.3f}s)"
+                )
+                compressed_dur = real_dur
+
+            scene_vo_data.append({
+                "scene_number": sn,
+                "temp_file": temp_file,
+                "compressed_dur": compressed_dur,
+                "atempo_ratio": ratio,
+                "original_start": orig_start,
+                "original_end": orig_end,
+                "text": seg.get("text", ""),
+            })
+
+            logger.info(
+                f"  VO compress: S{sn} {orig_dur:.2f}s → {compressed_dur:.2f}s "
+                f"(atempo={ratio:.2f}, target≤{max_vo_dur:.2f}s)"
+            )
+
+        logger.info(f"  VO compress: {len(scene_vo_data)} scenes processed")
+        return scene_vo_data
+
+    async def _build_retimed_vo(
+        self,
+        project_dir: Path,
+        manifest: Gen3bManifest,
+        scene_vo_data: list,
+    ) -> None:
+        """
+        Build a composite voiceover.mp3 with per-scene segments placed at
+        their correct timeline positions.
+
+        Positions are 0-based (no hook offset): _mix_audio() adds
+        vo_delay=hook_duration to the entire VO file.
+
+        After building, updates voiceover_timing.json and rescales subtitles.
+        """
+        import json as _json
+
+        if not scene_vo_data:
+            return
+
+        # Add margin for hook offset — _mix_audio applies vo_delay=hook_duration,
+        # so composite VO needs to be long enough to accommodate last scene + delay
+        hook_dur_margin = manifest.hook.duration if manifest.hook else 0.3
+        total_dur = manifest.total_duration + hook_dur_margin
+        if total_dur <= 0:
+            return
+
+        # Build scene_number → timeline_start map from manifest
+        scene_start_map: Dict[int, float] = {}
+        for scene in manifest.scenes:
+            scene_start_map[scene.scene_number] = scene.timeline_start
+
+        # Prepare ffmpeg command
+        # Input 0: silent base of total_dur
+        # Inputs 1..N: per-scene VO segments with adelay
+        cmd_parts = [
+            self.ffmpeg_path, "-y",
+            "-f", "lavfi", "-t", f"{total_dur:.4f}",
+            "-i", "anullsrc=r=44100:cl=stereo",
+        ]
+
+        filter_parts = []
+        stream_labels = ["[base]"]
+        filter_parts.append(f"[0]atrim=duration={total_dur:.4f}[base]")
+
+        valid_entries = []
+        for entry in scene_vo_data:
+            sn = entry["scene_number"]
+            if sn not in scene_start_map:
+                logger.warning(f"  VO retime: scene {sn} not in manifest — skipping")
+                continue
+            if not entry["temp_file"].exists():
+                continue
+            valid_entries.append(entry)
+
+        if not valid_entries:
+            logger.warning("  VO retime: no valid entries — skipping composite build")
+            return
+
+        scene_cumul: Dict[int, float] = {}  # cumulative offset per scene
+        for i, entry in enumerate(valid_entries):
+            sn = entry["scene_number"]
+            intra_offset = scene_cumul.get(sn, 0.0)
+            delay_s = scene_start_map[sn] + intra_offset
+            delay_ms = round(delay_s * 1000)
+            scene_cumul[sn] = intra_offset + entry["compressed_dur"]
+            input_idx = i + 1
+
+            cmd_parts.extend(["-i", str(entry["temp_file"])])
+
+            label = f"[s{i}]"
+            # adelay: delay|delay (both channels)
+            filter_parts.append(f"[{input_idx}]adelay={delay_ms}|{delay_ms}{label}")
+            stream_labels.append(label)
+
+        n_inputs = len(stream_labels)
+        mix_input = "".join(stream_labels)
+        filter_parts.append(
+            f"{mix_input}amix=inputs={n_inputs}:duration=first"
+            f":dropout_transition=0:normalize=0[out]"
+        )
+
+        filter_complex = ";".join(filter_parts)
+
+        vo_output = project_dir / "voiceover.mp3"
+        cmd = [
+            *cmd_parts,
+            "-filter_complex", filter_complex,
+            "-map", "[out]",
+            "-c:a", "libmp3lame", "-q:a", "2",
+            str(vo_output),
+        ]
+
+        await self._run_ffmpeg(cmd)
+        logger.info(f"  VO retime: built composite voiceover ({total_dur:.2f}s)")
+
+        # Update voiceover_timing.json with new positions (0-based, no hook)
+        new_segments = []
+        scene_cumul2: Dict[int, float] = {}
+        for entry in valid_entries:
+            sn = entry["scene_number"]
+            intra_offset = scene_cumul2.get(sn, 0.0)
+            start = scene_start_map[sn] + intra_offset
+            new_segments.append({
+                "scene_number": sn,
+                "start_time": round(start, 4),
+                "end_time": round(start + entry["compressed_dur"], 4),
+                "text": entry.get("text", ""),
+            })
+            scene_cumul2[sn] = intra_offset + entry["compressed_dur"]
+
+        vo_timing_path = project_dir / "voiceover_timing.json"
+        with open(vo_timing_path, "w", encoding="utf-8") as f:
+            _json.dump({"segments": new_segments}, f, indent=2, ensure_ascii=False)
+        logger.info(f"  VO retime: updated voiceover_timing.json ({len(new_segments)} segments)")
+
+        # Rescale subtitles to match compressed + retimed VO
+        self._rescale_subtitles(project_dir, scene_vo_data, manifest)
+
+        # Cleanup temp files
+        for entry in scene_vo_data:
+            try:
+                entry["temp_file"].unlink(missing_ok=True)
+            except Exception:
+                pass
+        logger.info("  VO retime: cleaned up temp segment files")
+
+    def _rescale_subtitles(
+        self,
+        project_dir: Path,
+        scene_vo_data: list,
+        manifest: Gen3bManifest,
+    ) -> None:
+        """
+        Rescale subtitle timings in subtitles.ass to match compressed + retimed VO.
+
+        Each subtitle word has hook_offset=0.3s baked in (from audio_engine).
+        We:
+        1. Strip the baked hook offset → raw VO position
+        2. Find which scene the word belongs to (original VO boundaries)
+        3. Scale time within scene by 1/atempo_ratio (compression)
+        4. Map to new timeline position (scene.timeline_start + scaled_time)
+        5. Re-add hook offset
+
+        _shift_ass_timings (called later at render) handles the delta between
+        assumed hook (0.3) and actual hook — so we use ASSUMED_HOOK_OFFSET=0.3.
+        """
+        import re as _re
+
+        import shutil as _shutil
+
+        ASSUMED_HOOK_OFFSET = 0.3  # baked into ASS by audio_engine
+
+        ass_path = project_dir / "subtitles.ass"
+        original_ass_path = project_dir / "subtitles_original.ass"
+
+        if not ass_path.exists():
+            logger.info("  Subtitle rescale: subtitles.ass not found — skipping")
+            return
+
+        if not scene_vo_data:
+            return
+
+        # Backup original subtitles (idempotent — use original on re-render)
+        if not original_ass_path.exists():
+            _shutil.copy2(ass_path, original_ass_path)
+            logger.info("  Subtitle rescale: backed up subtitles.ass → subtitles_original.ass")
+        else:
+            # Restore original before rescaling to avoid double-rescale
+            _shutil.copy2(original_ass_path, ass_path)
+            logger.info("  Subtitle rescale: restored from subtitles_original.ass")
+
+        # Build scene_number → timeline_start map
+        scene_start_map: Dict[int, float] = {}
+        for scene in manifest.scenes:
+            scene_start_map[scene.scene_number] = scene.timeline_start
+
+        # Build lookup with target_start (accounts for multi-segment scenes)
+        scene_lookup = []
+        scene_cumul: Dict[int, float] = {}
+        for entry in scene_vo_data:
+            sn = entry["scene_number"]
+            if sn not in scene_start_map:
+                continue
+            intra_offset = scene_cumul.get(sn, 0.0)
+            target_start = scene_start_map[sn] + intra_offset
+            scene_lookup.append({
+                "scene_number": sn,
+                "original_start": entry["original_start"],
+                "original_end": entry["original_end"],
+                "atempo_ratio": entry["atempo_ratio"],
+                "target_start": target_start,
+            })
+            scene_cumul[sn] = intra_offset + entry.get("compressed_dur",
+                (entry["original_end"] - entry["original_start"]) / entry["atempo_ratio"])
+
+        # ASS timestamp regex and helpers
+        _ASS_TIME_RE = _re.compile(
+            r"Dialogue:\s*\d+,(\d+):(\d+):(\d+)\.(\d+),(\d+):(\d+):(\d+)\.(\d+),"
+        )
+
+        def _parse_ts(h, m, s, cs):
+            return int(h) * 3600 + int(m) * 60 + int(s) + int(cs) / 100
+
+        def _format_ts(t):
+            t = max(t, 0.0)
+            total_cs = int(round(t * 100))
+            h = total_cs // 360000
+            total_cs %= 360000
+            m = total_cs // 6000
+            total_cs %= 6000
+            s = total_cs // 100
+            cs = total_cs % 100
+            return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+
+        def _find_scene(raw_time):
+            """Find scene for a raw VO time (without hook offset).
+            Uses exact range first, then fallback with tolerance (closest center).
+            """
+            # Pass 1: exact match (exclusive end to avoid boundary ambiguity)
+            for entry in scene_lookup:
+                if entry["original_start"] <= raw_time < entry["original_end"]:
+                    return entry
+            # Pass 2: inclusive end (for last-character-at-boundary cases)
+            for entry in scene_lookup:
+                if entry["original_start"] <= raw_time <= entry["original_end"]:
+                    return entry
+            # Pass 3: tolerance fallback — pick closest by center distance
+            best = None
+            best_dist = float("inf")
+            for entry in scene_lookup:
+                if entry["original_start"] - 0.1 <= raw_time <= entry["original_end"] + 0.1:
+                    center = (entry["original_start"] + entry["original_end"]) / 2
+                    dist = abs(raw_time - center)
+                    if dist < best_dist:
+                        best = entry
+                        best_dist = dist
+            return best
+
+        def _rescale_time(ass_time):
+            """Rescale a single ASS timestamp."""
+            raw_time = ass_time - ASSUMED_HOOK_OFFSET
+            if raw_time < 0:
+                return ass_time  # before VO starts, leave unchanged
+
+            scene = _find_scene(raw_time)
+            if scene is None:
+                return ass_time  # outside any scene, leave unchanged
+
+            # Time within the original scene VO segment
+            time_in_scene = max(0.0, raw_time - scene["original_start"])
+
+            # Compress by atempo ratio
+            compressed_time = time_in_scene / scene["atempo_ratio"]
+
+            # New position: target_start accounts for intra-scene offset
+            new_pos = scene["target_start"] + compressed_time
+
+            # Re-add hook offset
+            return new_pos + ASSUMED_HOOK_OFFSET
+
+        # Process all Dialogue lines
+        MIN_WORD_DURATION = 0.30  # same as audio_engine + _shift_ass_timings
+
+        lines = ass_path.read_text(encoding="utf-8").splitlines()
+
+        # First pass: rescale all Dialogue timestamps
+        dialogue_entries = []  # (line_idx, new_start, new_end)
+        for idx, line in enumerate(lines):
+            match = _ASS_TIME_RE.match(line)
+            if not match:
+                continue
+
+            start = _parse_ts(match.group(1), match.group(2), match.group(3), match.group(4))
+            end = _parse_ts(match.group(5), match.group(6), match.group(7), match.group(8))
+
+            new_start = _rescale_time(start)
+            new_end = _rescale_time(end)
+            dialogue_entries.append([idx, new_start, new_end])
+
+        # Build target-space lookup for pass 1.5 (rescaled coordinates)
+        _target_ranges = []
+        for entry in scene_lookup:
+            c_dur = (entry["original_end"] - entry["original_start"]) / entry["atempo_ratio"]
+            _target_ranges.append({
+                "target_start": entry["target_start"],
+                "target_end": entry["target_start"] + c_dur,
+                "atempo_ratio": entry["atempo_ratio"],
+            })
+
+        def _find_scene_by_target(new_time):
+            """Find scene by retimed (target) timeline position."""
+            for r in _target_ranges:
+                if r["target_start"] <= new_time < r["target_end"]:
+                    return r
+            # tolerance fallback
+            best, best_dist = None, float("inf")
+            for r in _target_ranges:
+                if r["target_start"] - 0.1 <= new_time <= r["target_end"] + 0.1:
+                    center = (r["target_start"] + r["target_end"]) / 2
+                    dist = abs(new_time - center)
+                    if dist < best_dist:
+                        best, best_dist = r, dist
+            return best
+
+        # Pass 1.5: clamp to scene boundaries (prevent bleed into next scene)
+        bleed_clamped = 0
+        for i in range(len(dialogue_entries)):
+            li, start, end = dialogue_entries[i]
+            rescaled_pos = start - ASSUMED_HOOK_OFFSET
+            scene = _find_scene_by_target(rescaled_pos) if rescaled_pos >= 0 else None
+            if scene is None:
+                continue
+            max_end = scene["target_end"] + ASSUMED_HOOK_OFFSET + 0.05
+            if end > max_end:
+                end = max(start + 0.02, max_end)  # keep at least 20ms
+                dialogue_entries[i] = [li, start, end]
+                bleed_clamped += 1
+        if bleed_clamped:
+            logger.info(f"  Subtitle rescale: clamped {bleed_clamped} words to scene boundaries")
+
+        # Second pass: enforce MIN_WORD_DURATION (bidirectional extension)
+        short_count = 0
+        for i in range(len(dialogue_entries)):
+            li, start, end = dialogue_entries[i]
+            dur = end - start
+            if dur >= MIN_WORD_DURATION:
+                continue
+
+            short_count += 1
+
+            # Step 1: extend end (capped by next subtitle start)
+            desired_end = start + MIN_WORD_DURATION
+            if i + 1 < len(dialogue_entries):
+                next_start = dialogue_entries[i + 1][1]
+                desired_end = min(desired_end, next_start - 0.02)
+            end = max(end, desired_end)
+
+            # Step 2: if still too short, pull start earlier
+            remaining = MIN_WORD_DURATION - (end - start)
+            if remaining > 0:
+                earliest = 0.0
+                if i > 0:
+                    prev_end = dialogue_entries[i - 1][2]
+                    earliest = prev_end + 0.02
+                start = max(earliest, start - remaining)
+
+            dialogue_entries[i] = [li, start, end]
+
+        # Third pass: write back
+        modified = False
+        entry_map = {li: (s, e) for li, s, e in dialogue_entries}
+        for idx, line in enumerate(lines):
+            if idx not in entry_map:
+                continue
+            s, e = entry_map[idx]
+            parts = line.split(",", 3)
+            old_s, old_e = parts[1], parts[2]
+            new_s, new_e = _format_ts(s), _format_ts(e)
+            if old_s != new_s or old_e != new_e:
+                parts[1] = new_s
+                parts[2] = new_e
+                lines[idx] = ",".join(parts)
+                modified = True
+
+        if modified:
+            ass_path.write_text("\n".join(lines), encoding="utf-8")
+            logger.info(
+                f"  Subtitle rescale: updated subtitles.ass "
+                f"({short_count} words extended to ≥{MIN_WORD_DURATION}s)"
+            )
+        else:
+            logger.info("  Subtitle rescale: no changes needed")
 
     # ------------------------------------------------------------------
 
@@ -572,8 +1166,10 @@ class ManifestRenderer:
             source_path = self._resolve_source_path(project_dir, scene.source_file)
 
             if not source_path.exists():
-                logger.warning(f"Scene {scene.scene_number} source not found: {source_path}")
-                continue
+                raise FileNotFoundError(
+                    f"Scene {scene.scene_number} source not found: {source_path}. "
+                    f"Cannot render without all scene videos."
+                )
 
             # Process speed segments
             output_path = project_dir / f"processed_scene_{scene.scene_number}.mp4"
@@ -1080,6 +1676,8 @@ class ManifestRenderer:
                 .replace("'", "\u2019")  # curly apostrophe avoids FFmpeg quoting issues
                 .replace(":", "\\:")
                 .replace("%", "%%")
+                .replace(",", "\\,")
+                .replace(";", "\\;")
             )
 
             start_t = scene.timeline_start + hook_duration
@@ -1214,12 +1812,13 @@ class ManifestRenderer:
 
         def _format_ass_ts(t: float) -> str:
             t = max(t, 0.0)
-            h = int(t // 3600)
-            t -= h * 3600
-            m = int(t // 60)
-            t -= m * 60
-            s = int(t)
-            cs = int(round((t - s) * 100))
+            total_cs = int(round(t * 100))
+            h = total_cs // 360000
+            total_cs %= 360000
+            m = total_cs // 6000
+            total_cs %= 6000
+            s = total_cs // 100
+            cs = total_cs % 100
             return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
         lines = input_ass.read_text(encoding="utf-8").splitlines()
@@ -1235,7 +1834,7 @@ class ManifestRenderer:
             if match:
                 start = _parse_ass_ts(match.group(1), match.group(2), match.group(3), match.group(4))
                 end = _parse_ass_ts(match.group(5), match.group(6), match.group(7), match.group(8))
-                dialogue_indices.append((idx, start + delta, end + delta))
+                dialogue_indices.append((idx, max(0.0, start + delta), max(0.0, end + delta)))
 
         if not dialogue_indices:
             output_ass.write_text(input_ass.read_text(encoding="utf-8"), encoding="utf-8")
@@ -1407,7 +2006,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             vo_delay=hook_duration,  # VO starts after hook
         )
 
-        # Add SFX events from manifest
+        # Add SFX events from manifest (offset by hook_duration — timestamps are 0-based)
         audio_layers = manifest.audio_layers
         manifest_sfx_added = 0
         for sfx in audio_layers.sfx_events:
@@ -1415,7 +2014,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             if sfx_path.exists():
                 self.audio_mixer.add_sfx_event(
                     audio_config,
-                    sfx.output_timestamp,
+                    sfx.output_timestamp + hook_duration,
                     sfx_path,
                     sfx.volume,
                     sfx.effect,
@@ -1429,13 +2028,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         else:
             logger.info(f"  Loaded {manifest_sfx_added} manifest SFX events")
 
-        # Add FOLEY events
+        # Add FOLEY events (offset by hook_duration — timestamps are 0-based)
         for foley in audio_layers.foley_events:
             foley_path = project_dir / "foley" / foley.file
             if foley_path.exists():
                 self.audio_mixer.add_foley_event(
                     audio_config,
-                    foley.output_timestamp,
+                    foley.output_timestamp + hook_duration,
                     foley_path,
                     foley.volume,
                     foley.effect,
@@ -1516,6 +2115,27 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             if path.exists():
                 return path
         return None
+
+    async def _probe_duration(self, file_path: Path) -> float | None:
+        """Probe actual audio/video duration using ffprobe."""
+        try:
+            ffprobe_path = Path(self.ffmpeg_path).parent / "ffprobe.exe"
+            if not ffprobe_path.exists():
+                ffprobe_path = Path(self.ffmpeg_path).parent / "ffprobe"
+            if not ffprobe_path.exists():
+                ffprobe_path = Path("ffprobe")
+            ffprobe = str(ffprobe_path)
+            proc = await asyncio.create_subprocess_exec(
+                ffprobe, "-v", "quiet", "-show_entries",
+                "format=duration", "-of", "csv=p=0",
+                str(file_path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+            return float(stdout.decode().strip()) if stdout.decode().strip() else None
+        except Exception:
+            return None
 
     async def _run_ffmpeg(self, cmd: List[str], timeout: int = 300, cwd: Path = None) -> None:
         """Run FFmpeg command asynchronously with timeout.

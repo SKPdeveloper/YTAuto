@@ -564,7 +564,8 @@ NO markdown formatting."""
         # Load voiceover timing (with fallback recovery)
         vo_timing = {}
         if not project_dir:
-            raise ValueError("project_dir is required for subtitle timing - cannot load voiceover_timing.json")
+            logger.warning("project_dir not provided — using GEN3b subtitles without VO timing merge")
+            return gen3b_subtitles
 
         import json
         import re as _re
@@ -849,16 +850,19 @@ NO markdown formatting."""
                         later_scene.timeline_start += deficit
                         later_scene.timeline_end += deficit
 
-                # Rescale speed segments for new duration
+                # Proportionally rescale existing speed segments for new duration
                 if scene.speed_segments:
-                    source_dur = scene.source_duration or 10.0
-                    new_speed = round(source_dur / min_dur, 2)
-                    scene.speed_segments = [SpeedSegment(
-                        source_start=0.0,
-                        source_end=source_dur,
-                        speed=new_speed,
-                        output_duration=min_dur,
-                    )]
+                    current_output = sum(
+                        (seg.source_end - seg.source_start) / max(seg.speed, 0.01)
+                        for seg in scene.speed_segments
+                    )
+                    if current_output > 0:
+                        ratio = current_output / min_dur
+                        for seg in scene.speed_segments:
+                            seg.speed = round(max(0.25, min(seg.speed * ratio, 4.0)), 4)
+                            seg.output_duration = round(
+                                (seg.source_end - seg.source_start) / seg.speed, 6
+                            )
 
                 shifted = True
 
@@ -959,6 +963,11 @@ NO markdown formatting."""
                     timeline_end = scene_data.get("out")
                 if timeline_end is None:
                     timeline_end = 0.0
+
+                # Ensure timeline_end > timeline_start (fallback to gen3a output_duration)
+                if timeline_end <= timeline_start:
+                    gen3a_dur_fallback = gen3a_scene.output_duration if gen3a_scene else 2.0
+                    timeline_end = timeline_start + gen3a_dur_fallback
 
                 # -----------------------------------------------------------------
                 # GET GEN3a DATA FOR THIS SCENE (must be before speed_data fallback)
@@ -1428,7 +1437,7 @@ NO markdown formatting."""
             total_duration=data.get("total_duration", gen3a_analysis.gen3b_handoff.total_output_duration if gen3a_analysis.gen3b_handoff else 25.0),
             target_duration=data.get("target_duration", 25.0),
             hook=hook,
-            scenes=scenes,
+            scenes=sorted(scenes, key=lambda s: s.scene_number),
             audio_layers=audio_layers,
             subtitles=subtitles,
             global_effects=global_effects,
@@ -1605,7 +1614,7 @@ NO markdown formatting."""
             total_duration=current_time,
             target_duration=25.0,
             hook=hook,
-            scenes=scenes,
+            scenes=sorted(scenes, key=lambda s: s.scene_number),
             audio_layers=ManifestAudioLayers(),
             subtitles=[],
             global_effects=[],

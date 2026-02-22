@@ -768,12 +768,16 @@ class AudioEngine:
 
         logger.info(f"  Grouped into {len(words)} subtitle chunks (merged articles/prepositions, min {MIN_WORD_DURATION}s)")
 
-        # Helper function for ASS time format
+        # Helper function for ASS time format (atomic total_cs approach — no cs=100 overflow)
         def time_to_ass(seconds: float) -> str:
-            h = int(seconds // 3600)
-            m = int((seconds % 3600) // 60)
-            s = int(seconds % 60)
-            cs = int((seconds % 1) * 100)
+            seconds = max(seconds, 0.0)
+            total_cs = int(round(seconds * 100))
+            h = total_cs // 360000
+            total_cs %= 360000
+            m = total_cs // 6000
+            total_cs %= 6000
+            s = total_cs // 100
+            cs = total_cs % 100
             return f'{h}:{m:02d}:{s:02d}.{cs:02d}'
 
         # Viral/TikTok style ASS header
@@ -808,8 +812,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             end = time_to_ass(w['end'])
             word = w['word']
 
-            # Determine position based on scene
-            word_scene = get_scene_for_time(w['start'])
+            # Determine position based on scene (use pre-computed scene field, not time-lookup)
+            word_scene = w.get('scene', 0)
 
             # Use Top style for easter egg scene, Bottom for others
             if easter_egg_scene and word_scene == easter_egg_scene:
@@ -1433,9 +1437,21 @@ class AudioMixer:
             inputs.append("music")
             input_idx += 1
 
-        # BED layer
+        # BED layer (with atrim/apad + ducking, like MUSIC)
         if config.bed and config.bed.file_path:
-            filters.append(f"[{input_idx}:a]volume={config.bed.volume}[bed]")
+            bed_prep = f"[{input_idx}:a]atrim=0:{config.total_duration},apad=whole_dur={config.total_duration}"
+            if config.vo_segments and config.bed.ducked_volume != config.bed.volume:
+                filters.append(f"{bed_prep}[bed_prep]")
+                duck_filter = self._build_ducking_filter_from_label(
+                    "bed_prep",
+                    config.bed.volume,
+                    config.bed.ducked_volume,
+                    config.vo_segments,
+                    output_label="bed",
+                )
+                filters.append(duck_filter)
+            else:
+                filters.append(f"{bed_prep},volume={config.bed.volume}[bed]")
             inputs.append("bed")
             input_idx += 1
 
@@ -1466,7 +1482,7 @@ class AudioMixer:
             # Without this, amix divides volume by sqrt(N) where N is number of inputs
             # Then trim to total_duration to match video length
             filters.append(f"{input_labels}amix=inputs={len(inputs)}:duration=longest:normalize=0[amixed]")
-            filters.append(f"[amixed]atrim=0:{config.total_duration}[aout]")
+            filters.append(f"[amixed]alimiter=limit=0.95:attack=5:release=50,atrim=0:{config.total_duration}[aout]")
 
         return ";".join(filters)
 
@@ -1476,6 +1492,7 @@ class AudioMixer:
         normal_volume: float,
         ducked_volume: float,
         vo_segments: List[Tuple[float, float]],
+        output_label: str = "music",
     ) -> str:
         """
         Build FFmpeg filter for volume ducking during VO segments.
@@ -1494,7 +1511,7 @@ class AudioMixer:
         else:
             volume_expr = str(normal_volume)
 
-        return f"[{input_idx}:a]volume='{volume_expr}':eval=frame[music]"
+        return f"[{input_idx}:a]volume='{volume_expr}':eval=frame[{output_label}]"
 
     def _build_ducking_filter_from_label(
         self,
@@ -1502,6 +1519,7 @@ class AudioMixer:
         normal_volume: float,
         ducked_volume: float,
         vo_segments: List[Tuple[float, float]],
+        output_label: str = "music",
     ) -> str:
         """
         Build FFmpeg filter for volume ducking during VO segments.
@@ -1528,7 +1546,7 @@ class AudioMixer:
         else:
             volume_expr = str(normal_volume)
 
-        return f"[{label}]volume='{volume_expr}':eval=frame[music]"
+        return f"[{label}]volume='{volume_expr}':eval=frame[{output_label}]"
 
     def get_input_files(self, config: AudioMixConfig) -> List[Tuple[str, Path, bool]]:
         """
