@@ -142,11 +142,13 @@ class ABMonitor:
                 self._post_deferred_comment(video_id, youtube)
 
         # --- Phase 2: Fetch stats (NO lock held — slow network I/O) ---
-        stats = self._fetch_stats_with_retry(youtube, video_id)
+        stats = self._fetch_stats_with_retry(youtube, video_id, video_snapshot.channel_id)
         if stats is None:
-            # Video might be deleted/blocked
-            self.store.locked_update(video_id, _set_error, require_monitoring=False)
-            return "error_not_found"
+            # Could be transient (auth expired, network) or permanent (video deleted).
+            # Don't set error immediately — retry next cycle. Only manual intervention
+            # or 3 consecutive cycles of failure should set error.
+            logger.warning(f"{video_id}: Failed to fetch stats after retries, will retry next cycle")
+            return "stats_unavailable"
 
         views = stats["views"]
         snapshot = MetricsSnapshot(
@@ -498,13 +500,26 @@ class ABMonitor:
         return SWAP_WINDOW_START_HOUR <= now_local.hour < SWAP_WINDOW_END_HOUR
 
     def _fetch_stats_with_retry(
-        self, youtube: YouTubeAPI, video_id: str
+        self, youtube: YouTubeAPI, video_id: str, channel_id: str
     ) -> Optional[dict]:
-        """Fetch video stats with retry and exponential backoff."""
+        """Fetch video stats with retry, token refresh on 401, and backoff."""
         for attempt in range(MONITOR_API_MAX_RETRIES):
             stats = youtube.get_video_stats(video_id)
             if stats is not None:
                 return stats
+
+            # On first failure, try re-authenticating (token may have expired)
+            if attempt == 0:
+                logger.info(f"Stats fetch failed for {video_id}, refreshing auth...")
+                self._api_cache.pop(channel_id, None)
+                youtube_fresh = self._get_youtube_api(channel_id)
+                if youtube_fresh and youtube_fresh is not youtube:
+                    youtube = youtube_fresh
+                    # Immediate retry with fresh token
+                    stats = youtube.get_video_stats(video_id)
+                    if stats is not None:
+                        return stats
+
             if attempt < MONITOR_API_MAX_RETRIES - 1:
                 delay = 2 ** attempt  # 1s, 2s, 4s...
                 logger.warning(f"Retry {attempt + 1} fetching stats for {video_id} (backoff {delay}s)")
