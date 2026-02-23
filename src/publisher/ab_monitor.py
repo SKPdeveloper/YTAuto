@@ -90,6 +90,10 @@ class ABMonitor:
         Returns:
             Dict mapping video_id -> action taken (e.g., "swap_B", "keep", "success")
         """
+        # Clear API cache — tokens expire after ~1h and cycles are 2-6h apart,
+        # so cached instances are always stale. Forces fresh authenticate() call.
+        self._api_cache.clear()
+
         # Locked reload to get a consistent snapshot of active video IDs
         self.store.reload()
         active_ids = [v.video_id for v in self.store.get_active_videos()]
@@ -152,6 +156,10 @@ class ABMonitor:
             # or 3 consecutive cycles of failure should set error.
             logger.warning(f"{video_id}: Failed to fetch stats after retries, will retry next cycle")
             return "stats_unavailable"
+
+        # Refresh youtube ref — _fetch_stats_with_retry may have re-authenticated
+        # and stored a fresh instance in _api_cache
+        youtube = self._api_cache.get(video_snapshot.channel_id, youtube)
 
         views = stats["views"]
         snapshot = MetricsSnapshot(
