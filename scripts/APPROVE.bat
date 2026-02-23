@@ -128,13 +128,12 @@ echo [OK] Published successfully!
 echo.
 
 :: ============================================
-:: A/B DAEMON
+:: A/B DAEMON (detached — survives after this window closes)
 :: ============================================
-echo [LOG] Starting A/B daemon in background...
+echo [LOG] Ensuring A/B daemon is running...
 cd /d "%YTAUTO_ROOT%"
-start "" python -X utf8 -m src.publisher.ab_daemon
+python -X utf8 -c "import sys; sys.path.insert(0, '.'); from app.utils.ab_daemon_launcher import ensure_ab_daemon_running; ok = ensure_ab_daemon_running('APPROVE.bat'); print('[OK] A/B daemon running' if ok else '[WARN] A/B daemon failed to start')"
 cd /d "%~dp0"
-echo [OK] A/B daemon started
 echo.
 
 :: ============================================

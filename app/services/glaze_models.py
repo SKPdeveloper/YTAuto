@@ -688,6 +688,7 @@ class AudioConfig(BaseModel):
 class PublishConfig(BaseModel):
     """Конфігурація публікації для мультиканальної підтримки."""
     target_channel: str = Field(default="glaze_city", description="Ідентифікатор цільового YouTube каналу")
+    auto_schedule: bool = Field(default=True, description="Автоматичне планування на перший вільний слот")
 
 
 # ============================================================================

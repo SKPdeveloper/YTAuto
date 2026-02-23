@@ -31,7 +31,20 @@ def _is_process_alive(pid: int) -> bool:
     except ImportError:
         pass
 
-    # Fallback: os.kill with signal 0 (works on Windows too)
+    # Windows: use OpenProcess API (os.kill doesn't work for detached processes)
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if handle:
+                ctypes.windll.kernel32.CloseHandle(handle)
+                return True
+            return False
+        except Exception:
+            return False
+
+    # Unix fallback: os.kill with signal 0
     try:
         os.kill(pid, 0)
         return True

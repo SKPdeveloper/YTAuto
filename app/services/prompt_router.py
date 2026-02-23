@@ -1939,7 +1939,8 @@ REQUIREMENTS:
             ),
             # Publish config for multi-channel support
             publish_config=PublishConfig(
-                target_channel=getattr(gen1.publish_config, 'target_channel', "glaze_city") if gen1.publish_config else "glaze_city"
+                target_channel=getattr(gen1.publish_config, 'target_channel', "glaze_city") if gen1.publish_config else "glaze_city",
+                auto_schedule=True,
             ),
             youtube=ViralMetadata(
                 title=youtube_title,

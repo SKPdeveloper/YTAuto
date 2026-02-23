@@ -1,0 +1,131 @@
+{
+  "version": "1.0",
+  "videos": [
+    {
+      "video_id": "HLXxN_v4o74",
+      "project_id": "proj_7fa373b60617",
+      "channel_id": "glaze_city",
+      "upload_time": "2026-02-22T22:51:32.429677Z",
+      "scheduled_go_live": "2026-02-24T20:00:00Z",
+      "variant_start_time": "2026-02-24T20:00:00Z",
+      "current_variant": "A",
+      "status": "monitoring",
+      "checks_completed": [],
+      "variants": {
+        "A": {
+          "trigger": "SATISFYING",
+          "title": "This theatre is made of CAKE \ud83c\udf70",
+          "description": "Red velvet walls, cream cheese floors...\n#oddlysatisfying #satisfying #shorts #cake",
+          "pinned_comment": "Would you eat the stage?"
+        },
+        "B": {
+          "trigger": "FORBIDDEN",
+          "title": "Don't eat the curtains \ud83d\ude33",
+          "description": "Edible red velvet opera house...\n#forbiddensnacks #shorts #cake",
+          "pinned_comment": "You KNOW you want to bite the velvet."
+        },
+        "C": {
+          "trigger": "TACTILE",
+          "title": "Touch the walls \u2014 SOFT \ud83c\udf70",
+          "description": "Sponge cake architecture you can feel...\n#asmr #oddlysatisfying #shorts",
+          "pinned_comment": "Imagine the texture..."
+        },
+        "D": {
+          "trigger": "IDENTITY",
+          "title": "POV: You're stuck in a CAKE \ud83c\udf82",
+          "description": "Trapped in a red velvet theatre...\n#pov #shorts #cake",
+          "pinned_comment": "Send to a friend who loves drama."
+        }
+      },
+      "swap_history": [],
+      "metrics_log": [
+        {
+          "timestamp": "2026-02-23T07:33:37.751031Z",
+          "views": 3,
+          "likes": 0,
+          "comments": 0
+        },
+        {
+          "timestamp": "2026-02-23T07:34:33.540886Z",
+          "views": 3,
+          "likes": 0,
+          "comments": 0
+        },
+        {
+          "timestamp": "2026-02-23T07:46:14.950485Z",
+          "views": 3,
+          "likes": 0,
+          "comments": 0
+        }
+      ],
+      "pending_comment_text": "\ud83c\udfad I bit the beams. Now I can't sing.",
+      "current_comment_id": null,
+      "final_variant": null,
+      "final_views_48h": null,
+      "gen1_output_path": "C:\\Users\\skaze\\Desktop\\YTAuto-main\\YTAuto-main\\archive\\proj_7fa373b60617\\project_brief.json"
+    },
+    {
+      "video_id": "Eo7I38sZ99g",
+      "project_id": "proj_1ae1510689c9",
+      "channel_id": "glaze_city",
+      "upload_time": "2026-02-23T07:27:42.695558Z",
+      "scheduled_go_live": null,
+      "variant_start_time": "2026-02-23T07:27:42.695558Z",
+      "current_variant": "A",
+      "status": "monitoring",
+      "checks_completed": [],
+      "variants": {
+        "A": {
+          "trigger": "SATISFYING",
+          "title": "This Space Station is pure SUGAR \ud83c\udf6d",
+          "description": "Amber sugar walls in zero gravity...\n#oddlysatisfying #satisfying #shorts #candy #space",
+          "pinned_comment": "Would you lick the hull?"
+        },
+        "B": {
+          "trigger": "FORBIDDEN",
+          "title": "Don't tap the glass \ud83d\ude33",
+          "description": "Fragile sugar glass holding back the vacuum...\n#forbiddensnacks #satisfying #shorts #candy #scifi",
+          "pinned_comment": "One crack and it's over..."
+        },
+        "C": {
+          "trigger": "TACTILE",
+          "title": "POV: The airlock is STICKY \ud83c\udf6c",
+          "description": "Sticky walls in space. Watch your hands...\n#asmr #oddlysatisfying #shorts #sticky #candy",
+          "pinned_comment": "Imagine the sticky fingers..."
+        },
+        "D": {
+          "trigger": "IDENTITY",
+          "title": "POV: You're a space snacker \ud83d\ude80",
+          "description": "Living inside a giant candy wrapper...\n#foodie #space #shorts #candy #pov",
+          "pinned_comment": "Tag someone who needs a space snack"
+        }
+      },
+      "swap_history": [],
+      "metrics_log": [
+        {
+          "timestamp": "2026-02-23T07:33:38.040131Z",
+          "views": 4,
+          "likes": 2,
+          "comments": 1
+        },
+        {
+          "timestamp": "2026-02-23T07:34:33.766433Z",
+          "views": 4,
+          "likes": 2,
+          "comments": 1
+        },
+        {
+          "timestamp": "2026-02-23T07:46:15.145513Z",
+          "views": 4,
+          "likes": 2,
+          "comments": 1
+        }
+      ],
+      "pending_comment_text": null,
+      "current_comment_id": "UgyLPQb1Zn9MFoD0cwB4AaABAg",
+      "final_variant": null,
+      "final_views_48h": null,
+      "gen1_output_path": "C:\\Users\\skaze\\Desktop\\YTAuto-main\\YTAuto-main\\archive\\proj_1ae1510689c9\\project_brief.json"
+    }
+  ]
+}

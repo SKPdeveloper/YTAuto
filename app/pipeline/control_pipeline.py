@@ -2061,12 +2061,20 @@ class ControlPipeline:
             from publisher.ab_models import VideoABRecord, parse_metadata_variants
             from publisher.ab_store import ABStore
 
+            # Find metadata_variants: try gen1_output.json first, then project_brief.json
             gen1_path = project_dir / "gen1_output.json"
-            if not gen1_path.exists():
-                logger.debug(f"[PIPELINE] No gen1_output.json for {project_id}, skipping AB registration")
+            brief_path = project_dir / "project_brief.json"
+            source_path = None
+
+            if gen1_path.exists():
+                source_path = gen1_path
+            elif brief_path.exists():
+                source_path = brief_path
+            else:
+                logger.debug(f"[PIPELINE] No gen1_output.json or project_brief.json for {project_id}, skipping AB registration")
                 return
 
-            with open(gen1_path, "r", encoding="utf-8") as f:
+            with open(source_path, "r", encoding="utf-8") as f:
                 gen1_data = json.load(f)
 
             variants, warnings = parse_metadata_variants(gen1_data)
@@ -2085,7 +2093,7 @@ class ControlPipeline:
                 channel_id=channel_id,
                 current_variant=first_variant,
                 variants=variants,
-                gen1_output_path=str(gen1_path),
+                gen1_output_path=str(source_path),
             )
 
             config_dir = settings.BASE_DIR / "config"

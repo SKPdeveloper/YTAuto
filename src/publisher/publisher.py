@@ -12,6 +12,8 @@ Orchestrates the entire publishing process:
 """
 
 import asyncio
+import os
+import sys
 from pathlib import Path
 from typing import Optional, Tuple
 from datetime import datetime
@@ -316,7 +318,7 @@ class Publisher:
             # Step 8: Update status
             status.status = (
                 PublishStatus.SCHEDULED
-                if brief.publish_config.scheduled_datetime
+                if scheduled_datetime
                 else PublishStatus.PUBLISHED
             )
             status.published_at = datetime.now()
@@ -338,6 +340,9 @@ class Publisher:
                     ))
 
             logger.success(f"Published: {status.video_url}")
+
+            # Ensure A/B daemon is running (non-fatal)
+            self._ensure_ab_daemon()
 
             return True, status
 
@@ -366,6 +371,64 @@ class Publisher:
             pct = int(uploaded / total * 100)
             logger.info(f"Upload progress: {pct}% ({uploaded / 1024 / 1024:.1f} MB / {total / 1024 / 1024:.1f} MB)")
 
+    def _ensure_ab_daemon(self) -> None:
+        """Ensure A/B daemon is running as a detached process. Non-fatal."""
+        try:
+            import subprocess
+
+            pid_file = self.config.base_path / "ab_daemon.pid"
+
+            # Check existing PID
+            if pid_file.exists():
+                try:
+                    pid = int(pid_file.read_text().strip())
+                    if self._is_pid_alive(pid):
+                        logger.debug(f"AB daemon already running (PID {pid})")
+                        return
+                    else:
+                        pid_file.unlink(missing_ok=True)
+                except (ValueError, OSError):
+                    pid_file.unlink(missing_ok=True)
+
+            # Start detached daemon
+            python_exe = sys.executable
+            cmd = [python_exe, "-X", "utf8", "-m", "src.publisher.ab_daemon"]
+            creation_flags = 0
+            if sys.platform == "win32":
+                creation_flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(self.config.base_path),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=creation_flags,
+            )
+            pid_file.write_text(str(proc.pid))
+            logger.info(f"AB daemon started (PID {proc.pid})")
+
+        except Exception as e:
+            logger.warning(f"Failed to start AB daemon: {e}")
+
+    @staticmethod
+    def _is_pid_alive(pid: int) -> bool:
+        """Check if a process is alive (Windows-compatible)."""
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+                if handle:
+                    ctypes.windll.kernel32.CloseHandle(handle)
+                    return True
+                return False
+            except Exception:
+                return False
+        try:
+            os.kill(pid, 0)
+            return True
+        except (OSError, ProcessLookupError):
+            return False
+
     def _register_for_ab_monitoring(
         self,
         project_id: str,
@@ -376,8 +439,8 @@ class Publisher:
         """
         Register a freshly uploaded video for A/B metadata rotation.
 
-        Loads gen1_output.json from the project directory, extracts
-        metadata_variants, and registers if all 4 variants present.
+        Loads metadata_variants from gen1_output.json or project_brief.json,
+        and registers if at least 2 variants present.
 
         If scheduled_datetime is set (future publication), variant_start_time
         is set to that moment so the A/B timer starts when the video goes live,
@@ -389,15 +452,23 @@ class Publisher:
             import json
             from datetime import timezone
 
-            # Find gen1_output.json
+            # Find metadata_variants: try gen1_output.json first, then project_brief.json
             project_dir = self.config.get_project_dir(project_id)
-            gen1_path = project_dir / "gen1_output.json"
+            gen1_data = None
+            source_path = None
 
-            if not gen1_path.exists():
-                logger.debug(f"No gen1_output.json found for {project_id}, skipping AB registration")
+            gen1_path = project_dir / "gen1_output.json"
+            brief_path = project_dir / "project_brief.json"
+
+            if gen1_path.exists():
+                source_path = gen1_path
+            elif brief_path.exists():
+                source_path = brief_path
+            else:
+                logger.debug(f"No gen1_output.json or project_brief.json found for {project_id}, skipping AB registration")
                 return
 
-            with open(gen1_path, "r", encoding="utf-8") as f:
+            with open(source_path, "r", encoding="utf-8") as f:
                 gen1_data = json.load(f)
 
             # Extract metadata_variants via shared parser
@@ -424,7 +495,7 @@ class Publisher:
                 channel_id=channel_id,
                 current_variant=first_variant,
                 variants=variants,
-                gen1_output_path=str(gen1_path),
+                gen1_output_path=str(source_path),
                 scheduled_go_live=go_live,
                 variant_start_time=start_time,
             )
