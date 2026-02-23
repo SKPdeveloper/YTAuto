@@ -24,6 +24,7 @@ from google.genai import types
 
 from app.core.config import settings
 from app.utils.logger import logger
+from app.services.gen3b_autocorrect import autocorrect_gen3b
 from app.services.gen_models import (
     # Core models
     Gen3aOutput,
@@ -125,6 +126,7 @@ Return ONLY valid JSON."""
         gen1_brief: Dict[str, Any],
         gen2_brief: Dict[str, Any],
         voiceover_timing: Optional[Dict[str, Any]] = None,
+        gen3a_raw: Optional[Dict[str, Any]] = None,
     ) -> Gen3bManifest:
         """
         Generate FFmpeg manifest from GEN3a analysis.
@@ -178,6 +180,16 @@ Return ONLY valid JSON."""
                 logger.info(f"DEBUG: Raw response saved to {debug_path}")
             except Exception as e:
                 logger.warning(f"Failed to save debug response: {e}")
+
+            # AUTOCORRECT (before model conversion)
+            gen3a_dict = gen3a_raw or (gen3a_analysis.model_dump() if hasattr(gen3a_analysis, 'model_dump') else None)
+            manifest_data, autocorrect_warnings = autocorrect_gen3b(
+                manifest_data, gen3a_data=gen3a_dict, gen1_brief=gen1_brief
+            )
+            if autocorrect_warnings:
+                logger.info(f"GEN3b autocorrect: {len(autocorrect_warnings)} fixes applied")
+                for aw in autocorrect_warnings[:10]:
+                    logger.debug(f"  {aw}")
 
             # Convert to Gen3bManifest
             manifest = self._convert_to_manifest(manifest_data, gen3a_analysis, gen1_brief)
@@ -1028,7 +1040,7 @@ NO markdown formatting."""
                             recommended_action=g.recommended_action,
                         ))
 
-                    # Parse action peaks
+                    # Parse action peaks (preserve sfx_recommendation)
                     for ap in gen3a_scene.action_peaks or []:
                         action_peaks.append(ActionPeak(
                             id=ap.id,
@@ -1037,6 +1049,7 @@ NO markdown formatting."""
                             intensity=ap.intensity,
                             beat_aligned=ap.beat_aligned,
                             nearest_beat=ap.nearest_beat,
+                            sfx_recommendation=ap.sfx_recommendation,
                         ))
 
                     # Parse visual classification
@@ -1512,6 +1525,7 @@ NO markdown formatting."""
                     intensity=ap.intensity,
                     beat_aligned=ap.beat_aligned,
                     nearest_beat=ap.nearest_beat,
+                    sfx_recommendation=ap.sfx_recommendation,
                 )
                 for ap in scene_analysis.action_peaks or []
             ]

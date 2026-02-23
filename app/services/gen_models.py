@@ -1654,6 +1654,9 @@ class ActionPeak(BaseModel):
     intensity: float = Field(..., ge=0.0, le=1.0, description="Інтенсивність 0.0-1.0 - REQUIRED")
     beat_aligned: bool = Field(..., description="Вирівняно з бітом - REQUIRED")
     nearest_beat: float = Field(..., description="Найближчий біт timestamp - REQUIRED")
+    sfx_recommendation: Optional[Dict[str, Any]] = Field(
+        None, description="SFX recommendation: {type, intensity, file} — populated by gen3a_autocorrect"
+    )
 
     @model_validator(mode='before')
     @classmethod

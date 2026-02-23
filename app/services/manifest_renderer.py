@@ -549,6 +549,21 @@ class ManifestRenderer:
 
             cumulative += scene_dur
 
+        # ── POST-TIMELINE CAP ──
+        TOTAL_CAP = 25.0
+        if cumulative > TOTAL_CAP:
+            scale = TOTAL_CAP / cumulative
+            logger.info(f"  Timeline cap: {cumulative:.2f}s > {TOTAL_CAP}s — scaling by {scale:.2f}x")
+            cumulative_new = 0.0
+            for scene in scenes:
+                old_dur = scene.timeline_end - scene.timeline_start
+                new_dur = max(1.0, old_dur * scale)  # min 1.0s per scene
+                scene.timeline_start = cumulative_new
+                scene.timeline_end = cumulative_new + new_dur
+                self._rescale_speed_segments(scene, new_dur, MAX_SPEED, MIN_SPEED)
+                cumulative_new += new_dur
+            cumulative = cumulative_new
+
         manifest.total_duration = cumulative
         logger.info(
             f"  Timeline total: {manifest.total_duration:.2f}s (was {old_total:.2f}s)"

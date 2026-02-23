@@ -42,6 +42,7 @@ from app.services.gen_models import (
     Gen3bHandoff,
 )
 from app.services.gen3a_preprocessing import Gen3aPreprocessor, PreprocessingResult
+from app.services.gen3a_autocorrect import autocorrect_gen3a
 
 
 # System prompt path
@@ -263,6 +264,17 @@ Return ONLY valid JSON."""
 
             # Extract JSON
             analysis_data = self._parse_json_response(raw_output)
+
+            # ==========================================
+            # STEP 4.5: AUTOCORRECT (before model conversion)
+            # ==========================================
+            analysis_data, autocorrect_warnings = autocorrect_gen3a(
+                analysis_data, gen1_brief=gen1_brief
+            )
+            if autocorrect_warnings:
+                logger.info(f"GEN3a autocorrect: {len(autocorrect_warnings)} fixes applied")
+                for aw in autocorrect_warnings[:10]:
+                    logger.debug(f"  {aw}")
 
             # ==========================================
             # STEP 5: CONVERT TO OUTPUT MODEL
@@ -504,6 +516,7 @@ NO markdown formatting."""
                         position_in_frame="NOT_FOUND",
                         safe_zone_compliant=True,
                     ),
+                    special_flags=scene_data.get("special_flags", []),
                 )
                 scenes.append(scene)
             except Exception as e:
