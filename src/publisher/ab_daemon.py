@@ -1,7 +1,10 @@
 """
-A/B Rotation Daemon — Scheduled Monitor Entry Point
+A/B Rotation Daemon — Checkpoint-Aligned Monitor
 
-Runs ABMonitor.run_cycle() every MONITOR_INTERVAL_MINUTES in a simple loop.
+Runs ABMonitor.run_cycle() on a smart schedule: sleeps until the next
+checkpoint instead of polling at a fixed interval. This reduces API calls
+by ~90% while improving checkpoint timing precision from ~30min to ~5min.
+
 Graceful shutdown on SIGINT/SIGTERM.
 
 Usage:
@@ -15,7 +18,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from .ab_config import MONITOR_INTERVAL_MINUTES
+from .ab_config import MAX_INTERVAL_MINUTES, MIN_INTERVAL_MINUTES
 from .ab_monitor import ABMonitor
 
 
@@ -33,7 +36,7 @@ def _setup_file_logging() -> None:
 
 
 def run_daemon() -> None:
-    """Start the A/B rotation monitoring daemon."""
+    """Start the A/B rotation monitoring daemon with checkpoint-aligned sleep."""
     _setup_file_logging()
     monitor = ABMonitor()
     running = True
@@ -48,9 +51,10 @@ def run_daemon() -> None:
     if sys.platform != "win32":
         signal.signal(signal.SIGTERM, shutdown)
 
-    interval_sec = MONITOR_INTERVAL_MINUTES * 60
-
-    logger.info(f"A/B Monitor daemon starting (interval: {MONITOR_INTERVAL_MINUTES}min)")
+    logger.info(
+        f"A/B Monitor daemon starting "
+        f"(checkpoint-aligned, min={MIN_INTERVAL_MINUTES}min, max={MAX_INTERVAL_MINUTES}min)"
+    )
 
     # Run once immediately on start
     logger.info("Running initial cycle...")
@@ -60,11 +64,20 @@ def run_daemon() -> None:
     except Exception as e:
         logger.error(f"Initial cycle error: {e}")
 
-    # Main loop
-    logger.info("Starting monitor loop...")
+    # Main loop — sleep until next checkpoint
     while running:
-        # Sleep in small increments so shutdown signal is responsive
-        for _ in range(interval_sec):
+        try:
+            sleep_sec = monitor.compute_next_wake_seconds()
+        except Exception as e:
+            logger.error(f"Error computing next wake: {e}")
+            sleep_sec = MIN_INTERVAL_MINUTES * 60
+
+        hours = sleep_sec // 3600
+        mins = (sleep_sec % 3600) // 60
+        logger.info(f"Sleeping {hours}h{mins:02d}m until next checkpoint...")
+
+        # Sleep in 1-second increments so shutdown signal is responsive
+        for _ in range(sleep_sec):
             if not running:
                 break
             time.sleep(1)

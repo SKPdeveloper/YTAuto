@@ -114,88 +114,88 @@ def make_youtube_mock(views=100, likes=5, comments=1):
 class TestCheckpointEvaluation:
     """Test _evaluate_checkpoint with various view counts and time offsets."""
 
-    def test_check1_dead_below_50(self, tmp_path):
-        """< 50 views at 6h → swap_immediate."""
+    def test_check1_dead_below_15(self, tmp_path):
+        """< 15 views at 6h → swap_immediate."""
         video = make_video(hours_ago=7)
         monitor, _ = make_monitor(tmp_path)
 
-        result = monitor._evaluate_checkpoint(video, views=30, hours_elapsed=7)
+        result = monitor._evaluate_checkpoint(video, views=10, hours_elapsed=7)
         assert result == "swap_immediate"
         assert "check_1" in video.checks_completed
 
-    def test_check1_alive_above_200(self, tmp_path):
-        """≥ 200 views at 6h → alive."""
+    def test_check1_alive_above_50(self, tmp_path):
+        """≥ 50 views at 6h → alive."""
         video = make_video(hours_ago=7)
         monitor, _ = make_monitor(tmp_path)
 
-        result = monitor._evaluate_checkpoint(video, views=250, hours_elapsed=7)
+        result = monitor._evaluate_checkpoint(video, views=60, hours_elapsed=7)
         assert result == "alive"
         assert "check_1" in video.checks_completed
 
     def test_check1_uncertain_zone(self, tmp_path):
-        """50-199 views at 6h → wait (uncertain zone)."""
+        """15-49 views at 6h → wait (uncertain zone)."""
         video = make_video(hours_ago=7)
         monitor, _ = make_monitor(tmp_path)
 
-        result = monitor._evaluate_checkpoint(video, views=100, hours_elapsed=7)
+        result = monitor._evaluate_checkpoint(video, views=30, hours_elapsed=7)
         assert result == "wait"
         assert "check_1" in video.checks_completed
 
-    def test_check1_exactly_50_is_uncertain(self, tmp_path):
-        """Exactly 50 views = NOT dead (dead is strictly < 50)."""
+    def test_check1_exactly_15_is_uncertain(self, tmp_path):
+        """Exactly 15 views = NOT dead (dead is strictly < 15)."""
+        video = make_video(hours_ago=7)
+        monitor, _ = make_monitor(tmp_path)
+
+        result = monitor._evaluate_checkpoint(video, views=15, hours_elapsed=7)
+        assert result == "wait"  # uncertain, not dead
+
+    def test_check1_exactly_50_is_alive(self, tmp_path):
+        """Exactly 50 views = alive (alive is >= 50)."""
         video = make_video(hours_ago=7)
         monitor, _ = make_monitor(tmp_path)
 
         result = monitor._evaluate_checkpoint(video, views=50, hours_elapsed=7)
-        assert result == "wait"  # uncertain, not dead
-
-    def test_check1_exactly_200_is_alive(self, tmp_path):
-        """Exactly 200 views = alive (alive is >= 200)."""
-        video = make_video(hours_ago=7)
-        monitor, _ = make_monitor(tmp_path)
-
-        result = monitor._evaluate_checkpoint(video, views=200, hours_elapsed=7)
         assert result == "alive"
 
-    def test_check2_dead_below_200(self, tmp_path):
-        """< 200 views at 18h → swap_window."""
+    def test_check2_dead_below_40(self, tmp_path):
+        """< 40 views at 18h → swap_window."""
         video = make_video(hours_ago=19, checks_completed=["check_1"])
         monitor, _ = make_monitor(tmp_path)
 
-        result = monitor._evaluate_checkpoint(video, views=150, hours_elapsed=19)
+        result = monitor._evaluate_checkpoint(video, views=30, hours_elapsed=19)
         assert result == "swap_window"
         assert "check_2" in video.checks_completed
 
-    def test_check2_alive_above_500(self, tmp_path):
-        """≥ 500 views at 18h → alive."""
+    def test_check2_alive_above_150(self, tmp_path):
+        """≥ 150 views at 18h → alive."""
         video = make_video(hours_ago=19, checks_completed=["check_1"])
         monitor, _ = make_monitor(tmp_path)
 
-        result = monitor._evaluate_checkpoint(video, views=600, hours_elapsed=19)
+        result = monitor._evaluate_checkpoint(video, views=200, hours_elapsed=19)
         assert result == "alive"
 
     def test_check2_uncertain_zone(self, tmp_path):
-        """200-499 views at 18h → wait."""
+        """40-149 views at 18h → wait."""
         video = make_video(hours_ago=19, checks_completed=["check_1"])
         monitor, _ = make_monitor(tmp_path)
 
-        result = monitor._evaluate_checkpoint(video, views=350, hours_elapsed=19)
+        result = monitor._evaluate_checkpoint(video, views=80, hours_elapsed=19)
         assert result == "wait"
 
     def test_check3_alive(self, tmp_path):
-        """≥ 500 views at 48h → alive."""
+        """≥ 100 views at 48h → alive."""
         video = make_video(hours_ago=49, checks_completed=["check_1", "check_2"])
         monitor, _ = make_monitor(tmp_path)
 
-        result = monitor._evaluate_checkpoint(video, views=500, hours_elapsed=49)
+        result = monitor._evaluate_checkpoint(video, views=150, hours_elapsed=49)
         assert result == "alive"
 
     def test_check3_final_dead(self, tmp_path):
-        """< 500 views at 48h → final_dead."""
+        """< 100 views at 48h → final_dead."""
         video = make_video(hours_ago=49, checks_completed=["check_1", "check_2"])
         monitor, _ = make_monitor(tmp_path)
 
-        result = monitor._evaluate_checkpoint(video, views=400, hours_elapsed=49)
+        result = monitor._evaluate_checkpoint(video, views=80, hours_elapsed=49)
         assert result == "final_dead"
 
     def test_before_any_checkpoint(self, tmp_path):
@@ -237,16 +237,16 @@ class TestCheckpointEvaluation:
         assert result == "wait"
 
     def test_uncertain_at_check1_then_dead_at_check2(self, tmp_path):
-        """Uncertain at 6h (100 views), then dead at 18h (still 100 views)."""
+        """Uncertain at 6h (30 views), then dead at 18h (still 30 views)."""
         video = make_video(hours_ago=7)
         monitor, _ = make_monitor(tmp_path)
 
-        # check_1: uncertain
-        r1 = monitor._evaluate_checkpoint(video, views=100, hours_elapsed=7)
+        # check_1: uncertain (15-49)
+        r1 = monitor._evaluate_checkpoint(video, views=30, hours_elapsed=7)
         assert r1 == "wait"
 
-        # check_2: same views, dead at 18h
-        r2 = monitor._evaluate_checkpoint(video, views=100, hours_elapsed=19)
+        # check_2: same views, dead at 18h (< 40)
+        r2 = monitor._evaluate_checkpoint(video, views=30, hours_elapsed=19)
         assert r2 == "swap_window"
 
 
@@ -318,8 +318,8 @@ class TestSwapLogic:
         assert saved.checks_completed == []  # reset on swap
         yt.update_video.assert_called_once()
 
-    def test_execute_swap_rotates_comment(self, tmp_path):
-        """Swap deletes old comment and posts new one."""
+    def test_execute_swap_logs_comment_for_manual_update(self, tmp_path):
+        """Swap logs new pinned comment for manual update (no API calls)."""
         video = make_video(variant="A", hours_ago=7)
         video.current_comment_id = "old_comment_id"
         monitor, store = make_monitor(tmp_path, videos=[video])
@@ -327,8 +327,9 @@ class TestSwapLogic:
 
         monitor._execute_swap(video.video_id, yt, views_at_swap=30, decision="dead")
 
-        yt.delete_comment.assert_called_once_with("old_comment_id")
-        yt.insert_comment_thread.assert_called_once()
+        # Comment rotation is manual — no delete/insert API calls
+        yt.delete_comment.assert_not_called()
+        yt.insert_comment_thread.assert_not_called()
 
     def test_execute_swap_youtube_api_fails(self, tmp_path):
         """If YouTube update fails → status MANUAL, no swap recorded."""
@@ -397,9 +398,9 @@ class TestEvaluateVideo:
         return monitor, store, yt
 
     def test_dead_at_6h_swaps_immediately(self, tmp_path):
-        """30 views at 7h → check_1 dead → immediate swap to B."""
+        """10 views at 7h → check_1 dead (< 15) → immediate swap to B."""
         video = make_video(hours_ago=7)
-        monitor, store, yt = self._setup(tmp_path, video, views=30)
+        monitor, store, yt = self._setup(tmp_path, video, views=10)
 
         result = monitor._evaluate_video(video.video_id)
 
@@ -408,9 +409,9 @@ class TestEvaluateVideo:
         assert saved.current_variant == "B"
 
     def test_alive_at_6h_success(self, tmp_path):
-        """300 views at 7h → alive → status SUCCESS."""
+        """60 views at 7h → alive (≥ 50) → status SUCCESS."""
         video = make_video(hours_ago=7)
-        monitor, store, yt = self._setup(tmp_path, video, views=300)
+        monitor, store, yt = self._setup(tmp_path, video, views=60)
 
         result = monitor._evaluate_video(video.video_id)
 
@@ -418,12 +419,12 @@ class TestEvaluateVideo:
         saved = store.get_video(video.video_id)
         assert saved.status == ABStatus.SUCCESS
         assert saved.final_variant == "A"
-        assert saved.final_views_48h == 300
+        assert saved.final_views_48h == 60
 
     def test_uncertain_at_6h_keeps_monitoring(self, tmp_path):
-        """100 views at 7h → uncertain → keep monitoring."""
+        """30 views at 7h → uncertain (15-49) → keep monitoring."""
         video = make_video(hours_ago=7)
-        monitor, store, yt = self._setup(tmp_path, video, views=100)
+        monitor, store, yt = self._setup(tmp_path, video, views=30)
 
         result = monitor._evaluate_video(video.video_id)
 
@@ -432,9 +433,9 @@ class TestEvaluateVideo:
         assert saved.status == ABStatus.MONITORING
 
     def test_dead_at_18h_deferred_outside_window(self, tmp_path):
-        """Dead at 18h, outside swap window → deferred."""
+        """Dead at 18h (< 40 views), outside swap window → deferred."""
         video = make_video(hours_ago=19, checks_completed=["check_1"])
-        monitor, store, yt = self._setup(tmp_path, video, views=50)
+        monitor, store, yt = self._setup(tmp_path, video, views=30)
         monitor._is_swap_window = Mock(return_value=False)
 
         result = monitor._evaluate_video(video.video_id)
@@ -444,9 +445,9 @@ class TestEvaluateVideo:
         assert saved.current_variant == "A"  # no swap yet
 
     def test_dead_at_18h_swaps_in_window(self, tmp_path):
-        """Dead at 18h, inside swap window → swap."""
+        """Dead at 18h (< 40 views), inside swap window → swap."""
         video = make_video(hours_ago=19, checks_completed=["check_1"])
-        monitor, store, yt = self._setup(tmp_path, video, views=50)
+        monitor, store, yt = self._setup(tmp_path, video, views=30)
         monitor._is_swap_window = Mock(return_value=True)
 
         result = monitor._evaluate_video(video.video_id)
@@ -454,12 +455,12 @@ class TestEvaluateVideo:
         assert result == "swap_B"
 
     def test_final_dead_48h_last_chance_swap(self, tmp_path):
-        """Dead at 48h with variants remaining → last-chance swap (immediate)."""
+        """Dead at 48h (< 100 views) with variants remaining → last-chance swap."""
         video = make_video(
             hours_ago=49,
             checks_completed=["check_1", "check_2"],
         )
-        monitor, store, yt = self._setup(tmp_path, video, views=100)
+        monitor, store, yt = self._setup(tmp_path, video, views=80)
 
         result = monitor._evaluate_video(video.video_id)
 
@@ -468,7 +469,7 @@ class TestEvaluateVideo:
         assert saved.swap_history[-1].reason == "last_chance_48h"
 
     def test_final_dead_48h_exhausted(self, tmp_path):
-        """Dead at 48h, on variant D (no more) → exhausted."""
+        """Dead at 48h (< 100 views), on variant D (no more) → exhausted."""
         swaps = [
             SwapRecord(from_variant="A", to_variant="B", views_at_swap=10, reason="d"),
             SwapRecord(from_variant="B", to_variant="C", views_at_swap=10, reason="d"),
@@ -480,7 +481,7 @@ class TestEvaluateVideo:
             checks_completed=["check_1", "check_2"],
             swap_history=swaps,
         )
-        monitor, store, yt = self._setup(tmp_path, video, views=100)
+        monitor, store, yt = self._setup(tmp_path, video, views=80)
 
         result = monitor._evaluate_video(video.video_id)
 
@@ -498,8 +499,8 @@ class TestEvaluateVideo:
         result = monitor._evaluate_video(video.video_id)
         assert result == "no_api"
 
-    def test_video_not_found_error(self, tmp_path):
-        """YouTube API returns None stats → error."""
+    def test_video_stats_unavailable(self, tmp_path):
+        """YouTube API returns None stats → stats_unavailable (retry next cycle)."""
         video = make_video(hours_ago=7)
         monitor, store = make_monitor(tmp_path, videos=[video])
         yt = make_youtube_mock()
@@ -508,9 +509,9 @@ class TestEvaluateVideo:
 
         result = monitor._evaluate_video(video.video_id)
 
-        assert result == "error_not_found"
+        assert result == "stats_unavailable"
         saved = store.get_video(video.video_id)
-        assert saved.status == ABStatus.ERROR
+        assert saved.status == ABStatus.MONITORING  # NOT set to error
 
     def test_negative_hours_reset(self, tmp_path):
         """variant_start_time in future → reset to now, hours = 0 → wait."""
@@ -554,14 +555,14 @@ class TestRunCycle:
         v2 = make_video(video_id="vid_2", hours_ago=3)
         monitor, store = make_monitor(tmp_path, videos=[v1, v2])
 
-        yt = make_youtube_mock(views=30)
+        yt = make_youtube_mock(views=10)
         monitor._get_youtube_api = Mock(return_value=yt)
 
         results = monitor.run_cycle()
 
         assert "vid_1" in results
         assert "vid_2" in results
-        # vid_1: 7h with 30 views → dead → swap
+        # vid_1: 7h with 10 views → dead (< 15) → swap
         assert results["vid_1"] == "swap_B"
         # vid_2: 3h → no checkpoint yet → keep
         assert results["vid_2"] == "keep"
@@ -875,13 +876,13 @@ class TestEdgeCases:
     """Complex scenarios and edge cases."""
 
     def test_full_lifecycle_dead_video(self, tmp_path):
-        """Simulate: dead at 6h → swap B → dead at 6h → swap C → alive at 18h."""
+        """Simulate: dead at 6h → swap B → dead at 6h → swap C → alive at 6h."""
         video = make_video(hours_ago=7)
         monitor, store = make_monitor(tmp_path, videos=[video])
-        yt = make_youtube_mock(views=10)
+        yt = make_youtube_mock(views=5)
         monitor._get_youtube_api = Mock(return_value=yt)
 
-        # Cycle 1: 7h, 10 views → dead → swap to B
+        # Cycle 1: 7h, 5 views → dead (< 15) → swap to B
         r1 = monitor._evaluate_video(video.video_id)
         assert r1 == "swap_B"
         saved = store.get_video(video.video_id)
@@ -893,22 +894,22 @@ class TestEdgeCases:
             v.variant_start_time = datetime.now(timezone.utc) - timedelta(hours=7)
             return "ok"
         store.locked_update(video.video_id, _set_time_7h, require_monitoring=False)
-        yt.get_video_stats.return_value = {"views": 20, "likes": 0, "comments": 0}
+        yt.get_video_stats.return_value = {"views": 8, "likes": 0, "comments": 0}
 
-        # Cycle 2: 7h on B, 20 views → dead → swap to C
+        # Cycle 2: 7h on B, 8 views → dead (< 15) → swap to C
         r2 = monitor._evaluate_video(video.video_id)
         assert r2 == "swap_C"
         saved = store.get_video(video.video_id)
         assert saved.current_variant == "C"
 
-        # Simulate 19 hours on C with good views
-        def _set_time_19h(v):
-            v.variant_start_time = datetime.now(timezone.utc) - timedelta(hours=19)
+        # Simulate 7 hours on C with good views
+        def _set_time_7h_c(v):
+            v.variant_start_time = datetime.now(timezone.utc) - timedelta(hours=7)
             return "ok"
-        store.locked_update(video.video_id, _set_time_19h, require_monitoring=False)
-        yt.get_video_stats.return_value = {"views": 800, "likes": 50, "comments": 10}
+        store.locked_update(video.video_id, _set_time_7h_c, require_monitoring=False)
+        yt.get_video_stats.return_value = {"views": 80, "likes": 10, "comments": 3}
 
-        # Cycle 3: 19h on C, 800 views → check_1 alive (>= 200)
+        # Cycle 3: 7h on C, 80 views → check_1 alive (>= 50)
         r3 = monitor._evaluate_video(video.video_id)
         assert r3 == "success"
         saved = store.get_video(video.video_id)
@@ -944,10 +945,10 @@ class TestEdgeCases:
         assert saved.status == ABStatus.EXHAUSTED
 
     def test_swap_window_respected_for_check2(self, tmp_path):
-        """Check 2 dead → only swaps inside window."""
+        """Check 2 dead (< 40 views) → only swaps inside window."""
         video = make_video(hours_ago=19, checks_completed=["check_1"])
         monitor, store = make_monitor(tmp_path, videos=[video])
-        yt = make_youtube_mock(views=50)
+        yt = make_youtube_mock(views=30)
         monitor._get_youtube_api = Mock(return_value=yt)
 
         # Outside window → deferred

@@ -19,7 +19,7 @@ Key design decisions:
 
 import asyncio
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Optional
 from zoneinfo import ZoneInfo
@@ -27,7 +27,10 @@ from zoneinfo import ZoneInfo
 from loguru import logger
 
 from .ab_config import (
+    CHECKPOINT_MARGIN_MINUTES,
+    MAX_INTERVAL_MINUTES,
     MAX_SWAPS,
+    MIN_INTERVAL_MINUTES,
     MONITOR_API_MAX_RETRIES,
     ROTATION_ORDER,
     SWAP_WINDOW_END_HOUR,
@@ -548,6 +551,82 @@ class ABMonitor:
 
         self._api_cache[channel_id] = youtube
         return youtube
+
+    # ========================================================================
+    # SMART SLEEP — CHECKPOINT-ALIGNED POLLING
+    # ========================================================================
+
+    def compute_next_wake_seconds(self) -> int:
+        """
+        Compute seconds until the next meaningful event across all active videos.
+
+        Events considered:
+        1. Deferred comment needs posting (scheduled_go_live reached)
+        2. Next uncompleted checkpoint (variant_start_time + checkpoint hours)
+
+        Returns seconds to sleep, clamped to [MIN_INTERVAL, MAX_INTERVAL].
+        Subtracts CHECKPOINT_MARGIN so daemon wakes slightly before the checkpoint.
+        """
+        self.store.reload()
+        active = self.store.get_active_videos()
+
+        now = datetime.now(timezone.utc)
+        min_sec = MIN_INTERVAL_MINUTES * 60
+        max_sec = MAX_INTERVAL_MINUTES * 60
+        margin_sec = CHECKPOINT_MARGIN_MINUTES * 60
+
+        if not active:
+            logger.debug(f"No active videos, sleeping {MAX_INTERVAL_MINUTES}min")
+            return max_sec
+
+        # Collect all upcoming event times
+        wake_times: list[datetime] = []
+
+        for video in active:
+            # Event: deferred comment ready to post
+            if video.pending_comment_text:
+                go_live = video.scheduled_go_live or video.upload_time
+                if now >= go_live:
+                    # Comment should be posted NOW — wake immediately
+                    logger.debug(f"{video.video_id}: deferred comment ready, wake ASAP")
+                    return min_sec
+                else:
+                    wake_times.append(go_live)
+
+            # Event: waiting for go-live (no checkpoints yet)
+            if video.scheduled_go_live and now < video.scheduled_go_live:
+                wake_times.append(video.scheduled_go_live)
+                continue
+
+            # Event: next uncompleted checkpoint
+            checkpoint_order = ["check_1", "check_2", "check_3"]
+            for cp_name in checkpoint_order:
+                if cp_name not in video.checks_completed:
+                    cp_hours = THRESHOLDS[cp_name]["hours"]
+                    cp_time = video.variant_start_time + timedelta(hours=cp_hours)
+                    wake_times.append(cp_time)
+                    break  # only the NEXT checkpoint matters
+
+        if not wake_times:
+            logger.debug(f"No upcoming events, sleeping {MAX_INTERVAL_MINUTES}min")
+            return max_sec
+
+        # Find earliest event, subtract margin
+        earliest = min(wake_times)
+        sleep_sec = (earliest - now).total_seconds() - margin_sec
+
+        # Clamp
+        sleep_sec = max(sleep_sec, min_sec)
+        sleep_sec = min(sleep_sec, max_sec)
+        sleep_int = int(sleep_sec)
+
+        hours = sleep_int // 3600
+        mins = (sleep_int % 3600) // 60
+        logger.info(
+            f"Next wake in {hours}h{mins:02d}m "
+            f"(earliest event: {earliest.strftime('%Y-%m-%d %H:%M UTC')})"
+        )
+        return sleep_int
 
     # ========================================================================
     # SINGLE VIDEO CHECK (for CLI)
