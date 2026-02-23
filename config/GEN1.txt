@@ -2718,6 +2718,7 @@ S8: SP:6. Loop close: "Dripping red." PARTICLE_DISSOLVE → S1.
     { "humor_type": "UNDERSTATED_INSANITY", "scene_number": 4, "line": "Structurally questionable. Emotionally necessary.", "setup": "Acknowledges the problem", "turn": "Dismisses it with feeling", "standalone_caption": true }
   ],
   "⚠️ humor REQUIRED": "EXACTLY 2 entries, DIFFERENT types, ONLY in SP ≤ 6 scenes. DO NOT leave empty. Each humor line MUST also appear (shortened if needed) in its scene's voiceover_segment or on_screen_text — otherwise viewer never sees it.",
+  "⚠️ HUMOR SURFACING DEMO": "Scene 3 VO MUST contain humor[0].line → voiceover_segment: '[warm] The fire department said no caramel. [pause] We added more caramel.' — Scene 4 VO MUST contain humor[1].line → voiceover_segment: '[calm] Structurally questionable. [pause] Emotionally necessary.' — humor[] is invisible metadata, ONLY VO/OSD reaches viewers.",
 
   "engagement": { "replay_hooks": [
     { "tier": "FEEL_AGAIN", "format": "SENSORY_PEAK", "description": "...", "scene_number": "...", "rewatch_trigger": "...", "comment_bait": "...", "validation_check": "..." },

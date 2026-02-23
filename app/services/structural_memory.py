@@ -24,7 +24,7 @@ import json
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Set
 
 from app.core.config import settings
 from app.utils.logger import logger
@@ -272,6 +272,7 @@ class StructuralMemory:
             "series_hook": series_hook,
             "category": concept.get("category", "UNKNOWN") if isinstance(concept, dict) else "UNKNOWN",
             "narrative_structure": narrative_structure,
+            "scene_1_opener": scenes[0].get("narrator_script", "")[:50].strip() if scenes else "",
         }
 
     # ========================================================================
@@ -305,6 +306,17 @@ class StructuralMemory:
             else:
                 break
         return count
+
+    def recent_scene1_openers(self, n: int = 5) -> Set[str]:
+        """Return lowercased first sentences from scene 1 narrators of last N videos."""
+        openers: Set[str] = set()
+        for fp in self.fingerprints[:n]:
+            opener = fp.get("scene_1_opener", "")
+            if opener:
+                first_sentence = opener.split(".")[0].strip().lower()
+                if first_sentence:
+                    openers.add(first_sentence)
+        return openers
 
     # ========================================================================
     # PROMPT INJECTION

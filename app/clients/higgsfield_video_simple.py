@@ -124,29 +124,79 @@ class SimpleVideoGenerator:
             await self._ensure_video_page(force_refresh=True)
             await self.take_screenshot(f"scene{scene_num}_02_video_page.png")
 
-            # 2. Загрузить изображение
-            await self._upload_image(image_path)
-            await self.take_screenshot(f"scene{scene_num}_03_image_uploaded.png")
+            # 2. Загрузить изображение (with retry)
+            image_loaded = False
+            for upload_attempt in range(3):
+                upload_verified = await self._upload_image(image_path)
+                await self.take_screenshot(f"scene{scene_num}_03_image_upload_attempt{upload_attempt + 1}.png")
+
+                if upload_verified:
+                    image_loaded = True
+                    logger.info(f"{prefix}[Scene {scene_num}] Image upload verified on attempt {upload_attempt + 1}")
+                    break
+
+                # Upload inconclusive — poll _verify_image_loaded with extended wait
+                # HiggsField image processing can take 30-40s
+                logger.warning(f"{prefix}[Scene {scene_num}] Upload inconclusive (attempt {upload_attempt + 1}/3) — polling preview...")
+                for poll in range(15):
+                    await asyncio.sleep(2)
+                    if await self._verify_image_loaded():
+                        image_loaded = True
+                        logger.info(f"{prefix}[Scene {scene_num}] Image confirmed in preview after {(poll+1)*2}s extra wait")
+                        break
+                if image_loaded:
+                    break
+
+                # Not loaded — reload page and retry
+                if upload_attempt < 2:
+                    logger.warning(f"{prefix}[Scene {scene_num}] Retrying upload — reloading page...")
+                    await self._ensure_video_page(force_refresh=True)
+                    await asyncio.sleep(2)
+
+            if not image_loaded:
+                # Final check before giving up
+                if not await self._verify_image_loaded():
+                    result.error = "Image upload failed after 3 attempts — aborting to prevent prompt-only generation"
+                    result.duration_sec = time.time() - start_time
+                    logger.error(f"{prefix}[Scene {scene_num}] {result.error}")
+                    await self.take_screenshot(f"scene{scene_num}_ERROR_upload_failed.png")
+                    return result
+                logger.info(f"{prefix}[Scene {scene_num}] Image loaded (late verification)")
 
             # 3. Ввести prompt
             await self._enter_prompt(prompt)
             await self.take_screenshot(f"scene{scene_num}_04_prompt_entered.png")
 
-            # 4. Нажать Generate
+            # 4. Pre-generate gate: verify image is STILL in preview
+            # (React re-render after prompt entry could clear it)
+            if not await self._verify_image_loaded():
+                result.error = "Image disappeared from preview before Generate — aborting"
+                result.duration_sec = time.time() - start_time
+                logger.error(f"{prefix}[Scene {scene_num}] {result.error}")
+                await self.take_screenshot(f"scene{scene_num}_ERROR_image_gone.png")
+                return result
+
+            # 5. Snapshot all existing video URLs BEFORE generation
+            initial_video_urls = await self._get_all_video_urls()
+            logger.info(f"{prefix}[Scene {scene_num}] Pre-generation video URLs: {len(initial_video_urls)}")
+
+            # 6. Нажать Generate
             await self._click_generate()
             await self.take_screenshot(f"scene{scene_num}_05_generate_clicked.png")
 
-            # 5. Дождаться завершения генерации (2-5 минут)
+            # 7. Дождаться завершения генерации (2-5 минут)
             logger.info(f"{prefix}[Scene {scene_num}] Waiting for generation (2-5 min)...")
             await self._wait_for_generation_complete(timeout=420)
             await self.take_screenshot(f"scene{scene_num}_06_generation_complete.png")
 
-            # 6. Дать странице обновиться
+            # 8. Дать странице обновиться
             logger.debug(f"{prefix}[Scene {scene_num}] Waiting for video to appear...")
             await asyncio.sleep(8)
 
-            # 7. Скачать видео (увеличенный таймаут для поиска)
-            video_url = await self._get_latest_video_url(max_attempts=20)
+            # 9. Скачать видео — exclude pre-existing URLs (placeholders)
+            video_url = await self._get_latest_video_url(
+                max_attempts=20, exclude_urls=initial_video_urls
+            )
             if video_url:
                 video_path = output_dir / "video.mp4"
                 await self._download_video(video_url, video_path)
@@ -156,7 +206,7 @@ class SimpleVideoGenerator:
                 result.success = True
                 result.duration_sec = time.time() - start_time
 
-                # 9. Сохранить метаданные
+                # 10. Сохранить метаданные
                 await self._save_video_metadata(
                     output_dir=output_dir,
                     scene_num=scene_num,
@@ -356,8 +406,7 @@ class SimpleVideoGenerator:
             await asyncio.to_thread(self.driver.get, HIGGSFIELD_VIDEO_URL)
             await asyncio.sleep(4)
 
-            # Step 2: Wait for page ready — file input OR cached image preview
-            file_input_found = False
+            # Step 2: Wait for page ready — file input OR any meaningful content
             for attempt in range(15):
                 file_inputs = await asyncio.to_thread(
                     self.driver.find_elements,
@@ -365,69 +414,99 @@ class SimpleVideoGenerator:
                     'input[type="file"]'
                 )
                 if file_inputs:
-                    file_input_found = True
-                    logger.debug("Video page ready — file input found (clean page)")
+                    logger.debug("Video page ready — file input found")
                     break
-                # Also check if page loaded but with cached image (no file input)
-                has_img = await asyncio.to_thread(
+                has_content = await asyncio.to_thread(
                     self.driver.execute_script,
-                    "return document.querySelectorAll('img').length > 2;"
+                    "return document.querySelectorAll('img, video, textarea, button').length > 3;"
                 )
-                if has_img and attempt >= 3:
-                    logger.debug("Page loaded with cached image — will clear")
+                if has_content and attempt >= 3:
+                    logger.debug("Page loaded with content (no file input yet)")
                     break
                 await asyncio.sleep(1)
 
-            # Step 3: If no file input, clear cached image via scoped X button
-            if not file_input_found:
-                logger.info("Cached image detected — clearing via X button...")
+            # Step 3: ALWAYS check for cached image — file input presence is NOT enough
+            # HiggsField can show file input AND cached image simultaneously
+            if await self._has_cached_image():
+                logger.info("Cached image from previous scene — clearing...")
                 cleared = await self._clear_cached_image_scoped()
                 if cleared:
-                    logger.info("Cached image cleared — waiting for file input...")
+                    logger.info("Cached image cleared — verifying clean state...")
+                    # Wait for file input to appear / cached image to disappear
+                    clean = False
                     for i in range(10):
-                        file_inputs = await asyncio.to_thread(
-                            self.driver.find_elements,
-                            By.CSS_SELECTOR,
-                            'input[type="file"]'
-                        )
-                        if file_inputs:
-                            logger.debug(f"File input appeared after clearing ({i}s)")
+                        still_cached = await self._has_cached_image()
+                        if not still_cached:
+                            logger.debug(f"Page clean after clearing ({i}s)")
+                            clean = True
                             break
                         await asyncio.sleep(1)
-                    else:
-                        logger.warning("File input not found after clearing — fallback to nuclear clear")
-                        await self._nuclear_clear_and_reload()
 
+                    if not clean:
+                        logger.warning("Cached image persists after scoped clear — nuclear fallback")
+                        await self._nuclear_clear_and_reload()
                 else:
-                    logger.warning("Scoped clearing failed — fallback to nuclear clear")
+                    logger.warning("Scoped clearing failed — nuclear fallback")
+                    await self._nuclear_clear_and_reload()
+
+            # Step 3b: Final verification — ensure file input is present
+            file_inputs = await asyncio.to_thread(
+                self.driver.find_elements,
+                By.CSS_SELECTOR,
+                'input[type="file"]'
+            )
+            if not file_inputs:
+                logger.warning("File input missing after clearing — waiting...")
+                for i in range(10):
+                    file_inputs = await asyncio.to_thread(
+                        self.driver.find_elements,
+                        By.CSS_SELECTOR,
+                        'input[type="file"]'
+                    )
+                    if file_inputs:
+                        logger.debug(f"File input appeared ({i}s)")
+                        break
+                    await asyncio.sleep(1)
+                else:
+                    logger.warning("File input still missing — nuclear fallback")
                     await self._nuclear_clear_and_reload()
 
             # Step 4: Ensure model/audio/duration (skips if already configured)
             await self._ensure_kling_model()
 
-            # Step 5: Wait for page to stabilize after any model setup
+            # Step 5: Stabilization wait after model setup
+            # After nuclear clear → reload → model setup, React re-renders cause
+            # StaleElementReferenceException on the first upload attempt (BUG-D).
+            # Wait longer and verify file input stability before proceeding.
+            stabilization_wait = 6 if not self._model_configured else 3
             if not self._model_configured:
-                # This shouldn't happen — _ensure_kling_model sets it
                 logger.warning("Model not configured after _ensure_kling_model")
-            else:
-                # Quick stability check — verify file input isn't stale
-                await asyncio.sleep(2)
-                for attempt in range(5):
-                    inputs_1 = await asyncio.to_thread(
-                        self.driver.find_elements,
-                        By.CSS_SELECTOR,
-                        'input[type="file"]'
-                    )
-                    if not inputs_1:
-                        await asyncio.sleep(1)
-                        continue
-                    try:
-                        _ = await asyncio.to_thread(inputs_1[0].get_attribute, 'type')
-                        logger.debug("Page stable — file input confirmed")
+
+            logger.debug(f"Stabilization wait: {stabilization_wait}s...")
+            await asyncio.sleep(stabilization_wait)
+
+            # Verify file input is present AND not stale (two consecutive checks)
+            stable_count = 0
+            for attempt in range(8):
+                inputs_1 = await asyncio.to_thread(
+                    self.driver.find_elements,
+                    By.CSS_SELECTOR,
+                    'input[type="file"]'
+                )
+                if not inputs_1:
+                    stable_count = 0
+                    await asyncio.sleep(1)
+                    continue
+                try:
+                    _ = await asyncio.to_thread(inputs_1[0].get_attribute, 'type')
+                    stable_count += 1
+                    if stable_count >= 2:
+                        logger.debug(f"Page stable — file input confirmed ({attempt + 1} checks)")
                         break
-                    except StaleElementReferenceException:
-                        logger.debug("File input stale — waiting for re-render...")
-                        await asyncio.sleep(2)
+                except StaleElementReferenceException:
+                    stable_count = 0
+                    logger.debug(f"File input stale (attempt {attempt + 1}) — waiting for re-render...")
+                    await asyncio.sleep(2)
 
     async def _clear_cached_image_scoped(self) -> bool:
         """
@@ -435,9 +514,25 @@ class SimpleVideoGenerator:
         Same approach as image generator: find the image preview,
         traverse UP the DOM tree, find X button (small button with SVG).
 
-        Returns True if X button was found and clicked.
+        After clicking, VERIFIES the image actually disappeared (BUG-C fix).
+        If React state didn't update, tries click + dispatchEvent as fallback.
+
+        Returns True if image was actually cleared (not just clicked).
         """
         try:
+            # Count images before clearing (for verification)
+            img_count_before = await asyncio.to_thread(
+                self.driver.execute_script,
+                """
+                var count = 0;
+                document.querySelectorAll('img').forEach(function(img) {
+                    var r = img.getBoundingClientRect();
+                    if (r.width > 60 && r.height > 60 && r.x < 500) count++;
+                });
+                return count;
+                """
+            )
+
             result = await asyncio.to_thread(
                 self.driver.execute_script,
                 """
@@ -470,13 +565,16 @@ class SimpleVideoGenerator:
                             // X button = small button with SVG icon
                             var svg = btn.querySelector('svg');
                             if (svg) {
+                                // Click + force React state update
                                 btn.click();
+                                btn.dispatchEvent(new MouseEvent('click', {bubbles: true}));
                                 return 'cleared:img_traversal';
                             }
                             // Or text-based X
                             var text = btn.textContent.trim();
                             if (text === '×' || text === 'x' || text === 'X' || text === '✕') {
                                 btn.click();
+                                btn.dispatchEvent(new MouseEvent('click', {bubbles: true}));
                                 return 'cleared:text_x';
                             }
                         }
@@ -497,6 +595,7 @@ class SimpleVideoGenerator:
                             var svg = btn.querySelector('svg');
                             if (svg) {
                                 btn.click();
+                                btn.dispatchEvent(new MouseEvent('click', {bubbles: true}));
                                 return 'cleared:input_traversal';
                             }
                         }
@@ -512,21 +611,119 @@ class SimpleVideoGenerator:
                     if (btn.offsetParent === null) continue;
                     if (btn.offsetWidth > 50) continue;
                     btn.click();
+                    btn.dispatchEvent(new MouseEvent('click', {bubbles: true}));
                     return 'cleared:aria_label';
                 }
 
                 return 'not_found';
                 """
             )
-            logger.info(f"Scoped image clear: {result}")
-            if result.startswith('cleared'):
-                await asyncio.sleep(2)
+            logger.info(f"Scoped image clear: {result} (imgs before: {img_count_before})")
+
+            if not result.startswith('cleared'):
+                return False
+
+            # BUG-C fix: VERIFY the image actually disappeared
+            await asyncio.sleep(2)
+            img_count_after = await asyncio.to_thread(
+                self.driver.execute_script,
+                """
+                var count = 0;
+                document.querySelectorAll('img').forEach(function(img) {
+                    var r = img.getBoundingClientRect();
+                    if (r.width > 60 && r.height > 60 && r.x < 500) count++;
+                });
+                return count;
+                """
+            )
+
+            if img_count_after < img_count_before:
+                logger.info(f"Image cleared verified: {img_count_before} → {img_count_after} images")
                 return True
+
+            # Image persists — React state didn't update. Don't waste more time,
+            # signal failure so caller falls through to nuclear clear.
+            logger.warning(
+                f"Click registered but image persists ({img_count_before} → {img_count_after}). "
+                f"React state likely not updated — falling back to nuclear."
+            )
             return False
 
         except Exception as e:
             logger.warning(f"Scoped image clear failed: {e}")
             return False
+
+    async def _has_cached_image(self) -> bool:
+        """
+        Check if the page has a cached/leftover image from a previous scene.
+
+        Uses 3 detection strategies:
+        1. Image preview > 60px in the left panel area
+        2. Presence of a "Change" button (shown when image is loaded)
+        3. Absence of dropzone text ("drag", "drop", "upload", "browse")
+
+        Returns True on error (safe default — better to clear unnecessarily
+        than to generate with a stale start frame).
+        """
+        try:
+            result = await asyncio.to_thread(
+                self.driver.execute_script,
+                """
+                var signals = {preview: false, changeBtn: false, noDropzone: false};
+
+                // Strategy 1: Large image preview in left panel
+                var imgs = document.querySelectorAll('img');
+                for (var i = 0; i < imgs.length; i++) {
+                    var img = imgs[i];
+                    var rect = img.getBoundingClientRect();
+                    if (rect.width > 60 && rect.height > 60 && rect.x < 500) {
+                        var src = img.src || '';
+                        // Skip site logos/icons (usually SVG or small PNGs in nav)
+                        if (src.includes('/logo') || src.includes('/icon') ||
+                            src.includes('favicon')) continue;
+                        signals.preview = true;
+                        break;
+                    }
+                }
+
+                // Strategy 2: "Change" button visible
+                var btns = document.querySelectorAll('button');
+                for (var j = 0; j < btns.length; j++) {
+                    var text = (btns[j].textContent || '').trim().toLowerCase();
+                    if (text === 'change' || text === 'change image') {
+                        if (btns[j].offsetParent !== null) {
+                            signals.changeBtn = true;
+                            break;
+                        }
+                    }
+                }
+
+                // Strategy 3: No dropzone text visible (means file input area is hidden)
+                var bodyText = document.body ? document.body.innerText.toLowerCase() : '';
+                var dropzoneKeywords = ['drag', 'drop here', 'upload', 'browse'];
+                var hasDropzone = false;
+                for (var k = 0; k < dropzoneKeywords.length; k++) {
+                    if (bodyText.includes(dropzoneKeywords[k])) {
+                        hasDropzone = true;
+                        break;
+                    }
+                }
+                signals.noDropzone = !hasDropzone;
+
+                // Cached if: preview exists, OR (Change button AND no dropzone)
+                var cached = signals.preview || (signals.changeBtn && signals.noDropzone);
+                return JSON.stringify({cached: cached, signals: signals});
+                """
+            )
+            parsed = json.loads(result)
+            if parsed["cached"]:
+                logger.info(f"Cached image detected: {parsed['signals']}")
+            else:
+                logger.debug(f"No cached image: {parsed['signals']}")
+            return parsed["cached"]
+        except Exception as e:
+            logger.warning(f"_has_cached_image() error (assuming cached): {e}")
+            return True  # Safe default
 
     async def _nuclear_clear_and_reload(self) -> None:
         """
@@ -1089,12 +1286,136 @@ class SimpleVideoGenerator:
             logger.warning(f"Failed to clear preset: {e}")
             return False
 
-    async def _upload_image(self, image_path: Path) -> None:
+    async def _verify_image_loaded(self) -> bool:
+        """
+        Verify that a USER-UPLOADED image is loaded in the preview area.
+
+        Checks (stricter than before — avoids false positives from UI elements):
+        1. Image with blob:/data: src OR uploaded CDN URL (NOT model previews/banners)
+        2. File input is gone or hidden (replaced by preview)
+        3. "Change" button appeared
+        4. Dropzone text disappeared ("drag", "upload", "browse")
+
+        Returns True if at least 2 of 4 signals confirm image is loaded.
+        Signal 1 (uploaded image src) is weighted x2 because it's the most reliable.
+        """
+        try:
+            result = await asyncio.to_thread(
+                self.driver.execute_script,
+                """
+                var signals = {uploadedImg: false, fileInputGone: false,
+                               changeBtn: false, noDropzone: false};
+
+                // Signal 1: Image with blob:/data: src or uploaded CDN URL
+                // This is the KEY fix — previously checked "any img > 60px" which
+                // matched model previews, banners, and other UI elements
+                var imgs = document.querySelectorAll('img');
+                for (var i = 0; i < imgs.length; i++) {
+                    var img = imgs[i];
+                    var rect = img.getBoundingClientRect();
+                    if (rect.width < 60 || rect.height < 60 || rect.x > 500) continue;
+
+                    var src = img.src || '';
+                    // Skip known UI elements
+                    if (src.includes('/logo') || src.includes('/icon') ||
+                        src.includes('favicon') || src.includes('avatar') ||
+                        src.includes('model') || src.includes('banner') ||
+                        src.includes('thumbnail')) continue;
+
+                    // Positive signals: locally uploaded file or CDN-processed upload
+                    var isUploaded = src.startsWith('blob:') ||
+                                    src.startsWith('data:') ||
+                                    src.includes('upload') ||
+                                    src.includes('user') ||
+                                    src.includes('tmp/') ||
+                                    src.includes('temp/');
+
+                    // Also accept: image in a container that has a close/remove button nearby
+                    // (uploaded images always have an X button overlay)
+                    if (!isUploaded && rect.width > 80 && rect.height > 80) {
+                        var parent = img.parentElement;
+                        for (var p = 0; p < 5 && parent; p++) {
+                            var btns = parent.querySelectorAll('button');
+                            for (var b = 0; b < btns.length; b++) {
+                                var bw = btns[b].offsetWidth;
+                                if (bw > 5 && bw < 45 && btns[b].querySelector('svg')) {
+                                    isUploaded = true;
+                                    break;
+                                }
+                            }
+                            if (isUploaded) break;
+                            parent = parent.parentElement;
+                        }
+                    }
+
+                    if (isUploaded) {
+                        signals.uploadedImg = true;
+                        break;
+                    }
+                }
+
+                // Signal 2: File input gone or hidden
+                var fileInputs = document.querySelectorAll('input[type="file"]');
+                if (fileInputs.length === 0) {
+                    signals.fileInputGone = true;
+                } else {
+                    var fi = fileInputs[0];
+                    if (fi.offsetParent === null && fi.offsetWidth === 0) {
+                        signals.fileInputGone = true;
+                    }
+                }
+
+                // Signal 3: "Change" button visible
+                var btns = document.querySelectorAll('button');
+                for (var j = 0; j < btns.length; j++) {
+                    var text = (btns[j].textContent || '').trim().toLowerCase();
+                    if ((text === 'change' || text === 'change image') &&
+                        btns[j].offsetParent !== null) {
+                        signals.changeBtn = true;
+                        break;
+                    }
+                }
+
+                // Signal 4: Dropzone text disappeared
+                var bodyText = document.body ? document.body.innerText.toLowerCase() : '';
+                var dropzoneWords = ['drag', 'drop here', 'browse'];
+                var hasDropzone = false;
+                for (var k = 0; k < dropzoneWords.length; k++) {
+                    if (bodyText.includes(dropzoneWords[k])) {
+                        hasDropzone = true;
+                        break;
+                    }
+                }
+                signals.noDropzone = !hasDropzone;
+
+                // Score: uploadedImg counts double (most reliable signal)
+                var score = (signals.uploadedImg ? 2 : 0) +
+                            (signals.fileInputGone ? 1 : 0) +
+                            (signals.changeBtn ? 1 : 0) +
+                            (signals.noDropzone ? 1 : 0);
+
+                return JSON.stringify({score: score, signals: signals});
+                """
+            )
+            parsed = json.loads(result)
+            score = parsed["score"]
+            # Need score >= 2 (e.g., uploadedImg alone = 2, or two other signals)
+            loaded = score >= 2
+            logger.debug(
+                f"Image verify: score={score}/5 signals={parsed['signals']} "
+                f"→ {'LOADED' if loaded else 'NOT loaded'}"
+            )
+            return loaded
+        except Exception as e:
+            logger.warning(f"_verify_image_loaded error: {e}")
+            return False
+
+    async def _upload_image(self, image_path: Path) -> bool:
         """
         Upload image to Higgsfield.
 
-        Page is guaranteed to be clean after _ensure_video_page() which
-        clears all browser storage. File input should always be present.
+        Returns True if upload was verified (file input disappeared/hidden),
+        False if verification was inconclusive (React may not have processed it).
 
         Uses send_keys + React internal onChange handler to ensure
         the file is actually processed by React's synthetic event system.
@@ -1189,7 +1510,8 @@ class SimpleVideoGenerator:
             await asyncio.sleep(1)
 
         # Step 5: Verify — wait for file input to disappear (replaced by preview)
-        for i in range(20):
+        # Image processing on HiggsField can take 30-40s even with good connection
+        for i in range(45):
             remaining = await asyncio.to_thread(
                 self.driver.find_elements,
                 By.CSS_SELECTOR,
@@ -1197,7 +1519,7 @@ class SimpleVideoGenerator:
             )
             if not remaining:
                 logger.info(f"Image upload VERIFIED — file input removed after {i}s")
-                return
+                return True
             # Also check if hidden (some UIs hide rather than remove)
             try:
                 is_hidden = await asyncio.to_thread(
@@ -1207,14 +1529,15 @@ class SimpleVideoGenerator:
                 )
                 if is_hidden:
                     logger.info(f"Image upload VERIFIED — file input hidden after {i}s")
-                    return
+                    return True
             except StaleElementReferenceException:
                 # Element went stale during check — likely removed, which means success
                 logger.info(f"Image upload VERIFIED — file input went stale (removed) after {i}s")
-                return
+                return True
             await asyncio.sleep(1)
 
-        logger.warning("Image upload verification inconclusive — continuing anyway")
+        logger.warning("Image upload verification inconclusive")
+        return False
 
     async def _enter_prompt(self, prompt: str) -> None:
         """Ввести prompt"""
@@ -1295,92 +1618,144 @@ class SimpleVideoGenerator:
 
         logger.warning(f"Generation timeout after {timeout}s")
 
-    async def _get_latest_video_url(self, max_attempts: int = 10) -> Optional[str]:
+    async def _get_latest_video_url(
+        self,
+        max_attempts: int = 20,
+        exclude_urls: Optional[List[str]] = None,
+    ) -> Optional[str]:
         """
-        Get the URL of the generated video.
+        Get the URL of the NEWLY generated video.
+
+        Uses exclude_urls (snapshot taken before generation) to filter out
+        placeholder videos and previously generated content that is still in DOM.
 
         Strategy (in order):
-        1. Look for <video> elements directly on the page (inline player after generation)
-        2. Search all DOM attributes for video URLs via JS (covers lazy-loaded/data-* attrs)
-        3. Click History panel items to open modal with video
+        1. Collect ALL video URLs on page, filter out excluded → return first new one
+        2. Click History panel → open modal → find video (NOT filtered — history = latest generation)
+        3. Fallback: if all URLs are excluded after max_attempts → return newest URL without filter
+           (HiggsField may reuse CDN paths with different query params)
         """
+        # Build exclude set — compare by base URL (strip query params)
+        exclude_set: set[str] = set()
+        if exclude_urls:
+            for u in exclude_urls:
+                exclude_set.add(u.split('?')[0])
+
+        last_all_urls: List[str] = []  # Track for fallback
 
         for attempt in range(max_attempts):
             try:
-                # --- Strategy 1: Direct <video> elements on page ---
-                video_url = await asyncio.to_thread(
+                # --- Strategy 1: Collect all video URLs, filter excluded ---
+                all_urls = await asyncio.to_thread(
                     self.driver.execute_script,
                     """
+                    var found = {};
                     var validUrl = function(url) {
                         if (!url || !url.startsWith('http')) return false;
-                        // Accept .mp4, cloudfront CDN, higgsfield CDN
                         return url.includes('.mp4') ||
                                url.includes('cloudfront') ||
                                url.includes('cdn.higgsfield');
                     };
+                    var add = function(url) {
+                        if (validUrl(url)) found[url.split('?')[0]] = url;
+                    };
 
-                    // Check all <video> elements — src and <source> children
-                    var videos = document.querySelectorAll('video');
-                    for (var v of videos) {
-                        if (validUrl(v.src)) return v.src;
-                        if (validUrl(v.currentSrc)) return v.currentSrc;
-                        var sources = v.querySelectorAll('source');
-                        for (var s of sources) {
-                            if (validUrl(s.src)) return s.src;
-                        }
-                    }
+                    // <video> elements
+                    document.querySelectorAll('video').forEach(function(v) {
+                        add(v.src);
+                        add(v.currentSrc);
+                        v.querySelectorAll('source').forEach(function(s) { add(s.src); });
+                    });
 
-                    // Check <a> download links
-                    var links = document.querySelectorAll('a[download], a[href*=".mp4"]');
-                    for (var a of links) {
-                        var href = a.getAttribute('href');
-                        if (validUrl(href)) return href;
-                    }
+                    // <a> download links
+                    document.querySelectorAll('a[download], a[href*=".mp4"]').forEach(function(a) {
+                        add(a.getAttribute('href'));
+                    });
 
-                    // Check data-* attributes
-                    var dataEls = document.querySelectorAll(
+                    // data-* attributes
+                    document.querySelectorAll(
                         '[data-url], [data-video-url], [data-src], [data-video]'
-                    );
-                    for (var el of dataEls) {
-                        var attrs = ['data-url', 'data-video-url', 'data-src', 'data-video'];
-                        for (var attr of attrs) {
-                            var val = el.getAttribute(attr);
-                            if (validUrl(val)) return val;
-                        }
-                    }
+                    ).forEach(function(el) {
+                        ['data-url', 'data-video-url', 'data-src', 'data-video'].forEach(function(attr) {
+                            add(el.getAttribute(attr));
+                        });
+                    });
 
-                    // Scan ALL attributes for video URLs (covers edge cases)
-                    var allEls = document.querySelectorAll('*');
-                    for (var el of allEls) {
-                        for (var attr of el.attributes) {
-                            if (attr.value && attr.value.startsWith('http') &&
-                                (attr.value.includes('.mp4') || attr.value.includes('kling_motion'))) {
-                                return attr.value;
+                    // Scan ALL attributes
+                    document.querySelectorAll('*').forEach(function(el) {
+                        for (var i = 0; i < el.attributes.length; i++) {
+                            var val = el.attributes[i].value;
+                            if (val && val.startsWith('http') &&
+                                (val.includes('.mp4') || val.includes('kling_motion'))) {
+                                add(val);
                             }
                         }
-                    }
+                    });
 
-                    return null;
+                    return Object.values(found);
                     """
                 )
 
-                if video_url:
-                    logger.info(f"Found video URL (strategy 1, attempt {attempt + 1}): {video_url[:80]}...")
-                    return video_url
+                last_all_urls = all_urls or []
 
-                # --- Strategy 2: Click History panel → open modal → find video ---
-                if attempt >= 2:  # Give inline video 2 attempts before trying History
+                # Filter out pre-existing URLs
+                new_urls = []
+                for url in last_all_urls:
+                    base = url.split('?')[0]
+                    if base not in exclude_set:
+                        new_urls.append(url)
+
+                if new_urls:
+                    logger.info(
+                        f"Found NEW video URL (attempt {attempt + 1}, "
+                        f"{len(last_all_urls)} total, {len(new_urls)} new): "
+                        f"{new_urls[0][:80]}..."
+                    )
+                    return new_urls[0]
+
+                # Diagnostic logging every 5 attempts
+                if attempt % 5 == 4 and exclude_set:
+                    logger.warning(
+                        f"All {len(last_all_urls)} URLs matched exclude set "
+                        f"({len(exclude_set)} excluded). "
+                        f"URLs found: {[u[:60] for u in last_all_urls[:3]]}"
+                    )
+
+                # --- Strategy 2: History panel fallback (NOT filtered) ---
+                # History shows the latest generation — it IS the new video
+                if attempt >= 2 and attempt % 3 == 2:
                     url_from_history = await self._get_video_url_from_history()
                     if url_from_history:
-                        logger.info(f"Found video URL (history, attempt {attempt + 1}): {url_from_history[:80]}...")
+                        logger.info(
+                            f"Found video URL via History (attempt {attempt + 1}): "
+                            f"{url_from_history[:80]}..."
+                        )
                         return url_from_history
 
             except Exception as e:
                 logger.debug(f"Attempt {attempt + 1} error: {e}")
 
-            logger.debug(f"Video not found yet, attempt {attempt + 1}/{max_attempts}")
+            logger.debug(
+                f"New video not found yet, attempt {attempt + 1}/{max_attempts} "
+                f"(excluded {len(exclude_set)} pre-existing URLs)"
+            )
             await asyncio.sleep(5)
 
+        # --- Strategy 3: Fallback — all URLs excluded, return newest anyway ---
+        # HiggsField may reuse CDN base paths; the video content is still new
+        if last_all_urls and exclude_set:
+            logger.warning(
+                f"Fallback: all {len(last_all_urls)} URLs matched exclude set. "
+                f"Returning first URL anyway (CDN path reuse). "
+                f"URL: {last_all_urls[0][:80]}..."
+            )
+            return last_all_urls[0]
+
+        logger.warning(
+            f"No video URL found after {max_attempts} attempts "
+            f"(excluded {len(exclude_set)} pre-existing URLs, "
+            f"last scan found {len(last_all_urls)} URLs total)"
+        )
         return None
 
     async def _get_video_url_from_history(self) -> Optional[str]:
@@ -1494,6 +1869,68 @@ class SimpleVideoGenerator:
                 pass
             return None
 
+    async def _get_all_video_urls(self) -> List[str]:
+        """
+        Collect ALL video (.mp4) URLs currently visible in the DOM.
+
+        Used to snapshot pre-generation state so we can distinguish
+        placeholder/old videos from the newly generated one.
+        """
+        try:
+            urls = await asyncio.to_thread(
+                self.driver.execute_script,
+                """
+                var found = {};
+                var validUrl = function(url) {
+                    if (!url || !url.startsWith('http')) return false;
+                    return url.includes('.mp4') ||
+                           url.includes('cloudfront') ||
+                           url.includes('cdn.higgsfield');
+                };
+                var add = function(url) {
+                    if (validUrl(url)) found[url.split('?')[0]] = url;
+                };
+
+                // 1. <video> elements — src, currentSrc, <source>
+                document.querySelectorAll('video').forEach(function(v) {
+                    add(v.src);
+                    add(v.currentSrc);
+                    v.querySelectorAll('source').forEach(function(s) { add(s.src); });
+                });
+
+                // 2. <a> links with .mp4
+                document.querySelectorAll('a[download], a[href*=".mp4"]').forEach(function(a) {
+                    add(a.getAttribute('href'));
+                });
+
+                // 3. data-* attributes
+                document.querySelectorAll(
+                    '[data-url], [data-video-url], [data-src], [data-video]'
+                ).forEach(function(el) {
+                    ['data-url', 'data-video-url', 'data-src', 'data-video'].forEach(function(attr) {
+                        add(el.getAttribute(attr));
+                    });
+                });
+
+                // 4. Scan ALL attributes for video URLs
+                document.querySelectorAll('*').forEach(function(el) {
+                    for (var i = 0; i < el.attributes.length; i++) {
+                        var val = el.attributes[i].value;
+                        if (val && val.startsWith('http') &&
+                            (val.includes('.mp4') || val.includes('kling_motion'))) {
+                            add(val);
+                        }
+                    }
+                });
+
+                return Object.values(found);
+                """
+            )
+            return urls or []
+        except Exception as e:
+            logger.warning(f"Failed to collect video URLs: {e}")
+            return []
+
     async def _download_video(self, url: str, output_path: Path) -> None:
         """Скачать видео"""
         logger.debug(f"Downloading to {output_path}")
@@ -1509,8 +1946,16 @@ class SimpleVideoGenerator:
         with open(output_path, 'wb') as f:
             f.write(response.content)
 
-        size_mb = output_path.stat().st_size / 1024 / 1024
+        file_size = output_path.stat().st_size
+        size_mb = file_size / 1024 / 1024
         logger.debug(f"Downloaded: {size_mb:.1f} MB")
+
+        if file_size < 500 * 1024:  # < 500KB
+            logger.warning(
+                f"Downloaded video is suspiciously small ({size_mb:.2f} MB). "
+                f"Expected 5-30MB for a 10s Kling video. "
+                f"This may be a placeholder or corrupted file."
+            )
 
 
 # =============================================================================

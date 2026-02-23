@@ -1,5 +1,5 @@
 """
-GEN1 Auto-Corrector v3.5
+GEN1 Auto-Corrector v3.10
 
 Deterministic auto-fix layer for GEN1 (Creative Director) output.
 Runs BEFORE validation to fix known Gemini 3 Pro hallucinations/confusions.
@@ -226,8 +226,8 @@ _TEXTURE_TO_TEMP: dict = {
 _TEXTURE_TO_TEMPS: dict = {
     # EVERY variant MUST contain a word from _THERMAL_WORDS (validator check)
     # Index 0 MUST be unique across groups (anti-"Still warm." lock)
-    "crispy": ["Barely cooled.", "The heat.", "Scorched.", "Still warm."],
-    "crunchy": ["Still hot.", "Still warm.", "The heat.", "Just cooled."],
+    "crispy": ["Barely cooled.", "The heat.", "Scorched.", "Warm. Flaky."],
+    "crunchy": ["Still hot.", "Cool. Loud.", "The heat.", "Just cooled."],
     "brittle": ["Room temperature.", "Cool.", "Forty degrees.", "Chilled."],
     "creamy": ["Chilled.", "Cold.", "Frozen.", "Still cold."],
     "chewy": ["Steaming.", "Body heat.", "Warm.", "Still warm."],
@@ -412,7 +412,7 @@ def _concept_hash(data: dict) -> int:
 # MAIN AUTOCORRECT FUNCTION
 # ---------------------------------------------------------------------------
 
-def autocorrect_gen1(data: Dict[str, Any]) -> Tuple[Dict[str, Any], List[AutoFixWarning]]:
+def autocorrect_gen1(data: Dict[str, Any], thermal_blacklist: Optional[Set[str]] = None) -> Tuple[Dict[str, Any], List[AutoFixWarning]]:
     """
     Apply all deterministic auto-corrections to GEN1 output.
 
@@ -453,7 +453,7 @@ def autocorrect_gen1(data: Dict[str, Any]) -> Tuple[Dict[str, Any], List[AutoFix
     _fix_direction_tags(scenes, w)
     _fix_narrator_script_tags(scenes, w)
     _fix_warning_line_element_sync(d, scenes, w)
-    _fix_thermal_first_word(d, scenes, w)
+    _fix_thermal_first_word(d, scenes, w, thermal_blacklist=thermal_blacklist)
     _fix_narrator_vo_sync(scenes, w)
     _fix_duplicate_vo_across_scenes(scenes, w)  # Silence duplicate VO BEFORE duration/truncation
     _fix_scene_durations(scenes, w)
@@ -473,6 +473,7 @@ def autocorrect_gen1(data: Dict[str, Any]) -> Tuple[Dict[str, Any], List[AutoFix
     _fix_lighting_rotation(d, w)                  # Anti-template-lock: NIGHT_NEON/MORNING_GOLDEN
     _fix_warm_food_warm_light_collision(d, w)     # P1: warm food + warm light = visual monotony (AFTER rotation)
     _fix_required_top_level_fields(d, scenes, w)  # P0: loop, first_frame, temp_contrast fallbacks
+    _fix_consecutive_warm_backgrounds(d, scenes, w)  # Fix 6: break WARM/NEUTRAL runs
     _fix_energy_floor(d, scenes, w)        # P0: consecutive LOW ban + max 1 LOW + ramp
     _fix_hook_first_words_sync(d, scenes, w)  # P0: hook.first_words ↔ narrator_script sync
     _fix_money_shot_saliva_trigger(d, scenes, w)     # Craving anchor: inject saliva trigger word
@@ -480,6 +481,7 @@ def autocorrect_gen1(data: Dict[str, Any]) -> Tuple[Dict[str, Any], List[AutoFix
     _fix_temporal_channel_injection(d, scenes, w)   # 4-channel: inject "still X-ing" if missing
     _fix_tactile_channel_injection(d, scenes, w)    # 4-channel: inject texture word if missing
     _fix_narrator_word_count(scenes, w)     # Re-truncate after all injections (2nd pass)
+    _verify_humor_survived(d, scenes, w)   # Rescue humor lost to truncation (Fix 2)
     _fix_voiceover_segment_word_sync(d, scenes, w)  # Sync VO content words to narrator (after truncation)
     _warn_total_vo_budget(d, scenes, w)              # Warn if estimated VO > target duration
     _fix_full_script_rebuild(d, scenes, w)  # ALWAYS last — rebuilds from segments
@@ -1133,6 +1135,25 @@ def _fix_on_screen_text(d: dict, scenes: list, w: list) -> None:
                 f"Auto-cleaned parentheticals: '{on_screen.strip()[:40]}' → '{cleaned}'"))
 
 
+def _extract_turn_words(line: str) -> Optional[Set[str]]:
+    """Extract punchline/turn words from humor line's last sentence.
+
+    Returns None if line has only 1 sentence (no distinct turn).
+    """
+    sentences = re.split(r'(?<=[.!?])\s+', line.strip())
+    sentences = [s for s in sentences if s.strip()]
+    if len(sentences) < 2:
+        return None  # single sentence — general matcher handles it
+
+    turn_sentence = sentences[-1]
+    turn_words = {
+        wd.strip(".,!?:;\"'").lower()
+        for wd in turn_sentence.split()
+        if len(wd.strip(".,!?:;\"'")) >= 3  # >=3 not >3, catch short punchlines like "Jam"
+    }
+    return turn_words if turn_words else None
+
+
 def _surface_humor_to_vo(d: dict, scenes: list, w: list) -> None:
     """Surface humor lines into VO or on-screen text so viewers actually see/hear them.
 
@@ -1187,17 +1208,109 @@ def _surface_humor_to_vo(d: dict, scenes: list, w: list) -> None:
         osd_hits = sum(1 for hw in humor_words if hw in osd_plain)
         surfaced = (vo_hits >= 2) or (osd_hits >= 2)  # at least 2 key words match
 
+        # Turn-word check: if humor has distinct turn (≥2 sentences),
+        # require at least 1 turn word present — setup match alone is not enough
+        turn_words = _extract_turn_words(line)
+        if surfaced and turn_words:
+            turn_in_vo = any(tw in vo_plain for tw in turn_words)
+            turn_in_osd = any(tw in osd_plain for tw in turn_words)
+            if not turn_in_vo and not turn_in_osd:
+                surfaced = False  # setup words matched but punchline is missing
+
         if surfaced:
             continue  # humor is already visible/audible
 
         # --- Attempt auto-fix: inject humor into [silence] VO ---
         is_silence = (not vo_seg.strip() or vo_seg.strip() == "[silence]")
         if not is_silence:
-            # Scene has VO but humor isn't in it — warn, don't overwrite
+            # Scene has existing VO — try 3 injection paths instead of giving up
+
+            # Current narrator word count
+            narrator_words = [wd for wd in narrator.split() if wd.strip()] if narrator.strip() else []
+            narrator_wc = len(narrator_words)
+
+            dur = scene.get("duration_seconds", 2.0)
+            try:
+                dur_f = float(dur)
+            except (ValueError, TypeError):
+                dur_f = 2.0
+            max_w = _max_words_for_duration(dur_f)
+
+            # Extract humor first sentence
+            humor_sentences = re.split(r'(?<=[.!?])\s+', line.strip())
+            humor_first = humor_sentences[0].rstrip(".")
+            humor_first_words = humor_first.split()
+
+            # Check if this is a turn-substitution case (setup in VO, turn missing)
+            is_turn_substitution = (turn_words is not None
+                                    and vo_hits >= 2
+                                    and not any(tw in vo_plain for tw in turn_words))
+
+            if is_turn_substitution:
+                # Gemini wrote the setup but substituted the punchline — replace with humor line
+                humor_clean = line.strip().rstrip(".")
+                humor_wc = len(humor_clean.split())
+                if humor_wc <= max_w:
+                    scene["narrator_script"] = f"{humor_clean}."
+                    tag_match = re.match(r'\[[\w\s]+\]', vo_seg.strip())
+                    leading_tag = tag_match.group(0) if tag_match else "[whispers]"
+                    scene["voiceover_segment"] = f"{leading_tag} {humor_clean}."
+                    w.append(AutoFixWarning(
+                        f"scenes[{s_idx}].voiceover_segment",
+                        f"Humor TURN FIX: replaced substituted punchline in VO: '{humor_clean[:50]}.'"
+                    ))
+                    continue
+                # Fall through to PATH 1/2/3 if humor line too long
+
+            # PATH 1: Append full first sentence with [pause] separator
+            if narrator_wc + len(humor_first_words) <= max_w:
+                appended_narrator = f"{narrator.rstrip().rstrip('.')}. {humor_first}."
+                scene["narrator_script"] = appended_narrator
+                # Rebuild voiceover_segment with pause separator
+                tag_match = re.match(r'\[[\w\s]+\]', vo_seg.strip())
+                leading_tag = tag_match.group(0) if tag_match else "[whispers]"
+                scene["voiceover_segment"] = f"{leading_tag} {_strip_tags(narrator).rstrip().rstrip('.')}. [pause] {humor_first}."
+                w.append(AutoFixWarning(
+                    f"scenes[{s_idx}].voiceover_segment",
+                    f"Humor PATH 1: appended to existing VO: '...{humor_first[:40]}.'"
+                ))
+                continue
+
+            # PATH 2: Extract first clause (before comma/dash) — shortened version
+            clause_match = re.split(r'[,\u2014—]', humor_first, maxsplit=1)
+            if len(clause_match) > 1:
+                short_clause = clause_match[0].strip().rstrip(".")
+                short_clause_words = short_clause.split()
+                if narrator_wc + len(short_clause_words) <= max_w and len(short_clause_words) >= 2:
+                    appended_narrator = f"{narrator.rstrip().rstrip('.')}. {short_clause}."
+                    scene["narrator_script"] = appended_narrator
+                    tag_match = re.match(r'\[[\w\s]+\]', vo_seg.strip())
+                    leading_tag = tag_match.group(0) if tag_match else "[whispers]"
+                    scene["voiceover_segment"] = f"{leading_tag} {_strip_tags(narrator).rstrip().rstrip('.')}. [pause] {short_clause}."
+                    w.append(AutoFixWarning(
+                        f"scenes[{s_idx}].voiceover_segment",
+                        f"Humor PATH 2: appended shortened clause: '...{short_clause[:40]}.'"
+                    ))
+                    continue
+
+            # PATH 3: OSD fallback — put humor in on_screen_text (≤6 words)
+            osd_candidate_words = humor_first_words[:6]
+            osd_text = " ".join(osd_candidate_words)
+            if len(osd_candidate_words) >= 2:
+                existing_osd = scene.get("on_screen_text", "")
+                if not existing_osd or not existing_osd.strip():
+                    scene["on_screen_text"] = osd_text
+                    w.append(AutoFixWarning(
+                        f"scenes[{s_idx}].on_screen_text",
+                        f"Humor PATH 3: placed in OSD (VO full): '{osd_text}'"
+                    ))
+                    continue
+
+            # All 3 paths exhausted — warn
             w.append(AutoFixWarning(
                 f"humor[{h_idx}]",
-                f"Humor line orphaned — exists in humor array but absent from "
-                f"Scene {scene_num} VO and on_screen_text: '{line[:60]}'"
+                f"Humor line orphaned — all injection paths exhausted for "
+                f"Scene {scene_num}: '{line[:60]}'"
             ))
             continue
 
@@ -1555,7 +1668,7 @@ def _infer_element(d: dict) -> str:
 # NEW AUTO-FIXES (Phase 2 — Path B)
 # ---------------------------------------------------------------------------
 
-def _fix_thermal_first_word(d: dict, scenes: list, w: list) -> None:
+def _fix_thermal_first_word(d: dict, scenes: list, w: list, thermal_blacklist: Optional[Set[str]] = None) -> None:
     """Scene 1 narrator_script MUST start with a temperature word.
 
     TOP RULE: THERMAL SLOT in Scene 1 is MANDATORY.
@@ -1605,6 +1718,19 @@ def _fix_thermal_first_word(d: dict, scenes: list, w: list) -> None:
     h = _concept_hash(d)
     temps = _TEXTURE_TO_TEMPS.get(texture, ["Still warm.", "The heat.", "Barely cooled.", "Scorched."])
     temp_sentence = temps[h % len(temps)]
+
+    # Blacklist check: rotate to next candidate if selected phrase matches recent opener
+    if thermal_blacklist:
+        selected_key = temp_sentence.split(".")[0].strip().lower()
+        if selected_key in thermal_blacklist:
+            original_idx = h % len(temps)
+            for offset in range(1, len(temps)):
+                candidate_idx = (original_idx + offset) % len(temps)
+                candidate_key = temps[candidate_idx].split(".")[0].strip().lower()
+                if candidate_key not in thermal_blacklist:
+                    temp_sentence = temps[candidate_idx]
+                    break
+            # If all blocked, keep original (better than nothing)
 
     # Prepend temperature sentence
     new_narrator = f"{temp_sentence} {narrator.strip()}"
@@ -2143,6 +2269,99 @@ def _fix_narrator_word_count(scenes: list, w: list) -> None:
             f"Word overflow: {old_count}→{max_words} for {duration}s: "
             f"'{narrator[:35]}' → '{truncated}'",
         ))
+
+
+def _verify_humor_survived(d: dict, scenes: list, w: list) -> None:
+    """Post-truncation humor rescue — re-check that humor keywords survive in VO/OSD.
+
+    After _fix_narrator_word_count truncation, humor lines appended by Fix 1 may have
+    been chopped off. This function re-checks and attempts rescue:
+    1. Re-check ≥2 keyword hits in VO/OSD
+    2. If humor lost: replace scene narrator with humor first sentence (if fits in word budget)
+    3. If can't restore: emit HIGH severity warning
+    """
+    humor = d.get("humor")
+    if not humor or not isinstance(humor, list):
+        return
+
+    for h_idx, h in enumerate(humor):
+        if not isinstance(h, dict):
+            continue
+        scene_num = h.get("scene_number")
+        line = h.get("line", "")
+        if not scene_num or not isinstance(line, str) or not line.strip():
+            continue
+
+        try:
+            s_idx = int(scene_num) - 1
+        except (ValueError, TypeError):
+            continue
+        if s_idx < 0 or s_idx >= len(scenes):
+            continue
+        scene = scenes[s_idx]
+        if not isinstance(scene, dict):
+            continue
+
+        vo_seg = scene.get("voiceover_segment", "") or ""
+        on_screen = scene.get("on_screen_text", "") or ""
+        narrator = scene.get("narrator_script", "") or ""
+
+        # Extract humor keywords (>3 chars)
+        humor_words = {
+            wd.strip(".,!?:;\"'").lower()
+            for wd in line.split()
+            if len(wd.strip(".,!?:;\"'")) > 3
+        }
+        if not humor_words:
+            continue
+
+        vo_plain = _strip_tags(vo_seg).lower()
+        osd_plain = on_screen.lower()
+
+        vo_hits = sum(1 for hw in humor_words if hw in vo_plain)
+        osd_hits = sum(1 for hw in humor_words if hw in osd_plain)
+        surfaced = (vo_hits >= 2) or (osd_hits >= 2)
+
+        # Turn-word check (same as _surface_humor_to_vo)
+        turn_words = _extract_turn_words(line)
+        if surfaced and turn_words:
+            turn_in_vo = any(tw in vo_plain for tw in turn_words)
+            turn_in_osd = any(tw in osd_plain for tw in turn_words)
+            if not turn_in_vo and not turn_in_osd:
+                surfaced = False
+
+        if surfaced:
+            continue  # humor survived truncation
+
+        # Humor lost — attempt rescue: replace narrator with humor first sentence
+        humor_sentences = re.split(r'(?<=[.!?])\s+', line.strip())
+        humor_first = humor_sentences[0].rstrip(".,!?;:")
+        humor_first_words = humor_first.split()
+
+        dur = scene.get("duration_seconds", 2.0)
+        try:
+            dur_f = float(dur)
+        except (ValueError, TypeError):
+            dur_f = 2.0
+        max_w = _max_words_for_duration(dur_f)
+
+        if len(humor_first_words) <= max_w:
+            # Replace narrator with humor first sentence
+            scene["narrator_script"] = f"{humor_first}."
+            tag_match = re.match(r'\[[\w\s]+\]', vo_seg.strip()) if vo_seg.strip() else None
+            leading_tag = tag_match.group(0) if tag_match else "[whispers]"
+            scene["voiceover_segment"] = f"{leading_tag} {humor_first}."
+            w.append(AutoFixWarning(
+                f"scenes[{s_idx}].narrator_script",
+                f"Humor RESCUE: replaced truncated VO with humor line: '{humor_first[:50]}.'"
+            ))
+        else:
+            # Can't restore — HIGH severity warning
+            w.append(AutoFixWarning(
+                f"humor[{h_idx}]",
+                f"[HIGH] Humor lost after truncation — cannot fit in Scene {scene_num} "
+                f"({len(humor_first_words)}w > {max_w}w): '{line[:60]}'"
+            ))
 
 
 # Dangling words for standalone strip (broader than truncation-only set)
@@ -2747,6 +2966,64 @@ def _fix_required_top_level_fields(d: dict, scenes: list, w: list) -> None:
             f"Auto-created missing temperature_contrast: subject={subj_temp}, bg={bg_temp}"))
 
 
+def _fix_consecutive_warm_backgrounds(d: dict, scenes: list, w: list) -> None:
+    """Audit consecutive WARM/NEUTRAL background_temp and inject COLD to break runs.
+
+    Rules:
+    - If two adjacent scenes both have background_temp in {WARM, NEUTRAL}: fix the second
+    - Exception: skip if both scenes have SP ≥ 8 AND narrative_purpose suggests FOOD_DOMINANT
+      (macro harmony in high-SP food scenes is intentional)
+    - Fix: set second scene's background_temp to COLD
+    - Also inject a cold keyword into image_prompt if no cold terms present
+    """
+    _WARM_TEMPS = {"WARM", "NEUTRAL"}
+    _COLD_TERMS = {"cold", "cool", "ice", "frozen", "icy", "frost", "snow", "steel", "blue",
+                   "concrete", "marble", "stone", "shadow", "night", "dark", "neon"}
+    _FOOD_DOMINANT_PURPOSES = {"DETAIL", "FEATURE", "FEATURE_HIGHLIGHT"}
+
+    for i in range(len(scenes) - 1):
+        s1, s2 = scenes[i], scenes[i + 1]
+        if not isinstance(s1, dict) or not isinstance(s2, dict):
+            continue
+
+        bg1 = (s1.get("background_temp") or "").upper()
+        bg2 = (s2.get("background_temp") or "").upper()
+
+        if bg1 not in _WARM_TEMPS or bg2 not in _WARM_TEMPS:
+            continue
+
+        # Exception: high SP + food dominant (macro harmony)
+        sp1 = s1.get("sensory_pressure", 0)
+        sp2 = s2.get("sensory_pressure", 0)
+        try:
+            sp1, sp2 = int(sp1), int(sp2)
+        except (ValueError, TypeError):
+            sp1, sp2 = 0, 0
+        purpose2 = (s2.get("narrative_purpose") or "").upper()
+        if sp1 >= 8 and sp2 >= 8 and purpose2 in _FOOD_DOMINANT_PURPOSES:
+            continue
+
+        # Fix: set second scene to COLD
+        s2["background_temp"] = "COLD"
+        s2_sn = s2.get("scene_number", i + 2)
+        w.append(AutoFixWarning(
+            f"scenes[S{s2_sn}].background_temp",
+            f"Consecutive warm backgrounds (S{s1.get('scene_number', i+1)}={bg1}, S{s2_sn}={bg2})"
+            f" — set S{s2_sn} to COLD",
+        ))
+
+        # Inject cold keyword into image_prompt if missing
+        img_prompt = s2.get("image_prompt", "")
+        if isinstance(img_prompt, str) and img_prompt.strip():
+            img_words = set(img_prompt.lower().split())
+            if not img_words & _COLD_TERMS:
+                s2["image_prompt"] = f"{img_prompt.rstrip().rstrip('.')}. Cool steel undertones."
+                w.append(AutoFixWarning(
+                    f"scenes[S{s2_sn}].image_prompt",
+                    f"Injected cold term into image_prompt for temperature contrast",
+                ))
+
+
 def _fix_energy_floor(d: dict, scenes: list, w: list) -> None:
     """Fix consecutive LOW energy scenes and enforce max 1 LOW per video.
 
@@ -2814,6 +3091,32 @@ def _fix_energy_floor(d: dict, scenes: list, w: list) -> None:
                         f" — raised to MEDIUM for contrast ramp",
                     ))
                 break
+
+    # Pass 4: Break 3+ consecutive same energy (MEDIUM or HIGH)
+    for i in range(len(scenes) - 2):
+        s1, s2, s3 = scenes[i], scenes[i + 1], scenes[i + 2]
+        if not all(isinstance(s, dict) for s in (s1, s2, s3)):
+            continue
+        e1 = s1.get("energy_level")
+        e2 = s2.get("energy_level")
+        e3 = s3.get("energy_level")
+        if e1 == e2 == e3 and e1 in ("MEDIUM", "HIGH"):
+            mid = scenes[i + 1]
+            mid_sn = mid.get("scene_number", i + 2)
+            if e1 == "MEDIUM":
+                mid["energy_level"] = "HIGH"
+                w.append(AutoFixWarning(
+                    f"scenes[S{mid_sn}].energy_level",
+                    f"3x consecutive MEDIUM (S{s1.get('scene_number', '?')}-S{s3.get('scene_number', '?')})"
+                    f" — pumped S{mid_sn} to HIGH",
+                ))
+            else:  # HIGH
+                mid["energy_level"] = "MEDIUM"
+                w.append(AutoFixWarning(
+                    f"scenes[S{mid_sn}].energy_level",
+                    f"3x consecutive HIGH (S{s1.get('scene_number', '?')}-S{s3.get('scene_number', '?')})"
+                    f" — dropped S{mid_sn} to MEDIUM for valley",
+                ))
 
 
 def _fix_hook_first_words_sync(d: dict, scenes: list, w: list) -> None:

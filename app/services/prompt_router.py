@@ -445,7 +445,8 @@ class PromptRouter:
                 logger.warning(f"[GEN1] viral_assessment: MISSING (will use defaults)")
 
             # Run autocorrect BEFORE Pydantic validation (mirrors GEN2 pattern)
-            json_data, ac_warnings = autocorrect_gen1(json_data)
+            thermal_bl = structural_memory.recent_scene1_openers(5)
+            json_data, ac_warnings = autocorrect_gen1(json_data, thermal_blacklist=thermal_bl)
             if ac_warnings:
                 logger.info(f"[GEN1_AUTOCORRECT] Applied {len(ac_warnings)} auto-fixes before parsing")
                 for aw in ac_warnings:
