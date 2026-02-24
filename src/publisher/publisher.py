@@ -248,13 +248,14 @@ class Publisher:
                 video_id=video_id,
             ))
 
-            # Register for A/B monitoring (non-fatal)
-            self._register_for_ab_monitoring(
-                project_id=project_id,
-                video_id=video_id,
-                channel_id=target_channel,
-                scheduled_datetime=scheduled_datetime,
-            )
+            # Register for A/B monitoring (non-fatal, skipped if disabled)
+            if AB_ENABLED:
+                self._register_for_ab_monitoring(
+                    project_id=project_id,
+                    video_id=video_id,
+                    channel_id=target_channel,
+                    scheduled_datetime=scheduled_datetime,
+                )
 
             # Update scheduler queue if scheduled
             if scheduled_datetime:
@@ -342,7 +343,11 @@ class Publisher:
             logger.success(f"Published: {status.video_url}")
 
             # Ensure A/B daemon is running (non-fatal)
-            self._ensure_ab_daemon()
+            from src.publisher.ab_config import AB_ENABLED
+            if AB_ENABLED:
+                self._ensure_ab_daemon()
+            else:
+                logger.info("A/B rotation disabled (AB_ENABLED=False)")
 
             return True, status
 

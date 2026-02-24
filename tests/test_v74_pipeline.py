@@ -320,9 +320,9 @@ class TestAudioEngine:
 
         assert DEFAULT_VOLUMES[AudioLayer.BED] == 0.15
         assert DEFAULT_VOLUMES[AudioLayer.MUSIC] == 0.5
-        assert DEFAULT_VOLUMES[AudioLayer.SFX] == 0.7
-        assert DEFAULT_VOLUMES[AudioLayer.FOLEY] == 0.5
-        assert DEFAULT_VOLUMES[AudioLayer.VO] == 1.0
+        assert DEFAULT_VOLUMES[AudioLayer.SFX] == 0.40
+        assert DEFAULT_VOLUMES[AudioLayer.FOLEY] == 0.35
+        assert DEFAULT_VOLUMES[AudioLayer.VO] == 1.5
 
     def test_audio_mixer_init(self):
         """Test AudioMixer initialization."""

@@ -795,7 +795,6 @@ class YouTubeAPI:
                 "status": {
                     "privacyStatus": privacy_status,
                     "selfDeclaredMadeForKids": state.made_for_kids,
-                    "containsSyntheticMedia": True,
                 },
             }
 

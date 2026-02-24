@@ -43,7 +43,15 @@ VALID_EFFECT_PALETTES: set = {
 
 MIN_SPEED = 1.5
 VO_PADDING = 0.3  # scene_dur must be >= vo_dur + VO_PADDING
-TARGET_TOTAL_MAX_GEN3B = 25.0  # hard cap for total video duration (seconds)
+TARGET_TOTAL_MAX_GEN3B = 25.0  # legacy constant for backwards-compat (tests)
+
+
+def _get_duration_cap(n_scenes: int) -> float:
+    """Dynamic cap: ~2.75s per scene, clamped [15, 25].
+
+    8 scenes → 22s, 7 → 19.25s, 6 → 16.5s, 9 → 24.75s, 10 → 25s.
+    """
+    return min(25.0, max(15.0, n_scenes * 2.75))
 
 
 # ---------------------------------------------------------------------------
@@ -297,19 +305,21 @@ def _fix_enforce_gen3a_durations(scenes: list, gen3a_data: Optional[dict], w: li
 
 
 def _fix_total_duration_cap(d: dict, scenes: list, w: list) -> None:
-    """Fix #20: Proportionally compress all scenes if total > TARGET_TOTAL_MAX_GEN3B (25s).
+    """Fix #20: Proportionally compress all scenes if total > dynamic cap.
 
+    Dynamic cap = f(scene_count): ~2.75s per scene, clamped [15, 25].
     This is the last-resort cap — even if gen3a durations are honoured,
     the sum across 8-10 scenes can still exceed the Shorts budget.
     """
     if not scenes:
         return
 
+    cap = _get_duration_cap(len(scenes))
     total = float(scenes[-1].get("timeline_end", 0))
-    if total <= TARGET_TOTAL_MAX_GEN3B:
+    if total <= cap:
         return
 
-    ratio = TARGET_TOTAL_MAX_GEN3B / total  # <1 → compress
+    ratio = cap / total  # <1 → compress
     cumulative = 0.0
 
     for scene in scenes:
@@ -330,7 +340,7 @@ def _fix_total_duration_cap(d: dict, scenes: list, w: list) -> None:
     d["total_duration"] = round(cumulative, 4)
     w.append(AutoFixWarning(
         "total_duration",
-        f"Duration cap: {total:.2f}s → {cumulative:.2f}s (max {TARGET_TOTAL_MAX_GEN3B}s)",
+        f"Duration cap: {total:.2f}s → {cumulative:.2f}s (max {cap:.1f}s for {len(scenes)} scenes)",
     ))
 
 
@@ -392,6 +402,13 @@ def _fix_populate_sfx_events(d: dict, scenes: list, gen3a_data: Optional[dict], 
             output_relative = transform_source_to_output(source_ts, speed_segments)
             output_absolute = round(timeline_start + output_relative, 4)
 
+            # Clamp to scene boundaries (speed_segments may be inconsistent
+            # with scene duration after gen3a enforcement / duration cap)
+            timeline_end = float(scene.get("timeline_end", timeline_start + 10))
+            scene_dur = timeline_end - timeline_start
+            if scene_dur > 0 and output_absolute > timeline_end:
+                output_absolute = round(timeline_start + scene_dur * 0.3, 4)
+
             sfx_file = sfx_rec.get("file", f"scene_{sn}_sfx.mp3")
             sfx_type = sfx_rec.get("type", "IMPACT")
             peak_id = peak.get("id", f"S{sn}_AP1")
@@ -401,7 +418,7 @@ def _fix_populate_sfx_events(d: dict, scenes: list, gen3a_data: Optional[dict], 
                 "output_timestamp": output_absolute,
                 "effect": sfx_type,
                 "file": sfx_file,
-                "volume": min(1.0, float(sfx_rec.get("intensity", 0.8))),
+                "volume": min(0.45, float(sfx_rec.get("intensity", 0.8))),
                 "source": "gen3a_action_peak",
             })
 
@@ -456,7 +473,7 @@ def _fix_sfx_for_scenes_without_peaks(
             "output_timestamp": sfx_timestamp,
             "effect": "IMPACT",
             "file": f"scene_{sn}_sfx.mp3",
-            "volume": 0.7,
+            "volume": 0.40,
             "source": "no_peak_fallback",
         })
         added += 1

@@ -30,6 +30,7 @@ from app.services.gen3b_autocorrect import (
     _fix_total_duration,
     _fix_effect_palette_compliance,
     TARGET_TOTAL_MAX_GEN3B,
+    _get_duration_cap,
 )
 from app.services.gen1_autocorrect import AutoFixWarning
 
@@ -301,7 +302,7 @@ class TestPhase2SpeedTiming:
     # --- Fix #20: Total duration cap ---
 
     def test_fix_total_duration_cap_compresses(self):
-        """Fix #20: 8 scenes × 4.0s = 32.0s → compressed to 25.0s."""
+        """Fix #20: 8 scenes × 4.0s = 32.0s → compressed to dynamic cap (22s for 8 scenes)."""
         d = _make_gen3b_data(8)
         # Override each scene to 4.0s duration (total 32.3s with 0.3 hook)
         t = 0.3
@@ -314,7 +315,8 @@ class TestPhase2SpeedTiming:
         w = []
         _fix_total_duration_cap(d, d["scenes"], w)
         total = d["scenes"][-1]["timeline_end"]
-        assert total <= TARGET_TOTAL_MAX_GEN3B
+        cap = _get_duration_cap(8)  # 22.0
+        assert total <= cap + 0.01, f"total {total:.2f} > cap {cap}"
         assert len(w) >= 1
         assert "Duration cap" in w[0].message
 
@@ -590,7 +592,7 @@ class TestIntegration:
             assert sfx[0]["output_timestamp"] >= first_scene_start
 
     def test_full_autocorrect_duration_cap_enforced(self):
-        """Integration: inflated 32s manifest capped to ≤ 25s."""
+        """Integration: inflated 32s manifest capped to dynamic cap (22s for 8 scenes)."""
         data = _make_gen3b_data(8)
         # Inflate each scene to ~4s (total ~32.3s)
         t = 0.3
@@ -604,9 +606,10 @@ class TestIntegration:
         gen3a = _make_gen3a_data(8)
         corrected, warnings = autocorrect_gen3b(data, gen3a_data=gen3a)
 
+        cap = _get_duration_cap(8)
         total = corrected["total_duration"]
-        assert total <= TARGET_TOTAL_MAX_GEN3B, (
-            f"total_duration {total:.2f}s exceeds cap {TARGET_TOTAL_MAX_GEN3B}s"
+        assert total <= cap + 0.01, (
+            f"total_duration {total:.2f}s exceeds cap {cap:.1f}s"
         )
 
     def test_full_autocorrect_vo_constraint_removed(self):
@@ -624,3 +627,81 @@ class TestIntegration:
         # Verify VO constraint did NOT inflate scenes
         vo_warnings = [w for w in warnings if "Extended by" in w.message and "for VO" in w.message]
         assert len(vo_warnings) == 0, "VO constraint should no longer inflate scenes"
+
+
+# ---------------------------------------------------------------------------
+# DYNAMIC DURATION CAP (Level 4)
+# ---------------------------------------------------------------------------
+
+class TestDynamicDurationCap:
+
+    def test_get_duration_cap_8_scenes(self):
+        """8 scenes → 22.0s."""
+        assert _get_duration_cap(8) == 22.0
+
+    def test_get_duration_cap_6_scenes(self):
+        """6 scenes → 16.5s."""
+        assert _get_duration_cap(6) == 16.5
+
+    def test_get_duration_cap_7_scenes(self):
+        """7 scenes → 19.25s."""
+        assert _get_duration_cap(7) == 19.25
+
+    def test_get_duration_cap_10_scenes(self):
+        """10 scenes → clamped to 25.0s."""
+        assert _get_duration_cap(10) == 25.0
+
+    def test_get_duration_cap_lower_clamp(self):
+        """4 scenes → clamped to 15.0s (4 * 2.75 = 11.0 < 15)."""
+        assert _get_duration_cap(4) == 15.0
+
+    def test_get_duration_cap_upper_clamp(self):
+        """12 scenes → clamped to 25.0s (12 * 2.75 = 33.0 > 25)."""
+        assert _get_duration_cap(12) == 25.0
+
+    def test_fix_total_duration_cap_6_scenes(self):
+        """6 scenes × 4.0s = 24.0s → compressed to 16.5s."""
+        d = _make_gen3b_data(6)
+        t = 0.0
+        for scene in d["scenes"]:
+            scene["timeline_start"] = t
+            scene["timeline_end"] = t + 4.0
+            scene["speed_segments"] = [_make_speed_segment(0.0, 10.0, 2.5)]
+            t += 4.0
+        d["total_duration"] = t
+        w = []
+        _fix_total_duration_cap(d, d["scenes"], w)
+        total = d["scenes"][-1]["timeline_end"]
+        cap = _get_duration_cap(6)
+        assert total <= cap + 0.01, f"total {total:.2f} > cap {cap}"
+        assert len(w) >= 1
+
+    def test_fix_total_duration_cap_10_scenes_still_25(self):
+        """10 scenes cap = 25.0s (max clamp)."""
+        d = _make_gen3b_data(10)
+        t = 0.0
+        for scene in d["scenes"]:
+            scene["timeline_start"] = t
+            scene["timeline_end"] = t + 3.5
+            scene["speed_segments"] = [_make_speed_segment(0.0, 10.0, 2.5)]
+            t += 3.5
+        d["total_duration"] = t
+        w = []
+        _fix_total_duration_cap(d, d["scenes"], w)
+        total = d["scenes"][-1]["timeline_end"]
+        assert total <= 25.01
+
+    def test_dynamic_cap_integration_8_scenes(self):
+        """Integration: 8-scene manifest capped to ≤ 22s."""
+        data = _make_gen3b_data(8)
+        t = 0.3
+        for scene in data["scenes"]:
+            scene["timeline_start"] = t
+            scene["timeline_end"] = t + 3.5
+            scene["speed_segments"] = [_make_speed_segment(0.0, 10.0, 2.5)]
+            t += 3.5
+        data["total_duration"] = t
+
+        gen3a = _make_gen3a_data(8)
+        corrected, warnings = autocorrect_gen3b(data, gen3a_data=gen3a)
+        assert corrected["total_duration"] <= 22.01

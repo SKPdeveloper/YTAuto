@@ -1,3 +1,6 @@
+# Master switch — set to True to re-enable A/B metadata rotation.
+AB_ENABLED = False
+
 """
 A/B Metadata Rotation Configuration
 
@@ -21,20 +24,20 @@ Sources:
 # Scale these UP as channel grows (e.g., 3-5x for 1000+ subs).
 THRESHOLDS = {
     "check_1": {
-        "hours": 6,
-        "dead_below": 15,           # seed test gave ~0 impressions
-        "uncertain_below": 50,      # seed test inconclusive
-        "alive_above": 50,          # seed test passed, algo expanding
+        "hours": 24,
+        "dead_below": 30,           # 24h — seed test gave no traction
+        "uncertain_below": 80,      # seed test inconclusive
+        "alive_above": 80,          # seed test passed, algo expanding
     },
     "check_2": {
-        "hours": 18,
-        "dead_below": 40,           # impressions stopped
-        "alive_above": 150,         # active distribution
+        "hours": 48,
+        "dead_below": 80,           # 48h — impressions stopped
+        "alive_above": 200,         # active distribution
     },
     "check_3": {
-        "hours": 48,
-        "dead_below": 100,          # final evaluation — no traction
-        "alive_above": 100,         # minimum viability reached
+        "hours": 72,
+        "dead_below": 150,          # 72h — final evaluation, no traction
+        "alive_above": 150,         # minimum viability reached
     },
 }
 

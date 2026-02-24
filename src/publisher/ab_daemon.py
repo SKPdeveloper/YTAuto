@@ -38,6 +38,12 @@ def _setup_file_logging() -> None:
 def run_daemon() -> None:
     """Start the A/B rotation monitoring daemon with checkpoint-aligned sleep."""
     _setup_file_logging()
+
+    from .ab_config import AB_ENABLED
+    if not AB_ENABLED:
+        logger.info("A/B rotation disabled (AB_ENABLED=False). Daemon exiting.")
+        return
+
     monitor = ABMonitor()
     running = True
 

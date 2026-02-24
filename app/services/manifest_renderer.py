@@ -480,7 +480,12 @@ class ManifestRenderer:
             logger.info("  No brief or VO timing — using GEN3b timelines as-is")
             return
 
-        # 3. Compute deterministic timeline
+        # 3. Save old scene positions for SFX remap (before overwriting)
+        old_scene_positions: Dict[int, tuple] = {
+            s.scene_number: (s.timeline_start, s.timeline_end) for s in scenes
+        }
+
+        # 4. Compute deterministic timeline
         old_total = manifest.total_duration
         cumulative = 0.0
         n = len(scenes)
@@ -549,8 +554,8 @@ class ManifestRenderer:
 
             cumulative += scene_dur
 
-        # ── POST-TIMELINE CAP ──
-        TOTAL_CAP = 25.0
+        # ── POST-TIMELINE CAP ── (dynamic: ~2.75s per scene, clamped [15, 25])
+        TOTAL_CAP = min(25.0, max(15.0, len(scenes) * 2.75))
         if cumulative > TOTAL_CAP:
             scale = TOTAL_CAP / cumulative
             logger.info(f"  Timeline cap: {cumulative:.2f}s > {TOTAL_CAP}s — scaling by {scale:.2f}x")
@@ -568,6 +573,71 @@ class ManifestRenderer:
         logger.info(
             f"  Timeline total: {manifest.total_duration:.2f}s (was {old_total:.2f}s)"
         )
+
+        # ── REMAP SFX TIMESTAMPS to match new scene positions ──
+        self._remap_sfx_timestamps(manifest, old_scene_positions)
+
+    @staticmethod
+    def _remap_sfx_timestamps(
+        manifest: Gen3bManifest,
+        old_positions: Dict[int, tuple],
+    ) -> None:
+        """Remap SFX event timestamps after deterministic timeline recomputation.
+
+        SFX output_timestamp values from gen3b_autocorrect reference the OLD
+        timeline.  After _compute_deterministic_timeline() changes scene
+        positions, SFX must be remapped proportionally so each event stays
+        at the correct relative position within its scene.
+
+        old_positions: {scene_number: (old_start, old_end)} captured BEFORE
+        timeline recomputation.
+        """
+        import re as _re
+
+        audio_layers = manifest.audio_layers
+        if not audio_layers or not audio_layers.sfx_events:
+            return
+
+        # Build scene map: scene_number → ManifestScene (NEW positions)
+        scene_map: dict = {s.scene_number: s for s in manifest.scenes}
+
+        remapped = 0
+        for sfx in audio_layers.sfx_events:
+            # Extract scene number from file name (scene_4_sfx.mp3 → 4)
+            match = _re.search(r"scene_(\d+)", sfx.file)
+            if not match:
+                continue
+            target_sn = int(match.group(1))
+
+            scene = scene_map.get(target_sn)
+            if not scene:
+                continue
+
+            old_start, old_end = old_positions.get(target_sn, (0.0, 0.0))
+            old_dur = old_end - old_start
+            new_start = scene.timeline_start
+            new_dur = scene.timeline_end - new_start
+
+            if old_dur <= 0 or new_dur <= 0:
+                continue
+
+            # Compute relative position (0.0 = scene start, 1.0 = scene end)
+            old_ts = sfx.output_timestamp
+            fraction = (old_ts - old_start) / old_dur if old_dur > 0 else 0.3
+            fraction = max(0.0, min(1.0, fraction))  # clamp
+
+            new_ts = round(new_start + fraction * new_dur, 4)
+
+            if abs(new_ts - old_ts) > 0.05:
+                logger.info(
+                    f"  SFX remap: {sfx.file} S{target_sn} "
+                    f"{old_ts:.2f}s → {new_ts:.2f}s (frac={fraction:.2f})"
+                )
+                sfx.output_timestamp = new_ts
+                remapped += 1
+
+        if remapped:
+            logger.info(f"  SFX remap: {remapped} events repositioned")
 
     @staticmethod
     def _rescale_speed_segments(
@@ -624,6 +694,169 @@ class ManifestRenderer:
                         seg.speed = round(src_dur / seg.output_duration, 4)
 
     # ------------------------------------------------------------------
+    # VO Pause Trimming (Level 2 — remove inter-word pauses)
+    # ------------------------------------------------------------------
+
+    async def _trim_vo_pauses(
+        self,
+        project_dir: Path,
+        orig_vo_path: Path,
+        orig_start: float,
+        orig_end: float,
+        scene_number: int,
+        max_pause: float = 0.30,
+    ) -> tuple:
+        """Trim inter-word pauses from a VO segment using vo_alignment.json.
+
+        ElevenLabs character alignment encodes pauses INSIDE punctuation and
+        space characters (e.g. "." = 1.518-2.438 = 0.92s pause).  There are
+        NO gaps between characters — the timeline is continuous.
+
+        Algorithm: build word-level timing by grouping letter characters,
+        skipping spaces/punctuation/tags.  A "pause" = gap between the end
+        of one word's last letter and the start of the next word's first letter.
+
+        Returns (trimmed_file_path, trimmed_duration, speech_ranges) or
+        (None, original_duration, None).
+        """
+        import json as _json
+
+        alignment_path = project_dir / "vo_alignment.json"
+        if not alignment_path.exists():
+            return None, orig_end - orig_start, None
+
+        with open(alignment_path, "r", encoding="utf-8") as f:
+            alignment = _json.load(f)
+
+        chars = alignment.get("characters", [])
+        starts = alignment.get("character_start_times_seconds", [])
+        ends = alignment.get("character_end_times_seconds", [])
+
+        if not chars or len(chars) != len(starts) or len(chars) != len(ends):
+            return None, orig_end - orig_start, None
+
+        # ── Build word boundaries (skip spaces, punctuation, tags) ──
+        # A "word" = contiguous run of letter/digit characters
+        words: list = []  # [(word_start, word_end), ...]
+        in_tag = False
+        word_start = None
+        word_end = None
+
+        for ch, s, e in zip(chars, starts, ends):
+            # Skip characters outside this segment
+            if e <= orig_start or s >= orig_end:
+                continue
+
+            # Track tag brackets [whispers] etc
+            if ch == "[":
+                in_tag = True
+                continue
+            if ch == "]":
+                in_tag = False
+                continue
+            if in_tag:
+                continue
+
+            # Skip non-letter characters (spaces, punctuation)
+            if ch in (" ", ".", ",", "!", "?", ":", ";", "'", '"', "-", "…"):
+                # End of current word
+                if word_start is not None:
+                    words.append((word_start, word_end))
+                    word_start = None
+                    word_end = None
+                continue
+
+            # Letter/digit — part of a word
+            if word_start is None:
+                word_start = s
+            word_end = e
+
+        if word_start is not None:
+            words.append((word_start, word_end))
+
+        if len(words) < 2:
+            return None, orig_end - orig_start, None
+
+        # ── Build speech ranges: merge words that are close together ──
+        speech_ranges: list = []
+        range_start = words[0][0]
+        range_end = words[0][1]
+
+        for w_start, w_end in words[1:]:
+            gap = w_start - range_end
+            if gap > max_pause:
+                # Pause detected — save current range, start new one
+                speech_ranges.append((max(orig_start, range_start - 0.03),
+                                      range_end + 0.05))
+                range_start = w_start
+            range_end = w_end
+
+        speech_ranges.append((max(orig_start, range_start - 0.03),
+                              min(orig_end, range_end + 0.05)))
+
+        # Calculate savings
+        trimmed_dur = sum(r[1] - r[0] for r in speech_ranges)
+        original_dur = orig_end - orig_start
+        saved = original_dur - trimmed_dur
+
+        if saved < 0.3:  # not worth trimming
+            return None, original_dur, None
+
+        temp_file = project_dir / f"_vo_trimmed_s{scene_number}.mp3"
+
+        # Build filter_complex: atrim each range → concat
+        # (aselect doesn't work reliably for audio on Windows)
+        n = len(speech_ranges)
+        if n == 1:
+            # Single range — simple atrim
+            r = speech_ranges[0]
+            cmd = [
+                self.ffmpeg_path, "-y",
+                "-i", str(orig_vo_path),
+                "-af", f"atrim=start={r[0]:.4f}:end={r[1]:.4f},asetpts=N/SR/TB",
+                "-c:a", "libmp3lame", "-q:a", "2",
+                str(temp_file),
+            ]
+        else:
+            # Multiple ranges — atrim each + concat
+            parts = []
+            for i, r in enumerate(speech_ranges):
+                parts.append(
+                    f"[0:a]atrim=start={r[0]:.4f}:end={r[1]:.4f},"
+                    f"asetpts=N/SR/TB[p{i}]"
+                )
+            labels = "".join(f"[p{i}]" for i in range(n))
+            fc = ";".join(parts) + f";{labels}concat=n={n}:v=0:a=1[out]"
+            cmd = [
+                self.ffmpeg_path, "-y",
+                "-i", str(orig_vo_path),
+                "-filter_complex", fc,
+                "-map", "[out]",
+                "-c:a", "libmp3lame", "-q:a", "2",
+                str(temp_file),
+            ]
+
+        try:
+            await self._run_ffmpeg(cmd)
+        except Exception as e:
+            logger.warning(f"  VO trim: S{scene_number} failed: {e}")
+            return None, original_dur, None
+
+        if not temp_file.exists():
+            return None, original_dur, None
+
+        # Probe real duration
+        real_dur = await self._probe_duration(temp_file)
+        if real_dur:
+            trimmed_dur = real_dur
+
+        logger.info(
+            f"  VO trim: S{scene_number} {original_dur:.2f}s → {trimmed_dur:.2f}s "
+            f"(saved {saved:.2f}s)"
+        )
+        return temp_file, trimmed_dur, speech_ranges
+
+    # ------------------------------------------------------------------
     # Per-scene VO Compression + Re-timing
     # ------------------------------------------------------------------
 
@@ -644,7 +877,7 @@ class ManifestRenderer:
 
         VO_LEAD = 0.15
         VO_TAIL = 0.15
-        MAX_ATEMPO = 1.2  # cap: >1.2x sounds robotic on whisper voices
+        MAX_ATEMPO = 1.2  # cap: >1.2x causes VO/subtitle desync + sounds unnatural
         DEFAULT_DUR = 2.0
 
         vo_path = project_dir / "voiceover.mp3"
@@ -709,16 +942,24 @@ class ManifestRenderer:
             if max_vo_dur <= 0:
                 max_vo_dur = intended * 0.8  # fallback: 80% of scene
 
-            # Calculate compression ratio
-            if orig_dur > max_vo_dur and max_vo_dur > 0:
-                ratio = min(orig_dur / max_vo_dur, MAX_ATEMPO)
+            # --- Level 2: try pause trimming first ---
+            trimmed_path, trimmed_dur, speech_ranges = await self._trim_vo_pauses(
+                project_dir, original_vo_path,
+                orig_start, orig_end, sn,
+                max_pause=0.30,
+            )
+            use_trimmed = trimmed_path is not None and trimmed_path.exists()
+            effective_dur = trimmed_dur if use_trimmed else orig_dur
+
+            # Calculate compression ratio from effective (possibly trimmed) duration
+            if effective_dur > max_vo_dur and max_vo_dur > 0:
+                ratio = min(effective_dur / max_vo_dur, MAX_ATEMPO)
             else:
                 ratio = 1.0  # no compression needed
 
-            compressed_dur = orig_dur / ratio
+            compressed_dur = effective_dur / ratio
 
             # Build atempo filter chain (ffmpeg atempo range: 0.5–2.0)
-            # For ratio > 2.0, chain multiple atempo filters
             if ratio <= 2.0:
                 atempo_filter = f"atempo={ratio:.4f}"
             else:
@@ -728,15 +969,27 @@ class ManifestRenderer:
             seg_idx = scene_seg_counter.get(sn, 0)
             scene_seg_counter[sn] = seg_idx + 1
             temp_file = project_dir / f"_vo_scene_{sn}_{seg_idx}.mp3"
-            cmd = [
-                self.ffmpeg_path, "-y",
-                "-ss", f"{orig_start:.4f}",
-                "-t", f"{orig_dur:.4f}",
-                "-i", str(original_vo_path),
-                "-af", atempo_filter,
-                "-c:a", "libmp3lame", "-q:a", "2",
-                str(temp_file),
-            ]
+
+            if use_trimmed:
+                # Trimmed file is already extracted — just apply atempo
+                cmd = [
+                    self.ffmpeg_path, "-y",
+                    "-i", str(trimmed_path),
+                    "-af", atempo_filter,
+                    "-c:a", "libmp3lame", "-q:a", "2",
+                    str(temp_file),
+                ]
+            else:
+                # Extract from full VO + apply atempo
+                cmd = [
+                    self.ffmpeg_path, "-y",
+                    "-ss", f"{orig_start:.4f}",
+                    "-t", f"{orig_dur:.4f}",
+                    "-i", str(original_vo_path),
+                    "-af", atempo_filter,
+                    "-c:a", "libmp3lame", "-q:a", "2",
+                    str(temp_file),
+                ]
 
             try:
                 await self._run_ffmpeg(cmd)
@@ -757,6 +1010,13 @@ class ManifestRenderer:
                     await self._run_ffmpeg(cmd_fallback)
                 except Exception:
                     continue
+            finally:
+                # Cleanup trimmed temp file
+                if use_trimmed and trimmed_path.exists():
+                    try:
+                        trimmed_path.unlink()
+                    except OSError:
+                        pass
 
             if not temp_file.exists():
                 continue
@@ -770,19 +1030,27 @@ class ManifestRenderer:
                 )
                 compressed_dur = real_dur
 
+            # effective_ratio captures BOTH pause trimming AND atempo compression.
+            # _rescale_subtitles() needs this to correctly map original VO positions
+            # to compressed timeline (atempo_ratio alone misses trimming shrinkage).
+            effective_ratio = orig_dur / compressed_dur if compressed_dur > 0 else 1.0
+
             scene_vo_data.append({
                 "scene_number": sn,
                 "temp_file": temp_file,
                 "compressed_dur": compressed_dur,
                 "atempo_ratio": ratio,
+                "effective_ratio": effective_ratio,
+                "speech_ranges": speech_ranges if use_trimmed else None,
                 "original_start": orig_start,
                 "original_end": orig_end,
                 "text": seg.get("text", ""),
             })
 
+            trim_tag = " [trimmed]" if use_trimmed else ""
             logger.info(
                 f"  VO compress: S{sn} {orig_dur:.2f}s → {compressed_dur:.2f}s "
-                f"(atempo={ratio:.2f}, target≤{max_vo_dur:.2f}s)"
+                f"(atempo={ratio:.2f}, target≤{max_vo_dur:.2f}s){trim_tag}"
             )
 
         logger.info(f"  VO compress: {len(scene_vo_data)} scenes processed")
@@ -928,7 +1196,7 @@ class ManifestRenderer:
         We:
         1. Strip the baked hook offset → raw VO position
         2. Find which scene the word belongs to (original VO boundaries)
-        3. Scale time within scene by 1/atempo_ratio (compression)
+        3. Scale time within scene by 1/effective_ratio (trim + atempo)
         4. Map to new timeline position (scene.timeline_start + scaled_time)
         5. Re-add hook offset
 
@@ -974,15 +1242,20 @@ class ManifestRenderer:
                 continue
             intra_offset = scene_cumul.get(sn, 0.0)
             target_start = scene_start_map[sn] + intra_offset
+            # Use effective_ratio (trim + atempo combined) for subtitle rescaling;
+            # speech_ranges enable precise non-linear mapping when pauses were trimmed.
+            eff_ratio = entry.get("effective_ratio", entry["atempo_ratio"])
             scene_lookup.append({
                 "scene_number": sn,
                 "original_start": entry["original_start"],
                 "original_end": entry["original_end"],
+                "effective_ratio": eff_ratio,
                 "atempo_ratio": entry["atempo_ratio"],
+                "speech_ranges": entry.get("speech_ranges"),
                 "target_start": target_start,
             })
             scene_cumul[sn] = intra_offset + entry.get("compressed_dur",
-                (entry["original_end"] - entry["original_start"]) / entry["atempo_ratio"])
+                (entry["original_end"] - entry["original_start"]) / eff_ratio)
 
         # ASS timestamp regex and helpers
         _ASS_TIME_RE = _re.compile(
@@ -1027,6 +1300,25 @@ class ManifestRenderer:
                         best_dist = dist
             return best
 
+        def _map_through_speech_ranges(raw_time, speech_ranges):
+            """Map original VO time → position in trimmed audio.
+
+            speech_ranges = kept portions; time between them = removed pauses.
+            Returns the position within the concatenated speech ranges.
+            """
+            cumulative = 0.0
+            for r_start, r_end in speech_ranges:
+                if raw_time < r_start:
+                    # In a removed pause before this range → snap to boundary
+                    return cumulative
+                elif raw_time <= r_end:
+                    # Within this speech range
+                    return cumulative + (raw_time - r_start)
+                else:
+                    # Past this range
+                    cumulative += r_end - r_start
+            return cumulative  # past all ranges
+
         def _rescale_time(ass_time):
             """Rescale a single ASS timestamp."""
             raw_time = ass_time - ASSUMED_HOOK_OFFSET
@@ -1037,11 +1329,15 @@ class ManifestRenderer:
             if scene is None:
                 return ass_time  # outside any scene, leave unchanged
 
-            # Time within the original scene VO segment
-            time_in_scene = max(0.0, raw_time - scene["original_start"])
-
-            # Compress by atempo ratio
-            compressed_time = time_in_scene / scene["atempo_ratio"]
+            speech_ranges = scene.get("speech_ranges")
+            if speech_ranges:
+                # Precise mapping: original VO time → trimmed position → atempo
+                trimmed_pos = _map_through_speech_ranges(raw_time, speech_ranges)
+                compressed_time = trimmed_pos / scene["atempo_ratio"]
+            else:
+                # No trimming — use effective_ratio (linear approximation)
+                time_in_scene = max(0.0, raw_time - scene["original_start"])
+                compressed_time = time_in_scene / scene["effective_ratio"]
 
             # New position: target_start accounts for intra-scene offset
             new_pos = scene["target_start"] + compressed_time
@@ -1050,7 +1346,7 @@ class ManifestRenderer:
             return new_pos + ASSUMED_HOOK_OFFSET
 
         # Process all Dialogue lines
-        MIN_WORD_DURATION = 0.30  # same as audio_engine + _shift_ass_timings
+        MIN_WORD_DURATION = 0.45  # same as audio_engine + _shift_ass_timings
 
         lines = ass_path.read_text(encoding="utf-8").splitlines()
 
@@ -1071,11 +1367,10 @@ class ManifestRenderer:
         # Build target-space lookup for pass 1.5 (rescaled coordinates)
         _target_ranges = []
         for entry in scene_lookup:
-            c_dur = (entry["original_end"] - entry["original_start"]) / entry["atempo_ratio"]
+            c_dur = (entry["original_end"] - entry["original_start"]) / entry["effective_ratio"]
             _target_ranges.append({
                 "target_start": entry["target_start"],
                 "target_end": entry["target_start"] + c_dur,
-                "atempo_ratio": entry["atempo_ratio"],
             })
 
         def _find_scene_by_target(new_time):
@@ -1119,11 +1414,11 @@ class ManifestRenderer:
 
             short_count += 1
 
-            # Step 1: extend end (capped by next subtitle start)
+            # Step 1: extend end (word stays visible until next word)
             desired_end = start + MIN_WORD_DURATION
             if i + 1 < len(dialogue_entries):
                 next_start = dialogue_entries[i + 1][1]
-                desired_end = min(desired_end, next_start - 0.02)
+                desired_end = min(desired_end, next_start)
             end = max(end, desired_end)
 
             # Step 2: if still too short, pull start earlier
@@ -1132,7 +1427,7 @@ class ManifestRenderer:
                 earliest = 0.0
                 if i > 0:
                     prev_end = dialogue_entries[i - 1][2]
-                    earliest = prev_end + 0.02
+                    earliest = prev_end
                 start = max(earliest, start - remaining)
 
             dialogue_entries[i] = [li, start, end]
@@ -1816,7 +2111,7 @@ class ManifestRenderer:
         import re
 
         ASSUMED_HOOK_OFFSET = 0.3   # offset baked in during audio generation
-        MIN_WORD_DURATION = 0.30    # minimum display time per subtitle word
+        MIN_WORD_DURATION = 0.45    # minimum display time per subtitle word
 
         _ASS_TIME_RE = re.compile(
             r"Dialogue:\s*\d+,(\d+):(\d+):(\d+)\.(\d+),(\d+):(\d+):(\d+)\.(\d+),"
@@ -1857,15 +2152,17 @@ class ManifestRenderer:
 
         # Enforce MIN_WORD_DURATION: bidirectional extension.
         # First extend end, then pull start earlier if still too short.
+        # For tightly packed words, allow holding until next word appears.
         for i in range(len(dialogue_indices)):
             line_idx, start, end = dialogue_indices[i]
             dur = end - start
             if dur < MIN_WORD_DURATION:
-                # Step 1: try extending end (capped by next subtitle)
+                # Step 1: try extending end (word stays visible until next word)
                 desired_end = start + MIN_WORD_DURATION
                 if i + 1 < len(dialogue_indices):
                     next_start = dialogue_indices[i + 1][1]
-                    desired_end = min(desired_end, next_start - 0.02)
+                    # Allow end to reach next_start (seamless transition, no gap)
+                    desired_end = min(desired_end, next_start)
                 end = max(end, desired_end)
 
                 # Step 2: if still too short, pull start earlier
@@ -1874,7 +2171,7 @@ class ManifestRenderer:
                     earliest_start = 0.0
                     if i > 0:
                         prev_end = dialogue_indices[i - 1][2]
-                        earliest_start = prev_end + 0.02
+                        earliest_start = prev_end
                     start = max(earliest_start, start - remaining)
 
                 dialogue_indices[i] = (line_idx, start, end)
