@@ -217,8 +217,8 @@ class TestGetLatestVideoUrlFiltering:
         )
         assert result == new_video
 
-    def test_all_excluded_fallback_returns_first(self, generator, fake_driver):
-        """BUG-B: When all URLs are excluded after max_attempts → fallback returns first URL."""
+    def test_all_excluded_fallback_returns_none(self, generator, fake_driver):
+        """When all URLs are excluded after max_attempts → returns None (no blind fallback)."""
         placeholder = "https://cdn.higgsfield.ai/monk_placeholder.mp4"
 
         # Return same URL on every attempt (CDN path reuse)
@@ -239,8 +239,8 @@ class TestGetLatestVideoUrlFiltering:
                 exclude_urls=[placeholder]
             )
         )
-        # Fallback: returns the URL anyway (CDN reuse)
-        assert result == placeholder
+        # No blind fallback — returns None
+        assert result is None
 
     def test_all_excluded_no_urls_returns_none(self, generator, fake_driver):
         """No URLs at all on page → returns None (no fallback possible)."""
@@ -268,11 +268,16 @@ class TestGetLatestVideoUrlFiltering:
 
     def test_exclude_strips_query_params(self, generator, fake_driver):
         """Query params are stripped for comparison — same base = excluded from 'new' pool.
-        But BUG-B fallback returns it anyway (CDN path reuse)."""
+        No blind fallback — returns None."""
         base = "https://cdn.higgsfield.ai/video.mp4"
         with_params = base + "?token=abc&expires=123"
 
         fake_driver._execute_script_results = [[with_params]]
+
+        # Mock history to return None (final History fallback)
+        async def mock_history():
+            return None
+        generator._get_video_url_from_history = mock_history
 
         result = asyncio.get_event_loop().run_until_complete(
             generator._get_latest_video_url(
@@ -280,8 +285,8 @@ class TestGetLatestVideoUrlFiltering:
                 exclude_urls=[base + "?token=old"]
             )
         )
-        # Same base URL → excluded from "new" pool, but fallback returns it
-        assert result == with_params
+        # Same base URL → excluded, no blind fallback → None
+        assert result is None
 
     def test_new_url_with_different_base(self, generator, fake_driver):
         """URL with different base passes through exclude filter."""
@@ -306,9 +311,8 @@ class TestGetLatestVideoUrlFiltering:
 class TestDownloadVideoSizeValidation:
     """Test that small file size triggers warning."""
 
-    def test_small_file_warning(self, generator, caplog):
-        """Files < 500KB trigger warning log."""
-        import logging
+    def test_small_file_raises_valueerror(self, generator):
+        """Files < MIN_REAL_VIDEO_SIZE raise ValueError and delete the file."""
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "video.mp4"
             small_content = b"x" * 100  # 100 bytes — clearly a placeholder
@@ -322,19 +326,19 @@ class TestDownloadVideoSizeValidation:
             mock_client.get = AsyncMock(return_value=mock_response)
             generator._http_client = mock_client
 
-            asyncio.get_event_loop().run_until_complete(
-                generator._download_video("https://example.com/video.mp4", output_path)
-            )
+            with pytest.raises(ValueError, match="too small"):
+                asyncio.get_event_loop().run_until_complete(
+                    generator._download_video("https://example.com/video.mp4", output_path)
+                )
 
-            assert output_path.exists()
-            assert output_path.stat().st_size == 100
-            # loguru doesn't use caplog; check file exists and is small
+            # File should be deleted after ValueError
+            assert not output_path.exists()
 
-    def test_normal_file_no_warning(self, generator):
-        """Files > 500KB don't trigger warning."""
+    def test_normal_file_no_error(self, generator):
+        """Files >= MIN_REAL_VIDEO_SIZE (2 MB) download without error."""
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "video.mp4"
-            normal_content = b"x" * (600 * 1024)  # 600KB
+            normal_content = b"x" * (3 * 1024 * 1024)  # 3 MB
 
             mock_response = MagicMock()
             mock_response.content = normal_content
@@ -349,7 +353,7 @@ class TestDownloadVideoSizeValidation:
             )
 
             assert output_path.exists()
-            assert output_path.stat().st_size == 600 * 1024
+            assert output_path.stat().st_size == 3 * 1024 * 1024
 
 
 # =====================================================================
@@ -935,3 +939,167 @@ class TestSmokeProdScenarios:
                 assert "ensure_video_page" in co, f"Scene {scene_num} must reset page"
 
         assert all(r.success for r in results)
+
+
+# =====================================================================
+# Placeholder URL detection
+# =====================================================================
+
+class TestPlaceholderUrlDetection:
+    """Test _is_placeholder_url() and its integration with URL filtering."""
+
+    def test_is_placeholder_url_detection(self, generator):
+        """Known placeholder patterns are detected; real CloudFront URLs are not."""
+        # Placeholder URLs
+        assert generator._is_placeholder_url(
+            "https://cdn.higgsfield.ai/kling_motion/demo_monk_ocean.mp4"
+        ) is True
+        assert generator._is_placeholder_url(
+            "https://cdn.higgsfield.ai/kling_motion/showcase_v2.mp4?t=123"
+        ) is True
+
+        # Real CloudFront URLs
+        assert generator._is_placeholder_url(
+            "https://d8j0ntlcm91z4.cloudfront.net/user_abc/hf_video_123.mp4"
+        ) is False
+        # Normal HiggsField CDN (not kling_motion path)
+        assert generator._is_placeholder_url(
+            "https://cdn.higgsfield.ai/video_abc123.mp4"
+        ) is False
+
+    def test_strategy1_skips_placeholder_urls(self, generator, fake_driver):
+        """Placeholder URL is filtered even if not in exclude_set."""
+        placeholder = "https://cdn.higgsfield.ai/kling_motion/demo.mp4"
+        real_video = "https://d8j0ntlcm91z4.cloudfront.net/user_1/hf_new.mp4"
+
+        fake_driver._execute_script_results = [
+            [placeholder, real_video],  # attempt 1
+        ]
+
+        result = asyncio.get_event_loop().run_until_complete(
+            generator._get_latest_video_url(
+                max_attempts=1,
+                exclude_urls=[]  # Nothing excluded — but placeholder still filtered
+            )
+        )
+        assert result == real_video
+
+    def test_strategy3_returns_none_not_placeholder(self, generator, fake_driver):
+        """After max_attempts with only placeholders → returns None, not the placeholder."""
+        placeholder = "https://cdn.higgsfield.ai/kling_motion/monk.mp4"
+
+        fake_driver._execute_script_results = [
+            [placeholder],  # attempt 1
+            [placeholder],  # attempt 2
+        ]
+
+        async def mock_history():
+            return None
+        generator._get_video_url_from_history = mock_history
+
+        result = asyncio.get_event_loop().run_until_complete(
+            generator._get_latest_video_url(
+                max_attempts=2,
+                exclude_urls=[]
+            )
+        )
+        assert result is None
+
+    def test_download_rejects_placeholder_size(self, generator):
+        """ValueError raised for small files + file is deleted from disk."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "video.mp4"
+            # 1.2 MB — typical placeholder size (monk + ocean demo)
+            small_content = b"x" * int(1.2 * 1024 * 1024)
+
+            mock_response = MagicMock()
+            mock_response.content = small_content
+            mock_response.raise_for_status = MagicMock()
+
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(return_value=mock_response)
+            generator._http_client = mock_client
+
+            with pytest.raises(ValueError, match="too small"):
+                asyncio.get_event_loop().run_until_complete(
+                    generator._download_video(
+                        "https://cdn.higgsfield.ai/kling_motion/demo.mp4",
+                        output_path
+                    )
+                )
+
+            assert not output_path.exists(), "Placeholder file should be deleted"
+
+    def test_generate_retries_via_history_on_placeholder(self, generator):
+        """generate_and_download retries via History when download detects placeholder."""
+        call_order = []
+
+        async def mock_ensure_video_page(**kw):
+            call_order.append("ensure_video_page")
+        async def mock_screenshot(f):
+            pass
+        async def mock_upload(path):
+            call_order.append("upload")
+            return True
+        async def mock_verify():
+            return True
+        async def mock_prompt(p):
+            pass
+        async def mock_get_all_urls():
+            return ["https://cdn.higgsfield.ai/old.mp4"]
+        async def mock_click_gen():
+            call_order.append("generate")
+        async def mock_wait_gen(timeout=420):
+            pass
+        async def mock_get_latest(max_attempts=20, exclude_urls=None):
+            # Returns a placeholder URL (will fail size check)
+            return "https://cdn.higgsfield.ai/kling_motion/demo.mp4"
+
+        download_count = [0]
+        async def mock_download(url, path):
+            download_count[0] += 1
+            call_order.append(f"download_{download_count[0]}")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if download_count[0] == 1:
+                # First download: small placeholder → write small file then raise
+                path.write_bytes(b"x" * 100)
+                path.unlink(missing_ok=True)
+                raise ValueError("too small (0.00 MB)")
+            else:
+                # Second download (from history): real video
+                path.write_bytes(b"x" * (5 * 1024 * 1024))
+
+        async def mock_history():
+            call_order.append("history_fallback")
+            return "https://d8j0ntlcm91z4.cloudfront.net/user_1/hf_real.mp4"
+
+        async def mock_meta(**kw):
+            pass
+
+        generator._ensure_video_page = mock_ensure_video_page
+        generator.take_screenshot = mock_screenshot
+        generator._upload_image = mock_upload
+        generator._verify_image_loaded = mock_verify
+        generator._enter_prompt = mock_prompt
+        generator._get_all_video_urls = mock_get_all_urls
+        generator._click_generate = mock_click_gen
+        generator._wait_for_generation_complete = mock_wait_gen
+        generator._get_latest_video_url = mock_get_latest
+        generator._download_video = mock_download
+        generator._get_video_url_from_history = mock_history
+        generator._save_video_metadata = mock_meta
+
+        with tempfile.TemporaryDirectory() as d:
+            img = Path(d) / "image.png"
+            img.write_bytes(b"PNG")
+            out = Path(d) / "out"
+            out.mkdir()
+            r = asyncio.get_event_loop().run_until_complete(
+                generator.generate_and_download(img, "test", out, 1, "retry_test")
+            )
+
+        assert r.success is True, f"Expected success but got error: {r.error}"
+        assert "download_1" in call_order, "First download should be attempted"
+        assert "history_fallback" in call_order, "History fallback should be triggered"
+        assert "download_2" in call_order, "Second download from history should happen"
+        assert r.video_url == "https://d8j0ntlcm91z4.cloudfront.net/user_1/hf_real.mp4"

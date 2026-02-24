@@ -24,6 +24,12 @@ from app.clients.adspower_client import AdsPowerClient
 
 HIGGSFIELD_VIDEO_URL = "https://higgsfield.ai/create/video"
 
+MIN_REAL_VIDEO_SIZE = 2 * 1024 * 1024  # 2 MB — real Kling 10s videos are 5-30 MB
+
+PLACEHOLDER_URL_PATTERNS = [
+    "cdn.higgsfield.ai/kling_motion/",  # HiggsField demo reel / showcase videos
+]
+
 # Type alias для progress callback
 ProgressCallback = Callable[[int, int, str], Awaitable[None]]  # (current, total, message)
 
@@ -199,7 +205,24 @@ class SimpleVideoGenerator:
             )
             if video_url:
                 video_path = output_dir / "video.mp4"
-                await self._download_video(video_url, video_path)
+                try:
+                    await self._download_video(video_url, video_path)
+                except ValueError as e:
+                    # Downloaded file was too small (placeholder) — retry via History
+                    logger.warning(
+                        f"{prefix}[Scene {scene_num}] Placeholder detected: {e}. "
+                        f"Retrying via History fallback..."
+                    )
+                    history_url = await self._get_video_url_from_history()
+                    if history_url and history_url != video_url and not self._is_placeholder_url(history_url):
+                        logger.info(f"{prefix}[Scene {scene_num}] History returned different URL: {history_url[:80]}...")
+                        await self._download_video(history_url, video_path)
+                        video_url = history_url
+                    else:
+                        result.error = f"Placeholder video detected and no valid History fallback: {e}"
+                        result.duration_sec = time.time() - start_time
+                        logger.error(f"{prefix}[Scene {scene_num}] {result.error}")
+                        return result
 
                 result.video_url = video_url
                 result.video_path = video_path
@@ -1618,6 +1641,13 @@ class SimpleVideoGenerator:
 
         logger.warning(f"Generation timeout after {timeout}s")
 
+    def _is_placeholder_url(self, url: str) -> bool:
+        """Check if URL matches known HiggsField placeholder/demo video patterns."""
+        for pattern in PLACEHOLDER_URL_PATTERNS:
+            if pattern in url:
+                return True
+        return False
+
     async def _get_latest_video_url(
         self,
         max_attempts: int = 20,
@@ -1698,11 +1728,11 @@ class SimpleVideoGenerator:
 
                 last_all_urls = all_urls or []
 
-                # Filter out pre-existing URLs
+                # Filter out pre-existing URLs and known placeholders
                 new_urls = []
                 for url in last_all_urls:
                     base = url.split('?')[0]
-                    if base not in exclude_set:
+                    if base not in exclude_set and not self._is_placeholder_url(url):
                         new_urls.append(url)
 
                 if new_urls:
@@ -1741,15 +1771,17 @@ class SimpleVideoGenerator:
             )
             await asyncio.sleep(5)
 
-        # --- Strategy 3: Fallback — all URLs excluded, return newest anyway ---
-        # HiggsField may reuse CDN base paths; the video content is still new
+        # --- Strategy 3: Final History attempt (no blind fallback) ---
+        # The old CDN-reuse fallback returned placeholders; try History one last time
         if last_all_urls and exclude_set:
             logger.warning(
-                f"Fallback: all {len(last_all_urls)} URLs matched exclude set. "
-                f"Returning first URL anyway (CDN path reuse). "
-                f"URL: {last_all_urls[0][:80]}..."
+                f"All {len(last_all_urls)} URLs matched exclude set after {max_attempts} attempts. "
+                f"Trying final History fallback..."
             )
-            return last_all_urls[0]
+            url_from_history = await self._get_video_url_from_history()
+            if url_from_history and not self._is_placeholder_url(url_from_history):
+                logger.info(f"Final History fallback succeeded: {url_from_history[:80]}...")
+                return url_from_history
 
         logger.warning(
             f"No video URL found after {max_attempts} attempts "
@@ -1950,11 +1982,12 @@ class SimpleVideoGenerator:
         size_mb = file_size / 1024 / 1024
         logger.debug(f"Downloaded: {size_mb:.1f} MB")
 
-        if file_size < 500 * 1024:  # < 500KB
-            logger.warning(
-                f"Downloaded video is suspiciously small ({size_mb:.2f} MB). "
-                f"Expected 5-30MB for a 10s Kling video. "
-                f"This may be a placeholder or corrupted file."
+        if file_size < MIN_REAL_VIDEO_SIZE:
+            output_path.unlink(missing_ok=True)
+            raise ValueError(
+                f"Downloaded video is too small ({size_mb:.2f} MB, threshold {MIN_REAL_VIDEO_SIZE / 1024 / 1024:.0f} MB). "
+                f"Expected 5-30 MB for a 10s Kling video. "
+                f"This is likely a placeholder or demo reel, not a real generation."
             )
 
 
