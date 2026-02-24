@@ -577,11 +577,11 @@ class GlazeScene(BaseModel):
 class VoiceoverSettings(BaseModel):
     """Налаштування ElevenLabs - voice_id required, others have defaults."""
     voice_id: str = Field(default="fdph4PvCSJPBv95E9UZF", description="Voice ID - defaults to Sensory Witness")
-    stability: float = Field(default=0.60, description="Stability")
+    stability: float = Field(default=0.40, description="Stability (0.0-1.0, eleven_v3 continuous)")
     similarity_boost: float = Field(default=0.75, description="Similarity boost")
-    style: float = Field(default=0.30, description="Style")
-    speaker_boost: bool = Field(default=True, description="Speaker boost")
-    speed: float = Field(default=1.0, ge=0.7, le=1.2, description="TTS speech speed (0.7=slow, 1.2=fast)")
+    style: float = Field(default=0.30, description="Style exaggeration")
+    speaker_boost: bool = Field(default=False, description="Speaker boost (ignored by eleven_v3)")
+    speed: float = Field(default=1.05, ge=0.7, le=1.2, description="TTS speech speed (0.7=slow, 1.2=fast)")
 
 
 class VoiceoverConfig(BaseModel):

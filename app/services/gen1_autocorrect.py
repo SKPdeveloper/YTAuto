@@ -2156,10 +2156,11 @@ def _fix_description_line1(d: dict, w: list) -> None:
 
 
 # Word limits by scene duration (TOP RULE #1)
-# v3.7: raised limits — deterministic timeline expands scenes to fit VO,
-# so per-scene overflow is handled gracefully. Total budget (validator) is the real safety net.
+# v3.10: whisper-aware budget — native TTS speed 1.05x reduces pressure,
+# but whisper delivery is ~30% slower than neutral. Limits account for this.
+# Total budget (validator) is the real safety net.
 _DURATION_WORD_LIMITS: dict = {
-    1.0: 3, 1.5: 4, 2.0: 6, 2.5: 7, 3.0: 9, 3.5: 10, 4.0: 12,
+    1.0: 2, 1.5: 3, 2.0: 4, 2.5: 5, 3.0: 7, 3.5: 8, 4.0: 10,
 }
 
 _CONSEQUENCE_VERBS_LIST = ["remembers", "knows", "watches", "waits", "listens", "breathes"]
@@ -2178,8 +2179,8 @@ def _max_words_for_duration(duration: float) -> int:
 def _fix_narrator_word_count(scenes: list, w: list) -> None:
     """Truncate narrator_script if word count exceeds duration limit.
 
-    TOP RULE #1: 2.0s = MAX 6 words, 3.0s = MAX 9, 4.0s = MAX 12.
-    Deterministic timeline expands scene if VO overflows brief duration.
+    TOP RULE #1: 2.0s = MAX 4 words, 3.0s = MAX 7, 4.0s = MAX 10.
+    Whisper-aware: accounts for ~30% slower delivery + pause tags.
     Skips last 2 scenes (overwritten by _fix_scene_n_constraints / _fix_scene_n_minus_1_vo).
     """
     if len(scenes) < 3:
@@ -2207,13 +2208,14 @@ def _fix_narrator_word_count(scenes: list, w: list) -> None:
         pause_time = _estimate_pause_time(vo_seg) if isinstance(vo_seg, str) else 0.0
 
         # Account for slow-delivery tags (ElevenLabs whisper/calm = slower TTS)
+        # v3.10: native speed 1.05x partially compensates, so factors reduced
         whisper_factor = 1.0
         if isinstance(vo_seg, str):
             vo_lower = vo_seg.lower()
             if "[whispers]" in vo_lower or "[drawn out]" in vo_lower:
-                whisper_factor = 1.4  # ElevenLabs whisper is ~40% slower
+                whisper_factor = 1.3  # whisper ~30% slower (was 1.4, native speed 1.05 compensates)
             elif "[calm]" in vo_lower or "[gentle]" in vo_lower:
-                whisper_factor = 1.15  # Calm delivery slightly slower
+                whisper_factor = 1.1  # calm delivery slightly slower (was 1.15)
 
         effective_duration = max((duration - pause_time) / whisper_factor, 0.8)
 
@@ -3522,12 +3524,13 @@ def _fix_tactile_channel_injection(d: dict, scenes: list, w: list) -> None:
 # ---------------------------------------------------------------------------
 
 # Empirical TTS rate (seconds per content word) by ElevenLabs delivery style
+# v3.10: rates adjusted for native speed 1.05x (divides old rates by 1.05)
 _TTS_RATE = {
-    "whispers": 0.85,    # measured ElevenLabs whisper rate (was 0.55)
-    "drawn out": 0.90,   # measured ElevenLabs drawn-out rate (was 0.60)
-    "calm": 0.60,        # measured ElevenLabs calm rate (was 0.45)
-    "gentle": 0.55,      # measured ElevenLabs gentle rate (was 0.45)
-    "default": 0.45,     # measured ElevenLabs default rate (was 0.40)
+    "whispers": 0.81,    # 0.85/1.05 — whisper rate at native 1.05x speed
+    "drawn out": 0.86,   # 0.90/1.05 — drawn-out rate at native 1.05x speed
+    "calm": 0.71,        # 0.75/1.05 — calm rate at native 1.05x speed
+    "gentle": 0.67,      # 0.70/1.05 — gentle rate at native 1.05x speed
+    "default": 0.62,     # 0.65/1.05 — neutral rate at native 1.05x speed
 }
 
 
@@ -3626,7 +3629,7 @@ def _warn_total_vo_budget(d: dict, scenes: list, w: list) -> None:
         total_est += word_time + pause_time
 
     ratio = total_est / target if target > 0 else 999
-    if ratio > 1.2:
+    if ratio > 1.1:
         w.append(AutoFixWarning(
             "voiceover.total_budget",
             f"Estimated VO ~{total_est:.1f}s for {target:.0f}s video "

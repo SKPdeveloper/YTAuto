@@ -901,7 +901,7 @@ class Gen1Validator:
                             pause_penalty += {"long pause": 0.7, "pause": 0.3, "short pause": 0.2}.get(_tag, 0.3)
                     effective_dv = max(dv - pause_penalty, 1.0)
                     wds = len(narrator.strip().split())
-                    _LIMITS = {2.0: 4, 2.5: 5, 3.0: 7, 3.5: 8, 4.0: 10}
+                    _LIMITS = {2.0: 4, 2.5: 5, 3.0: 6, 3.5: 7, 4.0: 9}
                     mx = _LIMITS.get(effective_dv, int(effective_dv * 2.5) if effective_dv else 10)
                     if mx < 4:
                         mx = 4
@@ -1599,7 +1599,7 @@ class Gen1Validator:
         )
 
         total_words = sum(wc for _, wc, _, _ in scene_details)
-        word_budget = int(target * 1.5)
+        word_budget = int(target * 1.2)
 
         if ratio > 1.5:
             self._error(

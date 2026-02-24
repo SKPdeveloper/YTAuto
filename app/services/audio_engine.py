@@ -51,28 +51,16 @@ class AudioEngine:
     # Regex pattern to match pause markers like [0.3s], [0.5s], [1s], [1.5s]
     PAUSE_PATTERN = re.compile(r'\[(\d+(?:\.\d+)?)\s*s\]')
 
-    # eleven_v3 model only accepts these stability values (undocumented server-side restriction)
-    ELEVEN_V3_STABILITY_VALUES = [0.0, 0.5, 1.0]
-
     @staticmethod
     def _sanitize_stability_for_model(stability: float, model_id: str) -> float:
         """
         Sanitize stability value based on model restrictions.
 
-        eleven_v3 only accepts [0.0, 0.5, 1.0] - rounds to nearest valid value.
-        Other models (eleven_multilingual_v2, etc.) accept any 0.0-1.0 value.
+        eleven_v3 accepts continuous float 0.0-1.0 (discrete restriction removed —
+        was an alpha-era server limitation, API now accepts any value).
+        Clamps to [0.0, 1.0] range for safety.
         """
-        if "eleven_v3" in model_id or model_id == "eleven_v3":
-            # Round to nearest valid value for eleven_v3
-            valid_values = AudioEngine.ELEVEN_V3_STABILITY_VALUES
-            nearest = min(valid_values, key=lambda x: abs(x - stability))
-            if nearest != stability:
-                logger.warning(
-                    f"eleven_v3 requires stability in {valid_values}. "
-                    f"Rounding {stability} -> {nearest}"
-                )
-            return nearest
-        return stability
+        return max(0.0, min(1.0, stability))
 
     def __init__(self):
         """Initialize ElevenLabs client with credentials from .env"""
@@ -240,13 +228,16 @@ class AudioEngine:
             sanitized_stability = self._sanitize_stability_for_model(
                 voice_settings.stability, self.model_id
             )
-            elevenlabs_settings = VoiceSettings(
+            elevenlabs_kwargs = dict(
                 stability=sanitized_stability,
                 similarity_boost=voice_settings.similarity_boost,
                 style=voice_settings.style,
-                use_speaker_boost=voice_settings.speaker_boost,
-                speed=getattr(voice_settings, 'speed', 1.0),
+                speed=getattr(voice_settings, 'speed', 1.05),
             )
+            # use_speaker_boost is NOT supported by eleven_v3 — only pass for v2/turbo
+            if "eleven_v3" not in self.model_id:
+                elevenlabs_kwargs["use_speaker_boost"] = voice_settings.speaker_boost
+            elevenlabs_settings = VoiceSettings(**elevenlabs_kwargs)
         else:
             elevenlabs_settings = None
 
@@ -328,13 +319,15 @@ class AudioEngine:
             sanitized_stability = self._sanitize_stability_for_model(
                 voice_settings.stability, self.model_id
             )
-            elevenlabs_settings = VoiceSettings(
+            elevenlabs_kwargs = dict(
                 stability=sanitized_stability,
                 similarity_boost=voice_settings.similarity_boost,
                 style=voice_settings.style,
-                use_speaker_boost=voice_settings.speaker_boost,
-                speed=getattr(voice_settings, 'speed', 1.0),
+                speed=getattr(voice_settings, 'speed', 1.05),
             )
+            if "eleven_v3" not in self.model_id:
+                elevenlabs_kwargs["use_speaker_boost"] = voice_settings.speaker_boost
+            elevenlabs_settings = VoiceSettings(**elevenlabs_kwargs)
         else:
             elevenlabs_settings = None
 
@@ -1253,17 +1246,17 @@ class AudioMixConfig:
 DEFAULT_VOLUMES = {
     AudioLayer.BED: 0.15,
     AudioLayer.MUSIC: 0.5,   # Increased from 0.3 - music should be felt
-    AudioLayer.SFX: 0.7,
-    AudioLayer.FOLEY: 0.5,
-    AudioLayer.VO: 1.0,
+    AudioLayer.SFX: 0.40,    # Was 0.7 — SFX should complement scenes, not overpower VO
+    AudioLayer.FOLEY: 0.35,  # Was 0.5
+    AudioLayer.VO: 1.5,      # Was 1.0 — boost whisper-style voices; alimiter prevents clipping
 }
 
 # Ducked volumes (when VO is playing)
 DUCKED_VOLUMES = {
     AudioLayer.BED: 0.1,
     AudioLayer.MUSIC: 0.25,  # Increased from 0.15 - still audible during VO
-    AudioLayer.SFX: 0.5,
-    AudioLayer.FOLEY: 0.3,
+    AudioLayer.SFX: 0.20,    # Was 0.5 — duck SFX during VO so voice stays clear
+    AudioLayer.FOLEY: 0.15,  # Was 0.3
 }
 
 
@@ -1344,10 +1337,12 @@ class AudioMixer:
         reason: str = "",
     ) -> None:
         """Add an SFX event to the mix configuration."""
+        effective_vol = volume if volume is not None else DEFAULT_VOLUMES[AudioLayer.SFX]
+        effective_vol = min(effective_vol, 0.50)  # Hard cap — SFX must never overpower VO
         config.sfx_events.append(SFXEvent(
             timestamp=timestamp,
             file_path=sfx_path,
-            volume=volume if volume is not None else DEFAULT_VOLUMES[AudioLayer.SFX],
+            volume=effective_vol,
             layer=AudioLayer.SFX,
             reason=reason,
         ))
@@ -1361,10 +1356,12 @@ class AudioMixer:
         reason: str = "",
     ) -> None:
         """Add a FOLEY event to the mix configuration."""
+        effective_vol = volume if volume is not None else DEFAULT_VOLUMES[AudioLayer.FOLEY]
+        effective_vol = min(effective_vol, 0.50)  # Hard cap — foley must not overpower VO
         config.foley_events.append(SFXEvent(
             timestamp=timestamp,
             file_path=foley_path,
-            volume=volume if volume is not None else DEFAULT_VOLUMES[AudioLayer.FOLEY],
+            volume=effective_vol,
             layer=AudioLayer.FOLEY,
             reason=reason,
         ))
@@ -1455,21 +1452,42 @@ class AudioMixer:
             inputs.append("bed")
             input_idx += 1
 
-        # SFX events
+        # SFX events (with ducking during VO)
+        sfx_ducked_vol = DUCKED_VOLUMES.get(AudioLayer.SFX, 0.20)
         for i, sfx in enumerate(config.sfx_events):
             sfx_label = f"sfx{i}"
-            filters.append(
-                f"[{input_idx}:a]volume={sfx.volume},adelay={int(sfx.timestamp * 1000)}|{int(sfx.timestamp * 1000)}[{sfx_label}]"
-            )
+            delay_ms = int(sfx.timestamp * 1000)
+            if config.vo_segments:
+                # adelay BEFORE volume so that 't' matches global timeline
+                expr_parts = [f"between(t,{s},{e})" for s, e in config.vo_segments]
+                conditions = "+".join(expr_parts)
+                vol_expr = f"if({conditions},{sfx_ducked_vol},{sfx.volume})"
+                filters.append(
+                    f"[{input_idx}:a]adelay={delay_ms}|{delay_ms},volume='{vol_expr}':eval=frame[{sfx_label}]"
+                )
+            else:
+                filters.append(
+                    f"[{input_idx}:a]volume={sfx.volume},adelay={delay_ms}|{delay_ms}[{sfx_label}]"
+                )
             inputs.append(sfx_label)
             input_idx += 1
 
-        # FOLEY events
+        # FOLEY events (with ducking during VO)
+        foley_ducked_vol = DUCKED_VOLUMES.get(AudioLayer.FOLEY, 0.15)
         for i, foley in enumerate(config.foley_events):
             foley_label = f"foley{i}"
-            filters.append(
-                f"[{input_idx}:a]volume={foley.volume},adelay={int(foley.timestamp * 1000)}|{int(foley.timestamp * 1000)}[{foley_label}]"
-            )
+            delay_ms = int(foley.timestamp * 1000)
+            if config.vo_segments:
+                expr_parts = [f"between(t,{s},{e})" for s, e in config.vo_segments]
+                conditions = "+".join(expr_parts)
+                vol_expr = f"if({conditions},{foley_ducked_vol},{foley.volume})"
+                filters.append(
+                    f"[{input_idx}:a]adelay={delay_ms}|{delay_ms},volume='{vol_expr}':eval=frame[{foley_label}]"
+                )
+            else:
+                filters.append(
+                    f"[{input_idx}:a]volume={foley.volume},adelay={delay_ms}|{delay_ms}[{foley_label}]"
+                )
             inputs.append(foley_label)
             input_idx += 1
 
@@ -1589,13 +1607,15 @@ class AudioMixer:
         if config.bed:
             logger.info(f"BED: {config.bed.file_path} (vol: {config.bed.volume})")
 
-        logger.info(f"SFX events: {len(config.sfx_events)}")
+        sfx_ducked = DUCKED_VOLUMES.get(AudioLayer.SFX, 0.20)
+        logger.info(f"SFX events: {len(config.sfx_events)} (ducked: {sfx_ducked} during VO)")
         for sfx in config.sfx_events:
-            logger.info(f"  - {sfx.timestamp}s: {sfx.file_path.name} ({sfx.reason})")
+            logger.info(f"  - {sfx.timestamp}s: {sfx.file_path.name} vol={sfx.volume} ({sfx.reason})")
 
-        logger.info(f"FOLEY events: {len(config.foley_events)}")
+        foley_ducked = DUCKED_VOLUMES.get(AudioLayer.FOLEY, 0.15)
+        logger.info(f"FOLEY events: {len(config.foley_events)} (ducked: {foley_ducked} during VO)")
         for foley in config.foley_events:
-            logger.info(f"  - {foley.timestamp}s: {foley.file_path.name} ({foley.reason})")
+            logger.info(f"  - {foley.timestamp}s: {foley.file_path.name} vol={foley.volume} ({foley.reason})")
 
         logger.info(f"VO segments (for ducking): {len(config.vo_segments)}")
         logger.info("=" * 50)

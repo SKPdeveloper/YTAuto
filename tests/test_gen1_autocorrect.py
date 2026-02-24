@@ -212,9 +212,10 @@ class TestFix2HumorRescue:
     def test_humor_restored_after_truncation(self):
         """Humor lost to truncation is rescued by _verify_humor_survived."""
         # Simulate post-truncation state: scene VO was truncated, humor words are gone
+        # Use 3.0s scene so word budget (7w) has room for humor injection
         scenes = [
             _make_scene(1, narrator="Still warm.", vo="[whispers] Still warm."),
-            _make_scene(2, narrator="The walls hold.", vo="[calm] The walls hold.", duration=2.0),
+            _make_scene(2, narrator="The walls hold.", vo="[calm] The walls hold.", duration=3.0),
         ]
         humor = [{"humor_type": "DEADPAN_CONSEQUENCE", "scene_number": 2,
                    "line": "Fire department said no caramel. We added more caramel.",
