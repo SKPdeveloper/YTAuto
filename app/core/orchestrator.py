@@ -275,7 +275,8 @@ class ProjectOrchestrator:
         topic: str,
         num_scenes: int = 8,
         style: str = "educational",
-        target_audience: str = "general"
+        target_audience: str = "general",
+        target_channel: str = "glaze_city",
     ) -> ProjectData:
         """
         Створює новий проект
@@ -285,6 +286,7 @@ class ProjectOrchestrator:
             num_scenes: Кількість сцен (6-10, dynamic from GEN1 v6)
             style: Стиль відео
             target_audience: Цільова аудиторія
+            target_channel: Канал для публікації
 
         Returns:
             ProjectData з унікальним ID
@@ -314,6 +316,7 @@ class ProjectOrchestrator:
             num_scenes=num_scenes,
             style=style,
             target_audience=target_audience,
+            target_channel=target_channel,
             total_scenes=num_scenes,
             project_dir=project_dir,
             concurrent_limit=self.concurrent_limit,
@@ -849,7 +852,8 @@ class ProjectOrchestrator:
 
         try:
             # Use PromptRouter for two-stage generation (GEN1 + GEN2)
-            router = PromptRouter()
+            channel_id = getattr(project, 'target_channel', 'glaze_city') or 'glaze_city'
+            router = PromptRouter(channel_id=channel_id)
             glaze_project = await router.generate_full_project(
                 topic=project.topic,
                 num_scenes=project.num_scenes,

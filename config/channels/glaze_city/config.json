@@ -17,5 +17,21 @@
     "default_privacy": "public",
     "default_category_id": "24",
     "made_for_kids": false
+  },
+  "branding": {
+    "brand_name": "GLAZE CITY",
+    "brand_name_display": "Glaze City",
+    "creative_director_title": "GLAZE CITY CREATIVE DIRECTOR",
+    "voice_id": "fdph4PvCSJPBv95E9UZF",
+    "audio_stings": {
+      "open_sfx": "GLAZE_OPEN_v2.wav",
+      "sting_sfx": "GLAZE_STING_v2.wav",
+      "open_name": "GLAZE_OPEN",
+      "whoosh_name": "GLAZE_WHOOSH",
+      "sting_name": "GLAZE_STING"
+    },
+    "watermark_text": "GLAZE CITY",
+    "description_prefix": "Glaze City #{{EPISODE_NUMBER}} — ",
+    "subtitle_title": "Glaze City Subtitles"
   }
 }

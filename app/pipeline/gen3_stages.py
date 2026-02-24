@@ -78,7 +78,8 @@ class Gen3aStage(BasePipelineStage):
 
         try:
             # Initialize services
-            self.gen3a_service = Gen3aService()
+            channel_id = getattr(self.project, 'target_channel', 'glaze_city') or 'glaze_city'
+            self.gen3a_service = Gen3aService(channel_id=channel_id)
 
             project_dir = Path(self.project.project_dir)
 

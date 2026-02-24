@@ -1,0 +1,37 @@
+{
+  "channel_id": "yum_estate",
+  "channel_name": "YumEstate",
+  "youtube_channel_id": "UCPa3CCYPDr-vYEWLAh18FHg",
+  "region": "US",
+  "timezone": "America/New_York",
+  "proxy": {
+    "enabled": true,
+    "host": "208.214.166.14",
+    "port": 50100,
+    "username": "skazenui",
+    "password": "XU4sIZ7sFS"
+  },
+  "adspower_profile_id": "k197nmtt",
+  "settings": {
+    "active": true,
+    "default_privacy": "public",
+    "default_category_id": "24",
+    "made_for_kids": false
+  },
+  "branding": {
+    "brand_name": "YUM ESTATE",
+    "brand_name_display": "Yum Estate",
+    "creative_director_title": "YUM ESTATE CREATIVE DIRECTOR",
+    "voice_id": "fdph4PvCSJPBv95E9UZF",
+    "audio_stings": {
+      "open_sfx": "YUM_OPEN_v1.wav",
+      "sting_sfx": "YUM_STING_v1.wav",
+      "open_name": "YUM_OPEN",
+      "whoosh_name": "YUM_WHOOSH",
+      "sting_name": "YUM_STING"
+    },
+    "watermark_text": "YUM ESTATE",
+    "description_prefix": "Yum Estate #{{EPISODE_NUMBER}} — ",
+    "subtitle_title": "Yum Estate Subtitles"
+  }
+}

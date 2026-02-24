@@ -56,8 +56,9 @@ class ScriptStage(BasePipelineStage):
         await self.notify_progress(0, "Starting script generation...")
 
         try:
-            # Use PromptRouter for two-stage generation
-            router = PromptRouter()
+            # Use PromptRouter for two-stage generation (channel-aware)
+            channel_id = getattr(self.project, 'target_channel', 'glaze_city') or 'glaze_city'
+            router = PromptRouter(channel_id=channel_id)
 
             # ================================================================
             # STAGE 1: GEN1 with validation and retry

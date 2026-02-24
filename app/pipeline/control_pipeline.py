@@ -1679,7 +1679,8 @@ class ControlPipeline:
         logger.info(f"[PIPELINE] Running Gen3a analysis on {len(video_paths)} videos...")
 
         try:
-            service = Gen3aService()
+            channel_id = getattr(self.project, 'target_channel', 'glaze_city') or 'glaze_city'
+            service = Gen3aService(channel_id=channel_id)
 
             # Load briefs
             project_brief = None

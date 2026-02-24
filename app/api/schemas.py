@@ -204,6 +204,7 @@ class ProjectData(BaseModel):
     num_scenes: int = Field(..., ge=6, le=10, description="Кількість сцен (6-10)")
     style: str = Field(default="educational", description="Стиль відео")
     target_audience: str = Field(default="general", description="Цільова аудиторія")
+    target_channel: str = Field(default="glaze_city", description="Канал для публікації")
 
     # Згенерований сценарій
     title: Optional[str] = Field(None, description="Назва відео")

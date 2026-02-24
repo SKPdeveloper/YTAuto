@@ -141,7 +141,7 @@ from app.services.validation_models import (
 )
 from app.services.topic_memory import topic_memory
 from app.services.structural_memory import structural_memory
-from app.utils.prompt_loader import load_prompt_with_banlist
+from app.utils.prompt_loader import load_prompt_with_banlist, load_prompt_with_channel, load_channel_branding
 
 # Python validators (deterministic, ~5ms, 0 tokens) - replacing LLM validators
 from app.services.gen1_validator import (
@@ -188,12 +188,22 @@ class PromptRouter:
     - Save raw responses for debugging
     """
 
-    def __init__(self):
+    def __init__(self, channel_id: str = "glaze_city"):
         """Initialize the prompt router."""
+        self.channel_id = channel_id
         self.gen1_prompt: Optional[str] = None
         self.gen2_prompt: Optional[str] = None
         self.val_gen1_prompt: Optional[str] = None
         self.val_gen2_prompt: Optional[str] = None
+
+        # Load channel branding for fallback values
+        try:
+            self._branding = load_channel_branding(channel_id)
+            self.brand_name_display = self._branding.get("{{CHANNEL_BRAND_DISPLAY}}", "Glaze City")
+        except Exception as e:
+            logger.warning(f"Failed to load branding for channel '{channel_id}': {e}")
+            self._branding = {}
+            self.brand_name_display = "Glaze City"
 
         # Track if last GEN2 call was truncated (for retry guidance)
         self._last_gen2_truncated: bool = False
@@ -230,16 +240,17 @@ class PromptRouter:
 
     def _load_prompts(self) -> None:
         """Load GEN1, GEN2, VAL_GEN1, and VAL_GEN2 system prompts."""
-        # Load GEN1 with banlist injection
+        # Load GEN1 with banlist injection + channel branding placeholders
         if GEN1_PROMPT_PATH.exists():
             banlist_path = CONFIG_DIR / "ban_list.txt"
-            content = load_prompt_with_banlist(
+            content = load_prompt_with_channel(
                 prompt_path=GEN1_PROMPT_PATH,
-                banlist_path=banlist_path
+                channel_id=self.channel_id,
+                banlist_path=banlist_path,
             ).strip()
             if content:
                 self.gen1_prompt = content
-                logger.success(f"Loaded GEN1 prompt with banlist: {len(self.gen1_prompt)} chars")
+                logger.success(f"Loaded GEN1 prompt with banlist + channel '{self.channel_id}': {len(self.gen1_prompt)} chars")
             else:
                 logger.warning(f"GEN1 prompt file is empty: {GEN1_PROMPT_PATH}")
         else:
@@ -582,7 +593,7 @@ CRITICAL REQUIREMENTS:
             # IDEA MODE: User provided hint/topic
             return f"""{blacklist_section}{structural_section}TOPIC: {topic}
 
-Develop this idea into a complete video concept for "Glaze City" style channel.
+Develop this idea into a complete video concept for "{self.brand_name_display}" style channel.
 
 CONSTRAINTS:
 - SCENES: TARGET {num_scenes} scenes (Dynamic Scene Engine range: 6-10, but AIM FOR {num_scenes})
@@ -1697,7 +1708,7 @@ REQUIREMENTS:
 
         # Build final project with all required fields from GEN1
         total_duration = sum(s.duration_seconds for s in glaze_scenes)
-        youtube_title = (gen1.youtube.title if gen1.youtube else None) or gen1.youtube_title or gen1.metadata.title or "Glaze City Property"
+        youtube_title = (gen1.youtube.title if gen1.youtube else None) or gen1.youtube_title or gen1.metadata.title or f"{self.brand_name_display} Property"
 
         # Find easter egg scene in GEN2 to get placement_in_prompt for safe_zone_position
         gen2_placement_in_prompt = ""
@@ -1940,13 +1951,13 @@ REQUIREMENTS:
             ),
             # Publish config for multi-channel support
             publish_config=PublishConfig(
-                target_channel=getattr(gen1.publish_config, 'target_channel', "glaze_city") if gen1.publish_config else "glaze_city",
+                target_channel=getattr(gen1.publish_config, 'target_channel', self.channel_id) if gen1.publish_config else self.channel_id,
                 auto_schedule=True,
             ),
             youtube=ViralMetadata(
                 title=youtube_title,
                 title_char_count=len(youtube_title),
-                description=(gen1.youtube.description if gen1.youtube else None) or gen1.youtube_description or gen1.metadata.title or "Glaze City",
+                description=(gen1.youtube.description if gen1.youtube else None) or gen1.youtube_description or gen1.metadata.title or self.brand_name_display,
                 pinned_comment=(
                     gen1.youtube.pinned_comment
                     or getattr(gen1, 'youtube_pinned_comment', None)
@@ -1981,7 +1992,7 @@ REQUIREMENTS:
                     ),
                     brand_fit=AuditScore(
                         score=self._convert_viral_score(gen1.viral_assessment.overall_score),
-                        reason="Matches Glaze City style"
+                        reason=f"Matches {self.brand_name_display} style"
                     ),
                     # v8.3.0 qualitative verdicts → AuditScore (verdict string as reason)
                     mute_test=AuditScore(

@@ -559,7 +559,22 @@ class AudioEngine:
         # Generate subtitles from alignment (Netflix-style, word-by-word)
         # Must come AFTER timing so voiceover_timing.json exists for Easter Egg scene detection
         subtitles_path = project_dir / "subtitles.ass"
-        self._generate_subtitles_from_alignment(alignment, output_path=subtitles_path, project_dir=project_dir, hook_offset=hook_offset)
+
+        # Resolve subtitle title from channel branding
+        sub_title = "Glaze City Subtitles"
+        try:
+            brief_path = project_dir / "project_brief.json"
+            if brief_path.exists():
+                with open(brief_path, 'r', encoding='utf-8') as f:
+                    brief = json.load(f)
+                channel_id = brief.get("publish_config", {}).get("target_channel", "glaze_city")
+                from app.utils.prompt_loader import load_channel_branding
+                branding = load_channel_branding(channel_id)
+                sub_title = branding.get("{{SUBTITLE_TITLE}}", sub_title)
+        except Exception as e:
+            logger.debug(f"Could not resolve subtitle title from branding: {e}")
+
+        self._generate_subtitles_from_alignment(alignment, output_path=subtitles_path, project_dir=project_dir, hook_offset=hook_offset, subtitle_title=sub_title)
         logger.success(f"Subtitles saved: {subtitles_path}")
 
         return voiceover_path, alignment_path, subtitles_path, timing_path
@@ -570,6 +585,7 @@ class AudioEngine:
         output_path: Path,
         project_dir: Path = None,
         hook_offset: float = 0.3,
+        subtitle_title: str = "Glaze City Subtitles",
     ) -> None:
         """
         Generate Netflix-style ASS subtitle file with WORD-BY-WORD display.
@@ -784,8 +800,8 @@ class AudioEngine:
         # YOUTUBE SAFE ZONES (1080x1920 vertical):
         # - Bottom: 350px margin (avoid like/comment/share/subscribe buttons)
         # - Top: 200px margin (avoid video title, channel name overlay)
-        ass_content = '''[Script Info]
-Title: Glaze City Subtitles
+        ass_content = f'''[Script Info]
+Title: {subtitle_title}
 ScriptType: v4.00+
 PlayResX: 1080
 PlayResY: 1920

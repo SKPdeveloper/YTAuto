@@ -43,6 +43,7 @@ from app.services.gen_models import (
 )
 from app.services.gen3a_preprocessing import Gen3aPreprocessor, PreprocessingResult
 from app.services.gen3a_autocorrect import autocorrect_gen3a
+from app.utils.prompt_loader import load_prompt_with_channel
 
 
 # System prompt path
@@ -73,8 +74,9 @@ class Gen3aService:
     - audio_levels.json provided (ducking recommendations)
     """
 
-    def __init__(self):
+    def __init__(self, channel_id: str = "glaze_city"):
         """Initialize GEN3a service with Gemini client and preprocessor."""
+        self.channel_id = channel_id
         self.client = genai.Client(api_key=settings.GOOGLE_GEMINI_API_KEY)
         self.model_name = settings.CONTENTBRAIN_MODEL
         self.system_prompt = self._load_system_prompt()
@@ -95,15 +97,23 @@ class Gen3aService:
         logger.info(f"  Preprocessor: Enabled")
 
     def _load_system_prompt(self) -> str:
-        """Load GEN3a system prompt."""
+        """Load GEN3a system prompt with channel branding placeholders."""
         if not GEN3A_PROMPT_PATH.exists():
             logger.warning(f"GEN3a prompt not found: {GEN3A_PROMPT_PATH}")
             return self._get_fallback_prompt()
 
-        with open(GEN3A_PROMPT_PATH, "r", encoding="utf-8") as f:
-            prompt = f.read()
+        try:
+            prompt = load_prompt_with_channel(
+                prompt_path=GEN3A_PROMPT_PATH,
+                channel_id=self.channel_id,
+            )
+        except (FileNotFoundError, KeyError) as e:
+            # GEN3a.txt has no {{BANLIST}} — fallback to plain read if banlist missing
+            logger.debug(f"Channel-aware load failed for GEN3a ({e}), falling back to plain read")
+            with open(GEN3A_PROMPT_PATH, "r", encoding="utf-8") as f:
+                prompt = f.read()
 
-        logger.success(f"Loaded GEN3a system prompt: {GEN3A_PROMPT_PATH.name}")
+        logger.success(f"Loaded GEN3a system prompt: {GEN3A_PROMPT_PATH.name} (channel: {self.channel_id})")
         return prompt
 
     def _get_fallback_prompt(self) -> str:

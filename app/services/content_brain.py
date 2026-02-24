@@ -28,7 +28,7 @@ from app.utils.logger import logger
 from app.services.glaze_models import GlazeCityProject
 from app.services.glaze_parser import GlazeParser, save_project_brief, save_raw_output
 from app.services.validation_models import SimpleValidationResult
-from app.utils.prompt_loader import load_prompt_with_banlist
+from app.utils.prompt_loader import load_prompt_with_banlist, load_prompt_with_channel
 
 # =============================================================================
 # PROTECTED SYSTEM PROMPT - DO NOT EDIT THE SOURCE FILE
@@ -168,8 +168,9 @@ class ContentBrain:
     Uses Google Gemini API with structured JSON output
     """
 
-    def __init__(self):
-        """Initialize Content Brain with Gemini API and GLAZE CITY system prompt"""
+    def __init__(self, channel_id: str = "glaze_city"):
+        """Initialize Content Brain with Gemini API and channel-aware system prompt"""
+        self.channel_id = channel_id
 
         # Initialize Gemini Client (new unified SDK)
         self.client = genai.Client(api_key=settings.GOOGLE_GEMINI_API_KEY)
@@ -208,12 +209,13 @@ class ContentBrain:
 
     def _load_system_prompt(self) -> str:
         """
-        Load the protected GLAZE CITY system prompt with banlist injection.
+        Load the protected system prompt with banlist injection + channel branding.
 
         WARNING: This file is PROTECTED. Do not edit without user permission.
         See PROTECTED_FILES.md for details.
 
-        Injects ban_list.txt content into {{BANLIST}} placeholder.
+        Injects ban_list.txt content into {{BANLIST}} placeholder,
+        then replaces {{CHANNEL_*}} placeholders with channel branding.
         """
         if not SYSTEM_PROMPT_PATH.exists():
             logger.error(f"System prompt not found: {SYSTEM_PROMPT_PATH}")
@@ -222,16 +224,17 @@ class ContentBrain:
                 f"This file is required for content generation."
             )
 
-        # Load prompt with banlist injection
+        # Load prompt with banlist injection + channel branding
         banlist_path = SYSTEM_PROMPT_PATH.parent / "ban_list.txt"
-        prompt = load_prompt_with_banlist(
+        prompt = load_prompt_with_channel(
             prompt_path=SYSTEM_PROMPT_PATH,
-            banlist_path=banlist_path
+            channel_id=self.channel_id,
+            banlist_path=banlist_path,
         )
 
         logger.success(f"Loaded PROTECTED system prompt: {SYSTEM_PROMPT_PATH.name}")
         logger.info(f"  Size: {len(prompt)} characters")
-        logger.info(f"  Banlist: {'injected' if banlist_path.exists() else 'not found (empty)'}")
+        logger.info(f"  Channel: {self.channel_id}")
 
         return prompt
 
