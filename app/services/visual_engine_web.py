@@ -861,11 +861,18 @@ class HiggsFieldWebAdapter:
 
             # Copy images to project directories and save URLs to metadata
             final_paths = []
+            failed_scenes = []
             for i, gen_img in enumerate(generated_images):
                 if i < len(scenes):
                     scene_num = scenes[i]['scene_number']
                     scene_dir = settings.get_scene_dir(project_id, scene_num)
                     scene_dir.mkdir(parents=True, exist_ok=True)
+
+                    # Skip None entries (failed generations)
+                    if gen_img is None:
+                        logger.error(f"[Scene {scene_num}] Generation failed — no image to copy")
+                        failed_scenes.append(scene_num)
+                        continue
 
                     final_path = scene_dir / "image.png"
                     # Use .path attribute from GeneratedImage
@@ -890,6 +897,9 @@ class HiggsFieldWebAdapter:
 
                     logger.success(f"[Scene {scene_num}] Image saved: {final_path}")
                     logger.info(f"[Scene {scene_num}] URL saved: {gen_img.url[:60]}...")
+
+            if failed_scenes:
+                logger.warning(f"[VISUAL_ENGINE] {len(failed_scenes)} scene(s) failed: {failed_scenes}. Pipeline will retry them.")
 
             return final_paths
 

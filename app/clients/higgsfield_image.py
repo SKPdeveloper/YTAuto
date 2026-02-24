@@ -1,5 +1,5 @@
-﻿"""
-Higgsfield Image Generator - Р“РµРЅРµСЂР°С†С–СЏ Р·РѕР±СЂР°Р¶РµРЅСЊ С‡РµСЂРµР· Р±СЂР°СѓР·РµСЂ.
+"""
+Higgsfield Image Generator - Р"РµРЅРµСЂР°С†С–СЏ Р·РѕР±СЂР°Р¶РµРЅСЊ С‡РµСЂРµР· Р±СЂР°СѓР·РµСЂ.
 
 Workflows:
 - WORKFLOW 1 (PRIMARY): 4 РєР°РЅРґРёРґР°С‚Рё Р±РµР· СЂРµС„РµСЂРµРЅСЃСѓ
@@ -63,9 +63,9 @@ class GeneratedImage:
 
 class HiggsFieldImageGenerator:
     """
-    Р“РµРЅРµСЂР°С‚РѕСЂ Р·РѕР±СЂР°Р¶РµРЅСЊ С‡РµСЂРµР· Higgsfield Web UI.
+    Р"РµРЅРµСЂР°С‚РѕСЂ Р·РѕР±СЂР°Р¶РµРЅСЊ С‡РµСЂРµР· Higgsfield Web UI.
 
-    РџРѕС‚СЂРµР±СѓС” AdsPowerClient РґР»СЏ СѓРїСЂР°РІР»С–РЅРЅСЏ Р±СЂР°СѓР·РµСЂРѕРј.
+    РџРѕС‚СЂРµР±СѓС" AdsPowerClient РґР»СЏ СѓРїСЂР°РІР»С–РЅРЅСЏ Р±СЂР°СѓР·РµСЂРѕРј.
 
     Usage:
         browser = AdsPowerClient(config)
@@ -246,9 +246,9 @@ class HiggsFieldImageGenerator:
         Р’СЃС‚Р°РЅРѕРІР»РµРЅРЅСЏ resolution С‡РµСЂРµР· dropdown.
 
         Workflow:
-        1. Р—РЅР°Р№С‚Рё РєРЅРѕРїРєСѓ dropdown (РїРѕРєР°Р·СѓС” 1K Р°Р±Рѕ 2K)
+        1. Р—РЅР°Р№С‚Рё РєРЅРѕРїРєСѓ dropdown (РїРѕРєР°Р·СѓС" 1K Р°Р±Рѕ 2K)
         2. РљР»С–РєРЅСѓС‚Рё С‰РѕР± РІС–РґРєСЂРёС‚Рё
-        3. РџРѕС‡РµРєР°С‚Рё РїРѕРєРё dropdown РІС–РґРєСЂРёС”С‚СЊСЃСЏ
+        3. РџРѕС‡РµРєР°С‚Рё РїРѕРєРё dropdown РІС–РґРєСЂРёС"С‚СЊСЃСЏ
         4. Р—РЅР°Р№С‚Рё С– РєР»С–РєРЅСѓС‚Рё РЅР° 2K РѕРїС†С–СЋ
         """
         driver = self.browser.driver
@@ -952,8 +952,9 @@ class HiggsFieldImageGenerator:
 
         except Exception as e:
             logger.warning(f"[REFERENCE] Gallery method failed: {e}")
-            logger.info("[REFERENCE] Trying fallback upload method...")
-            self._sync_upload_reference_fallback(image_path)
+            # Skip clipboard paste (unreliable) — go straight to file input methods
+            logger.info("[REFERENCE] Trying direct file input method...")
+            self._sync_upload_reference_direct_input(image_path)
 
     def _sync_upload_reference_fallback(self, image_path: str) -> None:
         """
@@ -1041,8 +1042,8 @@ class HiggsFieldImageGenerator:
 
     def _sync_upload_reference_direct_input(self, image_path: str) -> None:
         """
-        Direct method — make original hidden input visible, send_keys to it,
-        then trigger React-compatible events.
+        Direct method — find file input via Selenium find_element + send_keys.
+        Falls back to proxy input (Strategy B) if direct approach fails.
         """
         driver = self.browser.driver
 
@@ -1052,26 +1053,50 @@ class HiggsFieldImageGenerator:
         file_path = Path(image_path)
         absolute_path = str(file_path.absolute())
 
-        # Strategy A: send_keys directly to original input (made visible)
-        logger.info("[REFERENCE DIRECT] Strategy A: send_keys to original input...")
+        # ================================================================
+        # Strategy A: Selenium find_element + send_keys (most reliable)
+        # For <input type="file">, send_keys works even on hidden elements
+        # ================================================================
+        logger.info("[REFERENCE DIRECT] Strategy A: Selenium find_element + send_keys...")
 
-        input_found = driver.execute_script("""
-            var inp = document.getElementById('image-form-reference');
-            if (!inp) {
-                // Try finding any file input with 'reference' in name/id/class
-                var allInputs = document.querySelectorAll('input[type="file"]');
-                for (var i = 0; i < allInputs.length; i++) {
-                    var el = allInputs[i];
-                    var attrs = (el.id + ' ' + el.name + ' ' + el.className).toLowerCase();
-                    if (attrs.includes('reference') || attrs.includes('ref')) {
-                        inp = el;
-                        break;
-                    }
-                }
-            }
-            if (!inp) return false;
+        ref_input = None
 
-            // Make it interactable for Selenium send_keys
+        # Try finding reference file input by ID first
+        try:
+            ref_input = driver.find_element(By.ID, 'image-form-reference')
+            logger.info("[REFERENCE DIRECT] Found input by ID: image-form-reference")
+        except NoSuchElementException:
+            logger.debug("[REFERENCE DIRECT] No input with ID 'image-form-reference'")
+
+        # Try CSS selector from selectors config
+        if not ref_input:
+            try:
+                ref_input = driver.find_element(By.CSS_SELECTOR, 'input[type="file"][id*="ref"]')
+                logger.info(f"[REFERENCE DIRECT] Found input by CSS: id={ref_input.get_attribute('id')}")
+            except NoSuchElementException:
+                logger.debug("[REFERENCE DIRECT] No input matching CSS selector")
+
+        # Try any file input with 'reference' in attributes
+        if not ref_input:
+            file_inputs = driver.find_elements(By.CSS_SELECTOR, 'input[type="file"]')
+            logger.info(f"[REFERENCE DIRECT] Found {len(file_inputs)} file inputs total")
+            for inp in file_inputs:
+                attrs = f"{inp.get_attribute('id')} {inp.get_attribute('name')} {inp.get_attribute('class')}".lower()
+                if 'reference' in attrs or 'ref' in attrs:
+                    ref_input = inp
+                    logger.info(f"[REFERENCE DIRECT] Found reference input: id={inp.get_attribute('id')}, name={inp.get_attribute('name')}")
+                    break
+
+        if not ref_input:
+            logger.warning("[REFERENCE DIRECT] No reference file input found on page")
+            # Last resort: try proxy input method
+            logger.info("[REFERENCE DIRECT] Falling back to Strategy B (proxy input)...")
+            self._sync_upload_reference_proxy_input(image_path)
+            return
+
+        # Make input interactable (remove hidden/disabled attrs)
+        driver.execute_script("""
+            var inp = arguments[0];
             inp.style.cssText = 'position: fixed !important; top: 100px !important; left: 100px !important; ' +
                 'z-index: 999999 !important; width: 400px !important; height: 50px !important; ' +
                 'opacity: 1 !important; display: block !important; visibility: visible !important; ' +
@@ -1079,87 +1104,44 @@ class HiggsFieldImageGenerator:
             inp.removeAttribute('hidden');
             inp.removeAttribute('aria-hidden');
             inp.disabled = false;
-            return true;
-        """)
-
-        if not input_found:
-            logger.warning("[REFERENCE DIRECT] No reference file input found on page")
-            raise HiggsFieldWebGenerationError("Reference upload direct method failed - no file input found")
+        """, ref_input)
 
         time.sleep(0.5)
 
-        # Send file path to the now-visible original input
+        # Send file path via Selenium send_keys
         try:
-            ref_input = driver.execute_script("""
-                var inp = document.getElementById('image-form-reference');
-                if (!inp) {
-                    var allInputs = document.querySelectorAll('input[type="file"]');
-                    for (var i = 0; i < allInputs.length; i++) {
-                        var el = allInputs[i];
-                        var attrs = (el.id + ' ' + el.name + ' ' + el.className).toLowerCase();
-                        if (attrs.includes('reference') || attrs.includes('ref')) return el;
-                    }
-                }
-                return inp;
-            """)
             ref_input.send_keys(absolute_path)
-            logger.info(f"[REFERENCE DIRECT] File sent to original input: {file_path.name}")
+            logger.info(f"[REFERENCE DIRECT] File sent to input: {file_path.name}")
         except Exception as e:
             logger.warning(f"[REFERENCE DIRECT] Strategy A send_keys failed: {e}")
-            # Strategy B: create proxy input, transfer via DataTransfer + React setter
-            logger.info("[REFERENCE DIRECT] Strategy B: proxy input + React setter...")
+            logger.info("[REFERENCE DIRECT] Falling back to Strategy B (proxy input)...")
             self._sync_upload_reference_proxy_input(image_path)
             return
 
-        # Trigger React-compatible events on the original input
+        # Trigger React-compatible events
         driver.execute_script("""
-            var inp = document.getElementById('image-form-reference');
-            if (!inp) {
-                var allInputs = document.querySelectorAll('input[type="file"]');
-                for (var i = 0; i < allInputs.length; i++) {
-                    var el = allInputs[i];
-                    var attrs = (el.id + ' ' + el.name + ' ' + el.className).toLowerCase();
-                    if (attrs.includes('reference') || attrs.includes('ref')) { inp = el; break; }
-                }
-            }
-            if (!inp) return;
-
-            // React uses its own event system — dispatch both native events
+            var inp = arguments[0];
+            // Dispatch native events that React listens to
             ['input', 'change'].forEach(function(evtName) {
                 var evt = new Event(evtName, {bubbles: true, cancelable: true});
                 inp.dispatchEvent(evt);
             });
-
-            // Also try React fiber internal dispatch (React 16+)
-            var nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-                window.HTMLInputElement.prototype, 'value'
-            );
-            // For file inputs, React tracks via 'change' event at document level
-            // The bubbling native change should be caught by React's delegated handler
-
-            // Restore hidden style after a delay
-            setTimeout(function() {
-                inp.style.cssText = '';
-            }, 2000);
-        """)
+            // Restore hidden style after React processes the event
+            setTimeout(function() { inp.style.cssText = ''; }, 2000);
+        """, ref_input)
 
         time.sleep(3)
 
-        # Verify
-        for attempt in range(5):
+        # Verify upload
+        for attempt in range(3):
             if self._verify_reference_uploaded():
                 logger.success("[REFERENCE DIRECT] Upload VERIFIED!")
                 return
-            logger.debug(f"[REFERENCE DIRECT] Verification attempt {attempt + 1}/5...")
+            logger.debug(f"[REFERENCE DIRECT] Verification attempt {attempt + 1}/3...")
             time.sleep(2)
 
         # Check if file is at least in the input
         has_files = driver.execute_script("""
-            var inp = document.getElementById('image-form-reference');
-            if (inp && inp.files && inp.files.length > 0) {
-                return {hasFiles: true, name: inp.files[0].name};
-            }
-            // Check all file inputs
             var allInputs = document.querySelectorAll('input[type="file"]');
             for (var i = 0; i < allInputs.length; i++) {
                 if (allInputs[i].files && allInputs[i].files.length > 0) {
@@ -1173,7 +1155,11 @@ class HiggsFieldImageGenerator:
             logger.warning(f"[REFERENCE DIRECT] File is in input ({has_files.get('name')}) but UI not updated. Continuing.")
             return
 
-        raise HiggsFieldWebGenerationError("Reference upload direct method failed - file not in input")
+        # ================================================================
+        # Strategy A failed — fall through to Strategy B (proxy input)
+        # ================================================================
+        logger.warning("[REFERENCE DIRECT] Strategy A verification failed, trying Strategy B (proxy input)...")
+        self._sync_upload_reference_proxy_input(image_path)
 
     def _sync_upload_reference_proxy_input(self, image_path: str) -> None:
         """
@@ -1385,7 +1371,7 @@ class HiggsFieldImageGenerator:
         РћС‡С–РєСѓРІР°РЅРЅСЏ Р·Р°РІРµСЂС€РµРЅРЅСЏ РіРµРЅРµСЂР°С†С–С— Р·РѕР±СЂР°Р¶РµРЅСЊ.
 
         Р‘Р•Р— refresh РїС–Рґ С‡Р°СЃ РѕС‡С–РєСѓРІР°РЅРЅСЏ - С‚С–Р»СЊРєРё РїРµСЂРµРІС–СЂРєР° DOM.
-        РџРµСЂРµРІС–СЂСЏС” СЃС‚Р°С‚СѓСЃ pending/queue - СЏРєС‰Рѕ РІ С‡РµСЂР·С–, РїСЂРѕРґРѕРІР¶СѓС” С‡РµРєР°С‚Рё.
+        РџРµСЂРµРІС–СЂСЏС" СЃС‚Р°С‚СѓСЃ pending/queue - СЏРєС‰Рѕ РІ С‡РµСЂР·С–, РїСЂРѕРґРѕРІР¶СѓС" С‡РµРєР°С‚Рё.
         РўР°Р№РјР°СѓС‚: 5 С…РІРёР»РёРЅ (РґР»СЏ РїС–РєРѕРІРёС… РіРѕРґРёРЅ Higgsfield).
         """
         logger.info(f"Waiting for generation (timeout: {timeout}s, no refresh during wait)...")
@@ -1406,7 +1392,7 @@ class HiggsFieldImageGenerator:
                 logger.info(f"Generation still in progress (pending/queue), continuing to wait...")
                 continue
 
-            # РџРµСЂРµРІС–СЂСЏС”РјРѕ DOM Р‘Р•Р— refresh
+            # РџРµСЂРµРІС–СЂСЏС"РјРѕ DOM Р‘Р•Р— refresh
             current_first_url = await asyncio.to_thread(self._get_first_image_url)
             logger.debug(f"Current first image URL: {current_first_url[:60] if current_first_url else 'None'}...")
 
@@ -1420,7 +1406,7 @@ class HiggsFieldImageGenerator:
 
             logger.debug(f"No new image yet (cycle {cycle}/{max_cycles})")
 
-        # РўС–Р»СЊРєРё СЏРєС‰Рѕ РїС–СЃР»СЏ РІСЃС–С… С†РёРєР»С–РІ РЅРµРјР°С” СЂРµР·СѓР»СЊС‚Р°С‚Сѓ - РѕРґРёРЅ refresh
+        # РўС–Р»СЊРєРё СЏРєС‰Рѕ РїС–СЃР»СЏ РІСЃС–С… С†РёРєР»С–РІ РЅРµРјР°С" СЂРµР·СѓР»СЊС‚Р°С‚Сѓ - РѕРґРёРЅ refresh
         logger.warning(f"Max cycles ({max_cycles}) reached. Single refresh to check...")
         await self.browser.refresh()
         await asyncio.sleep(5)
@@ -1454,9 +1440,9 @@ class HiggsFieldImageGenerator:
         РџРµСЂРµРІС–СЂРёС‚Рё С‡Рё РіРµРЅРµСЂР°С†С–СЏ РІ СЃС‚Р°С‚СѓСЃС– pending/queue.
 
         HiggsField-СЃРїРµС†РёС„С–С‡РЅР° РїРµСЂРµРІС–СЂРєР°:
-        - Р”РёРІРёРјРѕСЃСЊ РЅР° placeholder Р·РѕР±СЂР°Р¶РµРЅРЅСЏ (С‚С–, С‰Рѕ РіРµРЅРµСЂСѓСЋС‚СЊСЃСЏ)
-        - РЁСѓРєР°С”РјРѕ С‚РµРєСЃС‚ "pending", "queue" Р±С–Р»СЏ placeholder
-        - РќР• СЂРµР°РіСѓС”РјРѕ РЅР° Р·Р°РіР°Р»СЊРЅС– СЃРїС–РЅРЅРµСЂРё (РјРѕР¶СѓС‚СЊ Р±СѓС‚Рё РІ С–РЅС€РёС… С‡Р°СЃС‚РёРЅР°С… UI)
+        - Р"РёРІРёРјРѕСЃСЊ РЅР° placeholder Р·РѕР±СЂР°Р¶РµРЅРЅСЏ (С‚С–, С‰Рѕ РіРµРЅРµСЂСѓСЋС‚СЊСЃСЏ)
+        - РЁСѓРєР°С"РјРѕ С‚РµРєСЃС‚ "pending", "queue" Р±С–Р»СЏ placeholder
+        - РќР• СЂРµР°РіСѓС"РјРѕ РЅР° Р·Р°РіР°Р»СЊРЅС– СЃРїС–РЅРЅРµСЂРё (РјРѕР¶СѓС‚СЊ Р±СѓС‚Рё РІ С–РЅС€РёС… С‡Р°СЃС‚РёРЅР°С… UI)
         """
         driver = self.browser.driver
 
@@ -1521,8 +1507,8 @@ class HiggsFieldImageGenerator:
         """
         Р—Р°РІР°РЅС‚Р°Р¶РёС‚Рё Р·РіРµРЅРµСЂРѕРІР°РЅС– Р·РѕР±СЂР°Р¶РµРЅРЅСЏ Р· retry Р»РѕРіС–РєРѕСЋ.
 
-        РџРѕРІРµСЂС‚Р°С” List[GeneratedImage] Р· path РўРђ url РґР»СЏ РїРѕРґР°Р»СЊС€РѕРіРѕ РІРёРєРѕСЂРёСЃС‚Р°РЅРЅСЏ.
-        URL Р·Р±РµСЂС–РіР°С”С‚СЊСЃСЏ РґР»СЏ С€РІРёРґРєРѕС— РіРµРЅРµСЂР°С†С–С— РІС–РґРµРѕ (Р±РµР· РїРѕРІС‚РѕСЂРЅРѕРіРѕ upload).
+        РџРѕРІРµСЂС‚Р°С" List[GeneratedImage] Р· path РўРђ url РґР»СЏ РїРѕРґР°Р»СЊС€РѕРіРѕ РІРёРєРѕСЂРёСЃС‚Р°РЅРЅСЏ.
+        URL Р·Р±РµСЂС–РіР°С"С‚СЊСЃСЏ РґР»СЏ С€РІРёРґРєРѕС— РіРµРЅРµСЂР°С†С–С— РІС–РґРµРѕ (Р±РµР· РїРѕРІС‚РѕСЂРЅРѕРіРѕ upload).
         """
         logger.debug(f"Downloading up to {count} images...")
 
@@ -1574,7 +1560,7 @@ class HiggsFieldImageGenerator:
                 output_path = self.download_dir / f"generated_{i}_{int(time.time())}.png"
                 await self._download_image_from_url(url, output_path)
 
-                # Р—Р±РµСЂС–РіР°С”РјРѕ Р† path Р† url
+                # Р—Р±РµСЂС–РіР°С"РјРѕ Р† path Р† url
                 downloaded.append(GeneratedImage(
                     path=output_path,
                     url=url,
@@ -1685,8 +1671,8 @@ class HiggsFieldImageGenerator:
         num_candidates: int = 4
     ) -> List[GeneratedImage]:
         """
-        WORKFLOW 1: Р“РµРЅРµСЂР°С†С–СЏ 4 candidates РґР»СЏ PRIMARY СЃС†РµРЅРё.
-        Unlimited=OFF (РІРёРєРѕСЂРёСЃС‚РѕРІСѓС” РєСЂРµРґРёС‚Рё РґР»СЏ РєСЂР°С‰РѕС— СЏРєРѕСЃС‚С–).
+        WORKFLOW 1: Р"РµРЅРµСЂР°С†С–СЏ 4 candidates РґР»СЏ PRIMARY СЃС†РµРЅРё.
+        Unlimited=OFF (РІРёРєРѕСЂРёСЃС‚РѕРІСѓС" РєСЂРµРґРёС‚Рё РґР»СЏ РєСЂР°С‰РѕС— СЏРєРѕСЃС‚С–).
 
         Returns:
             List[GeneratedImage]: РЎРїРёСЃРѕРє Р· path С‚Р° url РґР»СЏ РєРѕР¶РЅРѕРіРѕ РєР°РЅРґРёРґР°С‚Р°.
@@ -1701,9 +1687,10 @@ class HiggsFieldImageGenerator:
         logger.info(f"  Prompt: {prompt[:80]}...")
         logger.info("=" * 60)
 
-        await self._navigate_to_image()
+        # force=True to prevent stale gallery images from previous sessions
+        await self._navigate_to_image(force=True)
 
-        # Step 1: Р’РёРґР°Р»РёС‚Рё СЂРµС„РµСЂРµРЅСЃ (СЏРєС‰Рѕ С”)
+        # Step 1: Р’РёРґР°Р»РёС‚Рё СЂРµС„РµСЂРµРЅСЃ (СЏРєС‰Рѕ С")
         logger.info("Step 1: Clearing reference image (if exists)...")
         await self._clear_reference_image()
 
@@ -1767,7 +1754,7 @@ class HiggsFieldImageGenerator:
             reference_type: INDEPENDENT, REQUIRES_REF, or LOOP_CLOSE
 
         Returns:
-            GeneratedImage: РћР±'С”РєС‚ Р· path С‚Р° url.
+            GeneratedImage: РћР±'С"РєС‚ Р· path С‚Р° url.
         """
         logger.info("=" * 50)
         logger.info(f"GENERATING SCENE IMAGE")
@@ -1776,7 +1763,8 @@ class HiggsFieldImageGenerator:
         logger.info(f"  Unlimited: ON (free generation)")
         logger.info("=" * 50)
 
-        await self._navigate_to_image()
+        # force=True to prevent stale gallery images from previous sessions
+        await self._navigate_to_image(force=True)
 
         # Загрузить референс если нужен и его нет на странице
         if reference_image and reference_type != 'INDEPENDENT':
@@ -1990,8 +1978,8 @@ class HiggsFieldImageGenerator:
         """
         РћС‡С–РєСѓРІР°РЅРЅСЏ Р·Р°РІРµСЂС€РµРЅРЅСЏ batch РіРµРЅРµСЂР°С†С–С—.
 
-        РџРµСЂРµРІС–СЂСЏС” DOM РєРѕР¶РЅС– 20 СЃРµРєСѓРЅРґ (Р‘Р•Р— refresh).
-        РџРµСЂРµРІС–СЂСЏС” СЃС‚Р°С‚СѓСЃ pending/queue - СЏРєС‰Рѕ РІ С‡РµСЂР·С–, РїСЂРѕРґРѕРІР¶СѓС” С‡РµРєР°С‚Рё.
+        РџРµСЂРµРІС–СЂСЏС" DOM РєРѕР¶РЅС– 20 СЃРµРєСѓРЅРґ (Р‘Р•Р— refresh).
+        РџРµСЂРµРІС–СЂСЏС" СЃС‚Р°С‚СѓСЃ pending/queue - СЏРєС‰Рѕ РІ С‡РµСЂР·С–, РїСЂРѕРґРѕРІР¶СѓС" С‡РµРєР°С‚Рё.
         РўР°Р№РјР°СѓС‚: 5 С…РІРёР»РёРЅ (РґР»СЏ РїС–РєРѕРІРёС… РіРѕРґРёРЅ Higgsfield).
         Refresh С‚С–Р»СЊРєРё РІ РєС–РЅС†С– СЏРєС‰Рѕ РЅРµ РІСЃС– Р·РѕР±СЂР°Р¶РµРЅРЅСЏ Р·'СЏРІРёР»РёСЃСЊ.
         """
