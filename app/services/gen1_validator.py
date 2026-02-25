@@ -70,7 +70,7 @@ def _load_banlist(path: Optional[Path] = None) -> Dict[str, Set[str]]:
     result: Dict[str, Set[str]] = {
         "first_words": set(), "first_phrases": set(), "commands": set(),
         "fillers": set(), "ai_markers": set(), "overused_adjectives": set(),
-        "generic_luxury": set(),
+        "generic_luxury": set(), "ai_hashtags": set(),
     }
     if not path.exists():
         logger.warning(f"Banlist not found: {path}")
@@ -85,6 +85,7 @@ def _load_banlist(path: Optional[Path] = None) -> Dict[str, Set[str]]:
         "заборонені початкові фрази": "first_phrases",
         "команди": "commands", "філери": "fillers",
         "ші-маркери": "ai_markers",
+        "ші-хештеги": "ai_hashtags",
         "перевикористані прикметники": "overused_adjectives",
         "generic luxury": "generic_luxury",
     }
@@ -336,12 +337,28 @@ class Gen1Validator:
     # Soft enum fields: produce warnings, not errors
     _SOFT_ENUMS = {"metadata.concept.category", "lighting_master.preset", "atmosphere_mode", "audio.sonic_hook.type"}
 
-    def __init__(self, strict_mode: bool = False):
+    # AI-generated content hashtags — direct OPSEC violation
+    _BANNED_AI_HASHTAGS: frozenset = frozenset({
+        "#aiart", "#aigenerated", "#midjourney", "#dalle", "#stablediffusion",
+        "#blender3d", "#blender", "#ai", "#aiartwork", "#generativeart",
+        "#aianimation", "#kling", "#runway", "#sora", "#veo", "#openai",
+        "#aigeneratedfood", "#aiartcommunity",
+    })
+
+    # Per-channel banned hashtags — cross-channel leak prevention
+    _CROSS_CHANNEL_BANS: Dict[str, frozenset] = {
+        "glaze_city": frozenset({"#yumestate", "#yum", "#appraiser", "#inspector", "#theinspector"}),
+        "yum_estate": frozenset({"#glazecity", "#glaze", "#architect", "#thewitness", "#sensorywitness"}),
+    }
+
+    def __init__(self, strict_mode: bool = False, channel_id: Optional[str] = None):
         """
         Args:
             strict_mode: If True, warnings also block. Default False.
+            channel_id: Channel identifier for cross-channel validation. Default None.
         """
         self.strict_mode = strict_mode
+        self.channel_id = channel_id
         self._errors: List[ValidationError] = []
         self._warnings: List[ValidationError] = []
         self._data: Dict[str, Any] = {}
@@ -352,7 +369,7 @@ class Gen1Validator:
         self._warnings = []
 
         # Phase 1: Auto-correct (deterministic fixes)
-        corrected, fix_warnings = autocorrect_gen1(data)
+        corrected, fix_warnings = autocorrect_gen1(data, channel_id=self.channel_id or "glaze_city")
         self._data = corrected
 
         # Convert AutoFixWarnings to ValidationErrors (as warnings)
@@ -729,8 +746,8 @@ class Gen1Validator:
         elif isinstance(sv, str) and len(sv.strip()) > 60:
             self._warn("engagement.save_trigger", f"Too long ({len(sv.strip())} chars, max 60)")
         hashtags = self._nested(eng, "hashtags", [])
-        if isinstance(hashtags, list) and hashtags and not (3 <= len(hashtags) <= 10):
-            self._warn("engagement.hashtags", f"Expected 3-10, got {len(hashtags)}")
+        if isinstance(hashtags, list) and hashtags and not (3 <= len(hashtags) <= 5):
+            self._warn("engagement.hashtags", f"Expected 3-5, got {len(hashtags)}")
 
     def _validate_youtube(self) -> None:
         yt = self._get_field("youtube")
@@ -752,10 +769,19 @@ class Gen1Validator:
             self._warn("youtube.description", f"Short ({len(desc)} chars, {MIN_YOUTUBE_DESCRIPTION_LENGTH}+ recommended)")
         if desc:
             ht_in_desc = re.findall(r'#[\w\-]+', desc.lower())
-            if len(ht_in_desc) < 6:
-                self._warn("youtube.description", f"Only {len(ht_in_desc)} hashtags — min 6 recommended")
-            if '#glazecity' in ht_in_desc:
-                self._error("youtube.description", "#glazecity banned (0 search volume)", code="BANNED_HASHTAG_GLAZECITY")
+            if len(ht_in_desc) < 3:
+                self._warn("youtube.description", f"Only {len(ht_in_desc)} hashtags — min 3 recommended")
+            elif len(ht_in_desc) > 5:
+                self._warn("youtube.description", f"Too many hashtags ({len(ht_in_desc)}) — max 5 recommended")
+            # AI hashtag ban — direct OPSEC violation
+            for ht in ht_in_desc:
+                if ht in self._BANNED_AI_HASHTAGS:
+                    self._error("youtube.description", f"AI hashtag '{ht}' banned — reveals AI-generated content", code="BANNED_AI_HASHTAG")
+            # Cross-channel leak prevention
+            if self.channel_id and self.channel_id in self._CROSS_CHANNEL_BANS:
+                for ht in ht_in_desc:
+                    if ht in self._CROSS_CHANNEL_BANS[self.channel_id]:
+                        self._error("youtube.description", f"Cross-channel hashtag '{ht}' banned for {self.channel_id}", code="CROSS_CHANNEL_HASHTAG")
         tags = self._nested(yt, "tags", [])
         if isinstance(tags, list):
             if len(tags) < 3:
@@ -881,8 +907,20 @@ class Gen1Validator:
                 if found:
                     self._error(f"{prefix}.voiceover_segment", f"AI markers: {', '.join(found[:3])}", code="AI_MARKERS_IN_SCENE")
 
-            # Narrator word count vs duration (pause-aware)
+            # Scene 1 narrator word count (max 8 words per GEN1.txt)
             narrator = self._nested(scene, "narrator_script", "")
+            if sn == 1 and narrator and isinstance(narrator, str) and narrator.strip():
+                s1_wds = len(narrator.strip().split())
+                if s1_wds > 8:
+                    self._error(
+                        f"{prefix}.narrator_script",
+                        f"Scene 1 word overflow: {s1_wds} words (max 8). "
+                        f"Content: '{narrator[:60]}'. Hook must be punchy.",
+                        code="SCENE1_VO_OVERFLOW",
+                        suggestion="Reduce Scene 1 narrator_script to ≤8 words. Keep it a sharp hook.",
+                    )
+
+            # Narrator word count vs duration (pause-aware) — middle scenes
             dur = scene.get("duration_seconds")
             is_middle = 1 < sn < total - 1
             if is_middle and narrator and isinstance(narrator, str) and narrator.strip() and dur is not None:
@@ -901,13 +939,21 @@ class Gen1Validator:
                             pause_penalty += {"long pause": 0.7, "pause": 0.3, "short pause": 0.2}.get(_tag, 0.3)
                     effective_dv = max(dv - pause_penalty, 1.0)
                     wds = len(narrator.strip().split())
-                    _LIMITS = {2.0: 4, 2.5: 5, 3.0: 6, 3.5: 7, 4.0: 9}
+                    # Align with GEN1.txt prompt limits (v9.9.0)
+                    _LIMITS = {1.0: 2, 1.5: 3, 2.0: 4, 2.5: 5, 3.0: 7, 3.5: 8, 4.0: 10}
                     mx = _LIMITS.get(effective_dv, int(effective_dv * 2.5) if effective_dv else 10)
-                    if mx < 4:
-                        mx = 4
+                    if mx < 2:
+                        mx = 2
                     if wds > mx:
                         extra = f" (pause tags consume {pause_penalty:.1f}s)" if pause_penalty > 0 else ""
-                        self._warn(f"{prefix}.narrator_script", f"Too many words ({wds}) for {dv}s{extra} (max {mx})")
+                        self._error(
+                            f"{prefix}.narrator_script",
+                            f"Word overflow: {wds} words for {dv}s scene{extra} (max {mx}). "
+                            f"Content: '{narrator[:60]}'. "
+                            f"KEEP humor punchlines and sensory words — restructure or move to on_screen_text.",
+                            code="SCENE_VO_OVERFLOW",
+                            suggestion=f"Reduce to ≤{mx} words. Preserve humor payoff and sensory triggers.",
+                        )
 
             # Numbers in narrator_script ban
             if narrator and isinstance(narrator, str) and narrator.strip():
@@ -1537,8 +1583,7 @@ class Gen1Validator:
         """Validate total voiceover duration fits within target video length.
 
         Uses corrected ElevenLabs TTS rates from gen1_autocorrect._TTS_RATE.
-        ratio > 1.5 → ERROR (triggers retry in prompt_router)
-        ratio > 1.25 → WARNING (tight but passable)
+        ratio > 1.2 → ERROR (triggers retry in prompt_router, matches GEN1.txt ×1.2 budget)
         """
         scenes = self._data.get("scenes")
         if not isinstance(scenes, list) or not scenes:
@@ -1601,25 +1646,18 @@ class Gen1Validator:
         total_words = sum(wc for _, wc, _, _ in scene_details)
         word_budget = int(target * 1.2)
 
-        if ratio > 1.5:
+        if ratio > 1.2:
             self._error(
                 "voiceover.total_budget",
                 f"Total VO ~{total_est:.1f}s for {target:.0f}s video "
-                f"(ratio {ratio:.2f}x). Total words: {total_words}, "
-                f"budget: ~{word_budget} words. "
-                f"Heaviest: {heaviest_str}. "
-                f"Shorten narrator_script across scenes to fit ≤{word_budget} total words.",
+                f"(ratio {ratio:.2f}x, budget ≤{target * 1.2:.0f} words). "
+                f"Current: {total_words} words. Heaviest: {heaviest_str}. "
+                f"PRESERVE: complete humor lines (setup+punchline), completion bait in VO, "
+                f"sensory/body words over technical/neutral. "
+                f"ADD [silence] scenes. Most scenes = 2-3 words.",
                 code="VO_BUDGET_EXCEEDED",
-                suggestion=f"Target ≤{word_budget} total narrator_script words for a {target:.0f}s video. "
-                           f"Current {total_words} words produce ~{total_est:.1f}s of audio.",
-            )
-        elif ratio > 1.25:
-            self._warn(
-                "voiceover.total_budget",
-                f"VO budget tight: ~{total_est:.1f}s for {target:.0f}s video "
-                f"(ratio {ratio:.2f}x). Total words: {total_words}, "
-                f"budget: ~{word_budget}. Heaviest: {heaviest_str}.",
-                suggestion=f"Consider trimming to ≤{word_budget} total words.",
+                suggestion=f"Target ≤{word_budget} narrator_script words. "
+                           f"Keep punchlines intact — cut technical labels instead.",
             )
 
     # ========================================================================
@@ -1678,17 +1716,18 @@ class Gen1Validator:
 # CONVENIENCE FUNCTION
 # ============================================================================
 
-def validate_gen1(data: Dict[str, Any], strict_mode: bool = False) -> ValidationResult:
+def validate_gen1(data: Dict[str, Any], strict_mode: bool = False, channel_id: Optional[str] = None) -> ValidationResult:
     """Validate GEN1 JSON output.
 
     Args:
         data: GEN1 JSON as dict.
         strict_mode: If True, warnings also block. Default False.
+        channel_id: Channel identifier for cross-channel validation. Default None.
 
     Returns:
         ValidationResult with errors, warnings, corrected_data.
     """
-    return Gen1Validator(strict_mode=strict_mode).validate(data)
+    return Gen1Validator(strict_mode=strict_mode, channel_id=channel_id).validate(data)
 
 
 # ============================================================================

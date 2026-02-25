@@ -139,6 +139,12 @@ ARCHITECTURAL_FORM_WORDS: set = {
     "pipe", "pipes", "silo", "bunker", "observatory",
     # Scale/structural words used in food-form context
     "layer", "layers", "tier", "tiers", "level", "levels",
+    # Interior/furniture-scale architectural elements
+    "shelf", "shelves", "aisle", "aisles", "panel", "panels",
+    "ledge", "ledges", "alcove", "niche", "slab", "ramp",
+    "terrace", "rack", "racks", "beam", "beams",
+    "rail", "rails", "platform", "joint", "joints",
+    "hall", "halls", "archive", "archives", "gallery",
 }
 
 # Reversal-safe motion elements for Scene N
@@ -202,6 +208,11 @@ _PURPOSE_FIXES: dict = {
     "SENSORY_BUILD": "STRUCTURAL_DETAIL",
     "TENSION": "DYNAMIC_ACTION",
     "AFTERMATH": "FEATURE_HIGHLIGHT",
+    # Gemini 3 Pro hallucinations (prod 2026-02)
+    "ASMR_BEAT": "DETAIL",
+    "ASMR": "DETAIL",
+    "SENSORY": "DETAIL",
+    "TEXTURE": "DETAIL",
 }
 
 # Appetite-killing dominant_color keywords → auto-replace with food color
@@ -412,7 +423,7 @@ def _concept_hash(data: dict) -> int:
 # MAIN AUTOCORRECT FUNCTION
 # ---------------------------------------------------------------------------
 
-def autocorrect_gen1(data: Dict[str, Any], thermal_blacklist: Optional[Set[str]] = None) -> Tuple[Dict[str, Any], List[AutoFixWarning]]:
+def autocorrect_gen1(data: Dict[str, Any], thermal_blacklist: Optional[Set[str]] = None, channel_id: str = "glaze_city") -> Tuple[Dict[str, Any], List[AutoFixWarning]]:
     """
     Apply all deterministic auto-corrections to GEN1 output.
 
@@ -457,18 +468,20 @@ def autocorrect_gen1(data: Dict[str, Any], thermal_blacklist: Optional[Set[str]]
     _fix_narrator_vo_sync(scenes, w)
     _fix_duplicate_vo_across_scenes(scenes, w)  # Silence duplicate VO BEFORE duration/truncation
     _fix_scene_durations(scenes, w)
-    _fix_narrator_word_count(scenes, w)     # Truncate overflow AFTER durations fixed
+    # _fix_narrator_word_count(scenes, w)     # DISABLED: validator-driven VO enforcement — Gemini owns word budget
     _fix_dangling_narrator_endings(d, scenes, w)  # P0-2: standalone dangling strip (after truncation)
     _flag_semantic_truncation(d, scenes, w)        # P1: flag transitive verb truncation
     _fix_scene_n_constraints(d, scenes, w)
     _fix_scene_n_minus_1_vo(d, scenes, w)
+    _fix_description_hashtags(d, w, channel_id=channel_id)  # OPSEC: strip AI/cross-channel hashtags
+    _fix_generic_cta(d, w)                                   # OPSEC: replace template CTAs
     _fix_description_line1(d, w)
     _fix_title_default_rotation(d, w)       # BUG 6: FOOD_BUILD → other
     _fix_controversy_rotation(d, w)         # BUG 9: THE_PHYSICS → other
     _fix_completion_bait_rotation(d, w)     # Anti-template-lock: "One more [noun]" (BEFORE injection)
     _fix_vo_trigger_injection(d, scenes, w) # Inject AFTER rotation so text matches
     _fix_share_trigger_rotation(d, w)       # Anti-template-lock: "[qualifier] [identity]"
-    _fix_series_hook(d, w)                  # P0-2: series_hook missing fallback
+    _fix_series_hook(d, w, channel_id=channel_id)  # P0-2: series_hook missing fallback
     _fix_grey_dominant_color(d, scenes, w)  # OPT: grey→warm color in food scenes
     _fix_lighting_rotation(d, w)                  # Anti-template-lock: NIGHT_NEON/MORNING_GOLDEN
     _fix_warm_food_warm_light_collision(d, w)     # P1: warm food + warm light = visual monotony (AFTER rotation)
@@ -480,8 +493,8 @@ def autocorrect_gen1(data: Dict[str, Any], thermal_blacklist: Optional[Set[str]]
     _fix_olfactory_channel_injection(d, scenes, w)  # 4-channel: inject smell word if missing
     _fix_temporal_channel_injection(d, scenes, w)   # 4-channel: inject "still X-ing" if missing
     _fix_tactile_channel_injection(d, scenes, w)    # 4-channel: inject texture word if missing
-    _fix_narrator_word_count(scenes, w)     # Re-truncate after all injections (2nd pass)
-    _verify_humor_survived(d, scenes, w)   # Rescue humor lost to truncation (Fix 2)
+    # _fix_narrator_word_count(scenes, w)     # DISABLED: validator-driven VO enforcement — Gemini owns word budget
+    # _verify_humor_survived(d, scenes, w)   # DISABLED: no truncation → no humor rescue needed
     _fix_voiceover_segment_word_sync(d, scenes, w)  # Sync VO content words to narrator (after truncation)
     _warn_total_vo_budget(d, scenes, w)              # Warn if estimated VO > target duration
     _fix_full_script_rebuild(d, scenes, w)  # ALWAYS last — rebuilds from segments
@@ -710,6 +723,14 @@ def _fix_hook_type(d: dict, w: list) -> None:
         ))
 
 
+_VALID_NARRATIVE_PURPOSES: set = {
+    "ESTABLISHING", "EXTERIOR_ANGLE", "AERIAL", "INTERIOR", "DETAIL",
+    "FEATURE", "LOOP_CLOSE", "STRUCTURAL_DETAIL", "THEMATIC_INTERIOR",
+    "CONTEXTUAL_ENVIRONMENT", "DYNAMIC_ACTION", "FEATURE_HIGHLIGHT",
+    "AERIAL_WOW", "AERIAL_REVEAL",
+}
+
+
 def _fix_narrative_purposes(d: dict, w: list) -> None:
     """Fix narrative_purpose confusion with phase labels.
 
@@ -718,7 +739,8 @@ def _fix_narrative_purposes(d: dict, w: list) -> None:
     2. Scene N → LOOP_CLOSE
     3. Scene N-1 → AERIAL
     4. Money shot scene → FEATURE_HIGHLIGHT
-    5. Everything else → _PURPOSE_FIXES mapping
+    5. Known fix mapping → _PURPOSE_FIXES
+    6. Catch-all unknown → DETAIL (prevents validator error on hallucinations)
     """
     scenes = d.get("scenes", [])
     total = len(scenes)
@@ -726,7 +748,9 @@ def _fix_narrative_purposes(d: dict, w: list) -> None:
         if not isinstance(scene, dict):
             continue
         purpose = scene.get("narrative_purpose", "")
-        if purpose not in _PURPOSE_FIXES:
+        needs_fix = purpose in _PURPOSE_FIXES
+        is_unknown = purpose and purpose not in _VALID_NARRATIVE_PURPOSES
+        if not needs_fix and not is_unknown:
             continue
         scene_num = i + 1
 
@@ -743,13 +767,17 @@ def _fix_narrative_purposes(d: dict, w: list) -> None:
             is_money = isinstance(ms, dict) and ms.get("is_money_shot")
             if is_money:
                 fixed = "FEATURE_HIGHLIGHT"
-            else:
+            elif needs_fix:
                 fixed = _PURPOSE_FIXES[purpose]
+            else:
+                # Catch-all: unknown hallucination → DETAIL (safest generic)
+                fixed = "DETAIL"
 
         scene["narrative_purpose"] = fixed
+        label = "was phase label" if needs_fix else "unknown hallucination"
         w.append(AutoFixWarning(
             f"scenes[{i}].narrative_purpose",
-            f"Auto-corrected '{purpose}' → '{fixed}' (was phase label)",
+            f"Auto-corrected '{purpose}' → '{fixed}' ({label})",
         ))
 
 
@@ -2117,6 +2145,143 @@ def _fix_vo_trigger_injection(d: dict, scenes: list, w: list) -> None:
     return
 
 
+# ---------------------------------------------------------------------------
+# OPSEC: AI hashtag & cross-channel ban lists
+# ---------------------------------------------------------------------------
+
+_BANNED_AI_HASHTAGS: frozenset = frozenset({
+    "#aiart", "#aigenerated", "#midjourney", "#dalle", "#stablediffusion",
+    "#blender3d", "#blender", "#ai", "#aiartwork", "#generativeart",
+    "#aianimation", "#kling", "#runway", "#sora", "#veo", "#openai",
+    "#aigeneratedfood", "#aiartcommunity",
+})
+
+_CROSS_CHANNEL_BANS: dict = {
+    "glaze_city": frozenset({"#yumestate", "#yum", "#appraiser", "#inspector", "#theinspector"}),
+    "yum_estate": frozenset({"#glazecity", "#glaze", "#architect", "#thewitness", "#sensorywitness"}),
+}
+
+# Default safe hashtags when count drops below 3
+_DEFAULT_HASHTAGS: list = ["#oddlysatisfying", "#satisfying", "#shorts"]
+
+# Generic CTA patterns — template-like, hurts OPSEC
+_GENERIC_CTA_PATTERNS: list = [
+    re.compile(r"[Ww]ould you (?:live|stay|visit|go|be|come) (?:here|there|in this)\??"),
+    re.compile(r"[Yy]es or [Nn]o\??"),
+    re.compile(r"[Cc]omment (?:below|yes|no)"),
+    re.compile(r"[Ll]ike if you"),
+]
+
+# Food-specific CTA actions
+_CTA_ACTIONS: list = ["taste", "touch", "bite", "try", "smell"]
+
+
+def _fix_description_hashtags(d: dict, w: list, channel_id: str = "glaze_city") -> None:
+    """Strip AI/cross-channel hashtags from YouTube description. Enforce 3-5 count."""
+    youtube = d.get("youtube")
+    if not isinstance(youtube, dict):
+        return
+    desc = youtube.get("description", "")
+    if not isinstance(desc, str) or not desc.strip():
+        return
+
+    # Find all hashtags in description
+    all_hashtags = re.findall(r'#[\w\-]+', desc)
+    if not all_hashtags:
+        return
+
+    banned = _BANNED_AI_HASHTAGS | _CROSS_CHANNEL_BANS.get(channel_id, frozenset())
+    cleaned = []
+    removed = []
+
+    for ht in all_hashtags:
+        if ht.lower() in banned:
+            removed.append(ht)
+        else:
+            cleaned.append(ht)
+
+    # Trim to max 5
+    if len(cleaned) > 5:
+        excess = cleaned[5:]
+        removed.extend(excess)
+        cleaned = cleaned[:5]
+
+    # Pad to min 3 with defaults
+    if len(cleaned) < 3:
+        for dht in _DEFAULT_HASHTAGS:
+            if dht not in [h.lower() for h in cleaned]:
+                cleaned.append(dht)
+            if len(cleaned) >= 3:
+                break
+
+    if not removed:
+        return  # nothing changed
+
+    # Rebuild description: remove all old hashtags, append cleaned block
+    desc_no_ht = desc
+    for ht in all_hashtags:
+        desc_no_ht = desc_no_ht.replace(ht, "")
+    # Clean up leftover whitespace from removal
+    desc_no_ht = re.sub(r' {2,}', ' ', desc_no_ht).strip()
+    # Remove trailing empty lines
+    desc_no_ht = desc_no_ht.rstrip()
+
+    hashtag_block = " ".join(cleaned)
+    youtube["description"] = f"{desc_no_ht}\n\n{hashtag_block}" if desc_no_ht else hashtag_block
+
+    for ht in removed:
+        w.append(AutoFixWarning("youtube.description.hashtags", f"Removed banned/excess hashtag: {ht}"))
+
+    # Also clean description_variants if present
+    variants = youtube.get("description_variants")
+    if isinstance(variants, list):
+        for i, var in enumerate(variants):
+            if not isinstance(var, str):
+                continue
+            var_hashtags = re.findall(r'#[\w\-]+', var)
+            changed = False
+            for ht in var_hashtags:
+                if ht.lower() in banned:
+                    var = var.replace(ht, "")
+                    changed = True
+            if changed:
+                var = re.sub(r' {2,}', ' ', var).strip()
+                variants[i] = var
+
+
+def _fix_generic_cta(d: dict, w: list) -> None:
+    """Replace generic CTAs in description with food-specific ones."""
+    youtube = d.get("youtube")
+    if not isinstance(youtube, dict):
+        return
+    desc = youtube.get("description", "")
+    if not isinstance(desc, str) or not desc.strip():
+        return
+
+    food_name = _get_food_name(d)
+
+    replaced = False
+    for pattern in _GENERIC_CTA_PATTERNS:
+        match = pattern.search(desc)
+        if match:
+            old_cta = match.group()
+            if food_name:
+                # Deterministic action pick based on food_name hash
+                action = _CTA_ACTIONS[sum(ord(c) for c in food_name.lower()) % len(_CTA_ACTIONS)]
+                new_cta = f"Would you {action} the {food_name}?"
+            else:
+                new_cta = ""  # no food_name → remove entirely
+            desc = desc[:match.start()] + new_cta + desc[match.end():]
+            replaced = True
+            w.append(AutoFixWarning("youtube.description.cta", f"Replaced generic CTA: '{old_cta}' → '{new_cta or '(removed)'}''"))
+
+    if replaced:
+        # Clean up double spaces/newlines from removals
+        desc = re.sub(r' {2,}', ' ', desc)
+        desc = re.sub(r'\n{3,}', '\n\n', desc)
+        youtube["description"] = desc.strip()
+
+
 def _fix_description_line1(d: dict, w: list) -> None:
     """Ensure YouTube description Line 1 contains food name + 'made of'."""
     youtube = d.get("youtube")
@@ -2712,40 +2877,58 @@ def _fix_share_trigger_rotation(d: dict, w: list) -> None:
     ))
 
 
-_SERIES_HOOK_TECHNIQUES = [
+_SERIES_HOOK_FALLBACK_TECHNIQUES = [
     "UNANSWERED_QUESTION",
     "COLLECTION_TRIGGER",
     "ARCHITECT_TEASE",
     "WORLD_REFERENCE",
 ]
 
-_SERIES_HOOK_ELEMENTS = {
-    "UNANSWERED_QUESTION": "What else did The Architect build?",
-    "COLLECTION_TRIGGER": "Glaze City collection — more to explore",
-    "ARCHITECT_TEASE": "Architect holding blueprints of a different food structure",
-    "WORLD_REFERENCE": "Brief VO mention of another Glaze City structure nearby",
+_SERIES_HOOK_FALLBACK_ELEMENTS = {
+    "UNANSWERED_QUESTION": "What else was built?",
+    "COLLECTION_TRIGGER": "Collection — more to explore",
+    "ARCHITECT_TEASE": "Blueprints of a different food structure",
+    "WORLD_REFERENCE": "Brief VO mention of another structure nearby",
 }
 
 
-def _fix_series_hook(d: dict, w: list) -> None:
+def _load_series_hooks_for_channel(channel_id: str):
+    """Load channel-specific series hook techniques and elements from persona.json."""
+    try:
+        from app.utils.prompt_loader import load_persona
+        persona = load_persona(channel_id)
+        sh = persona.get("series_hooks", {})
+        types = sh.get("types", {})
+        if types:
+            techniques = list(types.keys())
+            elements = {k: v.get("description", v.get("example", "")) if isinstance(v, dict) else str(v) for k, v in types.items()}
+            return techniques, elements
+    except Exception:
+        pass
+    return _SERIES_HOOK_FALLBACK_TECHNIQUES, _SERIES_HOOK_FALLBACK_ELEMENTS
+
+
+def _fix_series_hook(d: dict, w: list, channel_id: str = "glaze_city") -> None:
     """Ensure series_identity.series_hook exists AND rotate technique via concept hash.
 
     Gemini template-locks to UNANSWERED_QUESTION — deterministic rotation
-    via concept-hash selects from 4 techniques.
+    via concept-hash selects from 4 techniques. Channel-aware via persona.json.
     """
     si = d.get("series_identity")
     if not isinstance(si, dict):
         return
 
+    techniques, elements = _load_series_hooks_for_channel(channel_id)
+
     h = _concept_hash(d)
-    target_tech = _SERIES_HOOK_TECHNIQUES[h % len(_SERIES_HOOK_TECHNIQUES)]
+    target_tech = techniques[h % len(techniques)]
 
     sh = si.get("series_hook")
     if not isinstance(sh, dict) or not sh.get("technique"):
         # Missing entirely — create with rotated technique
         si["series_hook"] = {
             "technique": target_tech,
-            "element": _SERIES_HOOK_ELEMENTS[target_tech],
+            "element": elements.get(target_tech, ""),
             "placement": "Last 2 seconds",
         }
         w.append(AutoFixWarning(
@@ -2760,7 +2943,7 @@ def _fix_series_hook(d: dict, w: list) -> None:
 
     old_tech = current
     sh["technique"] = target_tech
-    sh["element"] = _SERIES_HOOK_ELEMENTS.get(target_tech, sh.get("element", ""))
+    sh["element"] = elements.get(target_tech, sh.get("element", ""))
     w.append(AutoFixWarning(
         "series_identity.series_hook",
         f"Series hook rotation: {old_tech} → {target_tech}",

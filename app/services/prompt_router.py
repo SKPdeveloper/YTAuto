@@ -199,11 +199,11 @@ class PromptRouter:
         # Load channel branding for fallback values
         try:
             self._branding = load_channel_branding(channel_id)
-            self.brand_name_display = self._branding.get("{{CHANNEL_BRAND_DISPLAY}}", "Glaze City")
+            self.brand_name_display = self._branding.get("{{CHANNEL_BRAND_DISPLAY}}", channel_id.replace("_", " ").title())
         except Exception as e:
             logger.warning(f"Failed to load branding for channel '{channel_id}': {e}")
             self._branding = {}
-            self.brand_name_display = "Glaze City"
+            self.brand_name_display = channel_id.replace("_", " ").title()
 
         # Track if last GEN2 call was truncated (for retry guidance)
         self._last_gen2_truncated: bool = False
@@ -212,6 +212,11 @@ class PromptRouter:
         # Auto-corrected data from validators (re-parsed before merge)
         self._last_corrected_gen1_data: Optional[Dict] = None
         self._last_corrected_gen2_data: Optional[Dict] = None
+
+        # NOTE: GEN1 does NOT use response_json_schema — Gen1Output model is too complex
+        # (nested $ref, anyOf, discriminated unions → 400 INVALID_ARGUMENT from Gemini API).
+        # Word count enforcement relies on gold example pattern + field descriptions in prompt.
+        # GEN2 schema works because Gen2BatchOutput is simpler.
 
         # Pre-generate GEN2 JSON schema for Gemini structured output
         self._gen2_json_schema: Optional[Dict] = None
@@ -457,7 +462,7 @@ class PromptRouter:
 
             # Run autocorrect BEFORE Pydantic validation (mirrors GEN2 pattern)
             thermal_bl = structural_memory.recent_scene1_openers(5)
-            json_data, ac_warnings = autocorrect_gen1(json_data, thermal_blacklist=thermal_bl)
+            json_data, ac_warnings = autocorrect_gen1(json_data, thermal_blacklist=thermal_bl, channel_id=self.channel_id)
             if ac_warnings:
                 logger.info(f"[GEN1_AUTOCORRECT] Applied {len(ac_warnings)} auto-fixes before parsing")
                 for aw in ac_warnings:
@@ -630,17 +635,36 @@ CRITICAL REQUIREMENTS:
 {self._format_retry_guidance(retry_guidance)}Output ONLY valid JSON. Start with {{ and end with }}"""
 
     def _format_retry_guidance(self, retry_guidance: Optional[List[str]]) -> str:
-        """Format retry guidance for inclusion in prompt."""
+        """Format retry guidance for inclusion in prompt.
+
+        Caps to top 3 errors to keep prompt compact and focused.
+        """
         if not retry_guidance:
             return ""
 
-        fixes = "\n".join(f"  - {fix}" for fix in retry_guidance)
+        # Cap to top 3 errors — too many overwhelm Gemini and bloat prompt tokens
+        capped = retry_guidance[:3]
+        overflow_note = f"\n  ... and {len(retry_guidance) - 3} more issues (fix top 3 first)" if len(retry_guidance) > 3 else ""
+        fixes = "\n".join(f"  - {fix}" for fix in capped) + overflow_note
+
+        # Build context-sensitive hints based on actual errors
+        hints = []
+        joined = " ".join(retry_guidance).lower()
+        if "vo_overflow" in joined or "vo_budget" in joined or "word overflow" in joined or "total_budget" in joined or "total words" in joined or "word" in joined:
+            hints.append("- WORD COUNT IS CRITICAL: leave 1-2 scenes as [silence] (0 words). Most scenes = 2-3 words. COUNT total narrator_script words BEFORE outputting. KEEP humor punchlines intact — cut neutral/technical words instead.")
+        if "scene1_vo" in joined or "scene 1 word" in joined:
+            hints.append("- Scene 1 hook MUST be ≤8 words. Punch, don't explain.")
+        if "motion_elements" in joined:
+            hints.append("- motion_elements: Each scene needs AT LEAST 2 motion elements")
+        if not hints:
+            hints.append("- Re-read the validation errors above and fix each one")
+
+        hints_str = "\n".join(hints)
         return f"""⚠️ PREVIOUS ATTEMPT FAILED VALIDATION - FIX THESE ISSUES:
 {fixes}
 
-You MUST fix ALL the issues listed above. Pay special attention to:
-- motion_elements: Each scene needs AT LEAST 2 motion elements
-- Ensure all required fields are present and properly formatted
+You MUST fix ALL issues above.
+{hints_str}
 
 """
 
@@ -1118,7 +1142,7 @@ REQUIREMENTS:
             gen1_dict = gen1_output.model_dump()
 
             # Run Python validator (deterministic, ~5ms)
-            result: Gen1ValidationResult = python_validate_gen1(gen1_dict, strict_mode=False)
+            result: Gen1ValidationResult = python_validate_gen1(gen1_dict, strict_mode=False, channel_id=self.channel_id)
 
             # Store auto-corrected data for re-parsing after validation (v8.5.0)
             self._last_corrected_gen1_data = result.corrected_data

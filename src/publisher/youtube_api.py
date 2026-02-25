@@ -6,6 +6,7 @@ Supports proxy connections for each channel.
 """
 
 import os
+import re
 import time
 import json
 import httplib2
@@ -298,7 +299,15 @@ class YouTubeAPI:
                 if creds.refresh_token:
                     try:
                         logger.info("Refreshing OAuth token...")
-                        creds.refresh(Request())
+                        # Use proxied session for token refresh (OPSEC: refresh IP = channel proxy)
+                        import requests as _requests
+                        proxied_session = _requests.Session()
+                        proxy_url = self._get_proxy_url()
+                        if proxy_url:
+                            proxied_session.proxies = {"http": proxy_url, "https": proxy_url}
+                            proxied_session.trust_env = False
+                            logger.info(f"Token refresh via proxy: {self.channel_config.proxy.host}:{self.channel_config.proxy.port}")
+                        creds.refresh(Request(session=proxied_session))
                         self._save_credentials(creds)
                         logger.success("Token refreshed successfully")
                     except Exception as e:
@@ -622,6 +631,78 @@ class YouTubeAPI:
             return None
 
     # ========================================================================
+    # PRE-UPLOAD SANITIZATION (last line of defense)
+    # ========================================================================
+
+    # AI-generated content hashtags — OPSEC violation
+    _BANNED_AI_HASHTAGS_RE = re.compile(
+        r'#(?:aiart|aigenerated|midjourney|dalle|stablediffusion'
+        r'|blender3d|blender|ai|aiartwork|generativeart'
+        r'|aianimation|kling|runway|sora|veo|openai'
+        r'|aigeneratedfood|aiartcommunity)\b',
+        re.IGNORECASE,
+    )
+
+    # Per-channel banned hashtags
+    _CROSS_CHANNEL_BANS_RE = {
+        "glaze_city": re.compile(r'#(?:yumestate|yum|appraiser|inspector|theinspector)\b', re.IGNORECASE),
+        "yum_estate": re.compile(r'#(?:glazecity|glaze|architect|thewitness|sensorywitness)\b', re.IGNORECASE),
+    }
+
+    def _sanitize_description(self, description: str) -> str:
+        """Last line of defense — strip AI/cross-channel hashtags before upload.
+
+        If anything is removed here, it means the upstream pipeline (autocorrect/validator)
+        failed to catch it. Logs a warning for monitoring.
+        """
+        if not description:
+            return description
+
+        original = description
+        channel_id = self.channel_config.channel_id
+
+        # Strip AI hashtags
+        description = self._BANNED_AI_HASHTAGS_RE.sub("", description)
+
+        # Strip cross-channel hashtags
+        if channel_id in self._CROSS_CHANNEL_BANS_RE:
+            description = self._CROSS_CHANNEL_BANS_RE[channel_id].sub("", description)
+
+        # Clean up leftover whitespace from removals
+        if description != original:
+            description = re.sub(r' {2,}', ' ', description)
+            description = re.sub(r'\n{3,}', '\n\n', description).strip()
+            logger.warning(
+                f"[OPSEC] _sanitize_description removed banned hashtags for {channel_id} "
+                f"(upstream pipeline missed them)"
+            )
+
+        return description
+
+    def _sanitize_tags(self, tags: list) -> list:
+        """Strip AI/cross-channel words from tags list."""
+        if not tags:
+            return tags
+
+        _banned_tag_words = {
+            "ai art", "aiart", "ai generated", "aigenerated", "midjourney",
+            "dalle", "stable diffusion", "blender 3d", "blender",
+            "ai artwork", "generative art", "ai animation", "kling",
+            "runway", "sora", "veo", "openai",
+        }
+        channel_id = self.channel_config.channel_id
+        _cross_bans = {
+            "glaze_city": {"yumestate", "yum estate", "appraiser", "inspector"},
+            "yum_estate": {"glazecity", "glaze city", "architect", "the witness", "sensory witness"},
+        }
+        banned = _banned_tag_words | _cross_bans.get(channel_id, set())
+
+        cleaned = [t for t in tags if t.lower().strip() not in banned]
+        if len(cleaned) != len(tags):
+            logger.warning(f"[OPSEC] _sanitize_tags removed {len(tags) - len(cleaned)} banned tags for {channel_id}")
+        return cleaned
+
+    # ========================================================================
     # VIDEO UPLOAD
     # ========================================================================
 
@@ -782,12 +863,16 @@ class YouTubeAPI:
             video_path = Path(state.video_path)
             privacy_status = state.privacy_status
 
+            # OPSEC: sanitize description and tags before upload
+            safe_description = self._sanitize_description(state.description)
+            safe_tags = self._sanitize_tags(state.tags[:500] if state.tags else [])
+
             # Build request body
             body = {
                 "snippet": {
                     "title": state.title[:100],
-                    "description": state.description[:5000],
-                    "tags": state.tags[:500] if state.tags else [],
+                    "description": safe_description[:5000],
+                    "tags": safe_tags,
                     "categoryId": state.category_id,
                     "defaultLanguage": "en-US",
                     "defaultAudioLanguage": "en-US",
@@ -1035,9 +1120,13 @@ class YouTubeAPI:
                 if title is not None:
                     clean_snippet["title"] = title[:100]
                 if description is not None:
-                    clean_snippet["description"] = description[:5000]
+                    clean_snippet["description"] = self._sanitize_description(description)[:5000]
                 if tags is not None:
-                    clean_snippet["tags"] = tags[:500]
+                    clean_snippet["tags"] = self._sanitize_tags(tags[:500])
+
+                # OPSEC: also sanitize existing description if no new one provided
+                if description is None:
+                    clean_snippet["description"] = self._sanitize_description(clean_snippet["description"])
 
                 # PUT updated snippet
                 youtube.videos().update(

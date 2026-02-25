@@ -91,6 +91,26 @@ boasts
 features
 offers
 
+# ШІ-ХЕШТЕГИ (у описах YouTube)
+# (КРИТИЧНО — прямо маркують контент як AI-generated)
+aiart
+aigenerated
+midjourney
+dalle
+stablediffusion
+blender3d
+blender
+aiartwork
+generativeart
+aianimation
+kling
+runway
+sora
+veo
+openai
+aigeneratedfood
+aiartcommunity
+
 # ПЕРЕВИКОРИСТАНІ ПРИКМЕТНИКИ
 # (втратили силу)
 stunning
