@@ -363,3 +363,7 @@ PublishStage - 11-й етап пайплайну. Автоматично пуб�
 ---
 
 Made with ❤️ and AI by Claude Code
+
+---
+
+🌐 **[SKP-Degree](https://skp-degree.com.ua)** — Pair programming, курсові та дипломні роботи з програмування. Без передоплати!
